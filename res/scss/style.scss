@@ -1,0 +1,71 @@
+body{
+    background-color: #E86127;
+}
+
+.cstm{
+    // card for displaying pages
+    &-cardpage{
+        height: 30rem; 
+        padding: 20px; 
+        background-color: #F9F9F9; 
+        border-radius: 8px;
+
+        &.sidemenu{
+            padding: 12px; 
+        }
+    }
+
+    // button for sidemenu
+    &-btn-sidemenu{
+        color: #1C1B1F;
+        border-radius: 5px;
+        padding: 8px;
+        font-size: 0px;
+
+        &.active{
+            background-color: #E94C08 !important;
+            color: #F7E1D7;
+        }
+
+        &:hover{
+            background-color: #d9d9d9;
+        }
+    }
+    
+    &-btn-icon{
+        color: #1C1B1F;
+        padding: 5px;
+        border-radius: 100%;
+
+        &:hover{
+            background-color: #d9d9d9;
+        }
+    }
+
+    &-textbox{
+        background-color: #E0E0E0;
+        font-size: 15px;
+        font-weight: 400;
+        border: 0;
+        padding: 0.5rem 2.3rem;
+        line-height: 1.5;
+        border-radius: var(--bs-border-radius);
+        outline: 0;
+    }
+}
+
+.search-box{
+    display: flex;
+    align-items: center;
+
+    &-icon{
+        position: absolute;
+        pointer-events: none;
+        font-size: 17px Im !important;
+        color: #5A5A5A;
+
+        &.searchicon{
+            margin-left: 11px;
+        }
+    }
+}
