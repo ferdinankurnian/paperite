@@ -37,24 +37,32 @@ body {
   font-size: 15px;
   font-weight: 400;
   border: 0;
-  padding: 0.5rem 2.3rem;
-  line-height: 1.5;
+  padding: 0.7rem 2.3rem;
+  line-height: 0;
   border-radius: var(--bs-border-radius);
   outline: 0;
 }
 
 .search-box {
+  position: relative;
   display: flex;
   align-items: center;
 }
 .search-box-icon {
   position: absolute;
+  border: none;
+  background-color: transparent;
   pointer-events: none;
-  font-size: 17px Im !important;
+  font-size: 17px !important;
   color: #5A5A5A;
 }
 .search-box-icon.searchicon {
   margin-left: 11px;
+  left: 0;
+}
+.search-box-icon.filtericon {
+  margin-right: 11px;
+  right: 0;
 }
 
 /*# sourceMappingURL=style.css.map */
