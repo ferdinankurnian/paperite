@@ -20,12 +20,19 @@ body{
     display: flex;
     flex-direction: column;
     gap: 10px;
+    height: 100%;
+}
+
+.page{
+    flex-grow: 1;
     padding: 10px;
+    padding-top: 0;
 }
 
 .wholepage{
     display: flex;
     gap: 8px;
+    height: 100%;
 }
 
 .main-page{
@@ -38,7 +45,6 @@ body{
 .cstm{
     // card for displaying pages
     &-cardpage{
-        height: 30rem; 
         padding: 20px; 
         padding-bottom: 0;
         background-color: #F9F9F9; 
@@ -102,6 +108,8 @@ body{
     display: flex;
     flex-direction: row;
     justify-content: space-between;
+    padding: 10px;
+    padding-bottom: 0;
 
     &-button {
         background-color: #F1F1F1;
@@ -122,6 +130,12 @@ body{
         padding-right: 15px;
         padding-left: 15px;
         font-size: 17px;
+    }
+
+    &-right{
+        display: flex;
+        flex-direction: row;
+        gap: 5px;
     }
 }
 
