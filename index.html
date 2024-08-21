@@ -4,86 +4,184 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Paperite</title>
-    <link rel="stylesheet" href="res/css/bootstrap.css">
+    <!-- <link rel="stylesheet" href="res/css/bootstrap.css"> -->
     <link rel="stylesheet" href="res/css/style.css">
-    <link rel="stylesheet" href="res/icons/font/bootstrap-icons.css">
+    <!-- <link rel="stylesheet" href="res/icons/font/bootstrap-icons.css"> -->
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
 </head>
 <body>
-    <div class="p-2">
-        <nav class="navbar navbar-expand-lg bg-body-tertiary">
-            <div class="container-fluid">
-                <a class="navbar-brand" href="#">Navbar</a>
-                <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent" aria-controls="navbarSupportedContent" aria-expanded="false" aria-label="Toggle navigation">
-                    <span class="navbar-toggler-icon"></span>
-                </button>
-                <div class="collapse navbar-collapse" id="navbarSupportedContent">
-                    <ul class="navbar-nav me-auto mb-2 mb-lg-0">
-                        <li class="nav-item">
-                            <a class="nav-link active" aria-current="page" href="#">Home</a>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link" href="#">Link</a>
-                        </li>
-                        <li class="nav-item dropdown">
-                            <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-                            Dropdown
-                            </a>
-                            <ul class="dropdown-menu">
-                            <li><a class="dropdown-item" href="#">Action</a></li>
-                            <li><a class="dropdown-item" href="#">Another action</a></li>
-                            <li><hr class="dropdown-divider"></li>
-                            <li><a class="dropdown-item" href="#">Something else here</a></li>
-                            </ul>
-                        </li>
-                        <li class="nav-item">
-                            <a class="nav-link disabled" aria-disabled="true">Disabled</a>
-                        </li>
-                    </ul>
-                    <form class="d-flex" role="search">
-                        <input class="form-control me-2" type="search" placeholder="Search" aria-label="Search">
-                        <button class="btn btn-outline-success" type="submit">Search</button>
-                    </form>
-                </div>
+    <div class="init-page">
+        <div class="topbar">
+            <div class="topbar-left">
+                <a href="" class="topbar-button"><span class="material-symbols-outlined">thumbnail_bar</span></a>
             </div>
-        </nav>
-    </div>
-    <div class="d-flex p-2 h-100 gap-2">
-        <div class="cstm-cardpage sidemenu">
-            <div class="d-grid gap-2">
-                <a href="" class="cstm-btn-sidemenu active"><span class="material-symbols-outlined">note_stack</span></a>
-                <a href="" class="cstm-btn-sidemenu"><span class="material-symbols-outlined">groups</span></a>
-                <a href="" class="cstm-btn-sidemenu"><span class="material-symbols-outlined">notifications</span></a>
+            <div class="topbar-center">
+                <a href="" class="topbar-button topbar-brand">Paperite</a>
+            </div>
+            <div class="topbar-right">
+                <a href="" class="topbar-button"><img src="assets/profile-photo/profile1.jpg" width="10" alt=""></a>
             </div>
         </div>
-        <div class="cstm-cardpage">
-            <div class="menu-top-section">
-                <div class="d-flex">
-                    <div class="paperspace-sidebar-name d-flex">
-                        <h5>All Notes</h5><span class="material-symbols-outlined">keyboard_arrow_down</span>
+        <div class="wholepage">
+            <div id="sidemenu" class="cstm-cardpage sidemenu">
+                <div class="d-grid">
+                    <a href="" class="cstm-btn-sidemenu active"><span class="material-symbols-outlined">note_stack</span></a>
+                    <a href="" class="cstm-btn-sidemenu"><span class="material-symbols-outlined">groups</span></a>
+                    <a href="" class="cstm-btn-sidemenu"><span class="material-symbols-outlined">notifications</span></a>
+                </div>
+                <div class="d-grid">
+                    <a href="" class="cstm-btn-sidemenu"><span class="material-symbols-outlined">local_activity</span></a>
+                    <a href="" class="cstm-btn-sidemenu"><span class="material-symbols-outlined">settings</span></a>
+                </div>
+            </div>
+            <div id="sidebar" class="cstm-cardpage sidebar">
+                <div class="menu-top-section">
+                    <div class="paperspace-sidebar">
+                        <a href="#" class="paperspace-sidebar-name d-flex">
+                            <h3 class="paperspace-sidebar-name-title">All Notes</h3>
+                            <span class="material-symbols-outlined">keyboard_arrow_down</span>
+                        </a>
+                        <div class="new-note">
+                            <a href="" class="cstm-btn-icon"><span class="material-symbols-outlined">edit_square</span></a>
+                        </div>
                     </div>
-                    <div class="new-note">
-                        <a href="" class="cstm-btn-icon"><span class="material-symbols-outlined">edit_square</span></a>
+                    <div class="search-box">
+                        <span class="search-box-icon searchicon material-symbols-outlined">search</span>
+                        <input type="text" name="searchboxnote" id="searchboxnote" class="cstm-textbox searchbox" placeholder="Search notes...">
+                        <span class="search-box-icon filtericon material-symbols-outlined">filter_list</span>
+                    </div>
+                    <div class="note-list">
+                        <div class="note-item">
+                            <div class="note-item-details">
+                                <div class="note-item-content flex-fill">
+                                    <h5 class="note-item-content-title">This is first note from Paperite!</h5>
+                                    <p class="note-item-content-desc">Si tu peux aller au là</p>
+                                    <div class="collaborateusers">
+                                        <div class="usericon">
+                                            <img src="assets/profile-photo/profile1.jpg" alt="">
+                                        </div>
+                                        <div class="usericon">
+                                            <img src="assets/profile-photo/profile1.jpg" alt="">
+                                        </div>
+                                        <p>+1</p>
+                                    </div>
+                                </div>
+                                <div class="note-item-icon">
+                                    <img src="assets/note-icon/n.jpg" width="50" alt="Note Icon">
+                                </div>
+                            </div>
+                            <div class="note-item-tags sidebar-tags">
+                                <div class="note-item-tagged"># test</div>
+                                <div class="note-item-tagged"># fragile</div>
+                            </div>
+                        </div>
+                        <div class="sidebar-divider"></div>
+                        <div class="note-item">
+                            <div class="note-item-details">
+                                <div class="note-item-content flex-fill">
+                                    <h5 class="note-item-content-title">This is first note from Paperite!</h5>
+                                    <p class="note-item-content-desc">Si tu peux aller au là</p>
+                                    <!-- <div class="collaborateusers">
+                                        <div class="usericon">
+                                            <img src="assets/profile-photo/profile1.jpg" alt="">
+                                        </div>
+                                        <div class="usericon">
+                                            <img src="assets/profile-photo/profile1.jpg" alt="">
+                                        </div>
+                                        <p>+1</p>
+                                    </div> -->
+                                </div>
+                                <div class="note-item-icon">
+                                    <img src="assets/note-icon/n.jpg" width="50" alt="Note Icon">
+                                </div>
+                            </div>
+                            <div class="note-item-tags sidebar-tags">
+                                <div class="note-item-tagged"># test</div>
+                                <div class="note-item-tagged"># fragile</div>
+                                <div class="note-item-tagged"># fragile</div>
+                                <div class="note-item-tagged"># fragile</div>
+                                <div class="note-item-tagged"># fragile</div>
+                                <div class="note-item-tagged"># fragile</div>
+                                <div class="note-item-tagged"># fragile</div>
+                                <div class="note-item-tagged"># fragile</div>
+                            </div>
+                        </div>
+                        <div class="sidebar-divider"></div>
+                        <div class="note-item">
+                            <div class="note-item-details">
+                                <div class="note-item-content flex-fill">
+                                    <h5 class="note-item-content-title">This is first note from Paperite!</h5>
+                                    <p class="note-item-content-desc">Si tu peux aller au là</p>
+                                    <!-- <div class="collaborateusers">
+                                        <div class="usericon">
+                                            <img src="assets/profile-photo/profile1.jpg" alt="">
+                                        </div>
+                                        <div class="usericon">
+                                            <img src="assets/profile-photo/profile1.jpg" alt="">
+                                        </div>
+                                        <p>+1</p>
+                                    </div> -->
+                                </div>
+                                <!-- <div class="note-item-icon">
+                                    <img src="assets/note-icon/n.jpg" width="50" alt="Note Icon">
+                                </div> -->
+                            </div>
+                            <div class="note-item-tags sidebar-tags">
+                                <div class="note-item-tagged"># test</div>
+                                <div class="note-item-tagged"># fragile</div>
+                                <div class="note-item-tagged"># fragile</div>
+                            </div>
+                        </div>
+                        <div class="sidebar-divider"></div>
+                        <div class="note-item">
+                            <div class="note-item-details">
+                                <div class="note-item-content flex-fill">
+                                    <h5 class="note-item-content-title">This is first note from Paperite!</h5>
+                                    <p class="note-item-content-desc">Si tu peux aller au là</p>
+                                    <!-- <div class="collaborateusers">
+                                        <div class="usericon">
+                                            <img src="assets/profile-photo/profile1.jpg" alt="">
+                                        </div>
+                                        <div class="usericon">
+                                            <img src="assets/profile-photo/profile1.jpg" alt="">
+                                        </div>
+                                        <p>+1</p>
+                                    </div> -->
+                                </div>
+                                <!-- <div class="note-item-icon">
+                                    <img src="assets/note-icon/n.jpg" width="50" alt="Note Icon">
+                                </div> -->
+                            </div>
+                            <!-- <div class="note-item-tags sidebar-tags">
+                                <div class="note-item-tagged"># test</div>
+                                <div class="note-item-tagged"># fragile</div>
+                                <div class="note-item-tagged"># fragile</div>
+                            </div> -->
+                        </div>
                     </div>
                 </div>
-                <div class="search-box">
-                    <span class="search-box-icon searchicon material-symbols-outlined">search</span>
-                    <input type="text" name="searchboxnote" id="searchboxnote" class="cstm-textbox searchbox" placeholder="Search notes...">
-                    <span class="search-box-icon filtericon material-symbols-outlined">filter_list</span>
+            </div>
+            <div id="main-page" class="cstm-cardpage main-page">
+                <div class="note-editor">
+                    <h4>Welcome to Paperite!</h4>
+                    <p>Create a new note or open your existing note.</p>
+                </div>
+                <div class="bottom-bar">
+                    <div class="bottom-bar-tags note-item-tags">
+                        <div class="note-item-tagged"># fragile</div>
+                        <div class="note-item-tagged"># fragile</div>
+                    </div>
+                    <div class="bottom-bar-options">
+
+                    </div>
                 </div>
             </div>
-        </div>
-        <div class="cstm-cardpage flex-fill">
-            <div class="text-center my-auto">
-                <h4>Welcome to Paperite!</h4>
-                <p>Create a new note or open your existing note.</p>
+            <div id="editormenu" class="cstm-cardpage">
+                <h1>Test</h1>
             </div>
         </div>
-        <div class="cstm-cardpage">
-            <h1>Test</h1>
-        </div>
     </div>
-    <script src="res/js/bootstrap.bundle.js"></script>
+    <!-- <script src="res/js/bootstrap.bundle.js"></script> -->
     <script src="res/js/script.js"></script>
 </body>
 </html>
