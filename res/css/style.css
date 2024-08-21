@@ -3,6 +3,8 @@
 body {
   background-color: #E86127;
   font-family: "Roboto", sans-serif;
+  height: 100vh;
+  margin: 0;
 }
 
 .d-flex {
@@ -16,8 +18,8 @@ body {
 .init-page {
   display: flex;
   flex-direction: column;
-  height: 100vh;
   gap: 10px;
+  padding: 10px;
 }
 
 .wholepage {
