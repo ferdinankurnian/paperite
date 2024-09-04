@@ -29,13 +29,13 @@ h2 {
   gap: 15px;
 }
 
-form#loginform {
+#loginform {
   display: flex;
   flex-direction: column;
   gap: 15px;
 }
 
-form#loginform div {
+#loginform div {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -56,4 +56,5 @@ input[type="text"], input[type="password"] {
   background-color: #E86127;
   border-radius: 5px;
   color: #fff;
+  outline: 0;
 }
