@@ -8,7 +8,52 @@ body {
   margin: 0;
 }
 
-.form-card {
-    background-color: #fff;
-    padding: 10px;
+h2 {
+  margin: 0;
+  text-align: center;
+}
+
+.flex-container {
+  display: flex;
+  height: 100vh;
+  justify-content: center;
+  align-items: center;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  background-color: #fff;
+  padding: 25px;
+  border-radius: 10px;
+  gap: 15px;
+}
+
+form#loginform {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+form#loginform div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+input[type="text"], input[type="password"] {
+  outline: 0;
+  padding: 8px 10px;
+  font-size: 15px;
+  border: 1px solid #b3b3b3;
+  border-radius: 5px;
+  background-color: #f3f3f3;
+}
+
+.submit-login {
+  border: 1px solid #b34a1d;
+  padding: 8px 5px;
+  background-color: #E86127;
+  border-radius: 5px;
+  color: #fff;
 }
