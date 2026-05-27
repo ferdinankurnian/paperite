@@ -1,13 +1,4 @@
-import { createRootRoute, Outlet } from "@tanstack/react-router";
-import { ThemeProvider } from "@/components/theme-provider";
-import { TooltipProvider } from "@/components/ui/tooltip";
-
-const RootLayout = () => (
-	<ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
-		<TooltipProvider>
-			<Outlet />
-		</TooltipProvider>
-	</ThemeProvider>
-);
+import { createRootRoute } from "@tanstack/react-router";
+import { RootLayout } from "@/components/root-layout";
 
 export const Route = createRootRoute({ component: RootLayout });
