@@ -72,6 +72,7 @@ function Index() {
 	const [replaceText, setReplaceText] = useState("");
 	const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
 	const didHydrate = useRef(false);
+	const findInputRef = useRef<HTMLInputElement>(null);
 	const lastLoadedNote = useRef<string | null>(null);
 	const lastPersistedMarkdown = useRef("");
 	const activeNotePathRef = useRef<string | null>(null);
@@ -151,10 +152,6 @@ function Index() {
 			noteContentCache.current.set(activeNotePath, content);
 			notePersistedCache.current.set(activeNotePath, content);
 			setMarkdown(content);
-			setNotePreviews((current) => ({
-				...current,
-				[activeNotePath]: markdownPreview(content),
-			}));
 			setSaveStatus("saved");
 		} catch {
 			setSaveStatus("error");
@@ -201,6 +198,12 @@ function Index() {
 	}, [appState, notesApi]);
 
 	useEffect(() => {
+		if (!searchPanelMode) return;
+
+		findInputRef.current?.focus();
+	}, [searchPanelMode]);
+
+	useEffect(() => {
 		if (!notesApi || !appState.activeNotePath) {
 			setMarkdown("");
 			lastLoadedNote.current = null;
@@ -213,19 +216,20 @@ function Index() {
 		const loadNote = async () => {
 			setSaveStatus("idle");
 			const cachedContent = noteContentCache.current.get(notePath);
+			setNotePreviews((current) => omitExact(current, notePath));
 
 			if (cachedContent !== undefined) {
 				lastLoadedNote.current = notePath;
 				lastPersistedMarkdown.current =
 					notePersistedCache.current.get(notePath) ?? cachedContent;
 				setMarkdown(cachedContent);
-				setNotePreviews((current) => ({
-					...current,
-					[notePath]: markdownPreview(cachedContent),
-				}));
 				setSaveStatus(
 					cachedContent === lastPersistedMarkdown.current ? "saved" : "saving",
 				);
+			} else {
+				lastLoadedNote.current = null;
+				lastPersistedMarkdown.current = "";
+				setMarkdown("");
 			}
 
 			const readStart = performance.now();
@@ -252,10 +256,6 @@ function Index() {
 			noteContentCache.current.set(notePath, content);
 			notePersistedCache.current.set(notePath, content);
 			setMarkdown(content);
-			setNotePreviews((current) => ({
-				...current,
-				[notePath]: markdownPreview(content),
-			}));
 			setSaveStatus("saved");
 
 			if (readDuration > 16) {
@@ -280,10 +280,6 @@ function Index() {
 			return;
 		}
 
-		setNotePreviews((current) => ({
-			...current,
-			[appState.activeNotePath as string]: markdownPreview(markdown),
-		}));
 		setSaveStatus("saving");
 		const saveTimer = window.setTimeout(() => {
 			const notePath = appState.activeNotePath;
@@ -816,6 +812,35 @@ function Index() {
 		}));
 	};
 
+	const updateNoteMarkdown = useCallback(
+		(nextMarkdown: string, sourceNotePath: string | null) => {
+			if (!sourceNotePath) return;
+
+			noteContentCache.current.set(sourceNotePath, nextMarkdown);
+
+			if (sourceNotePath === activeNotePathRef.current) {
+				setMarkdown(nextMarkdown);
+				return;
+			}
+
+			notesApi
+				?.writeNote(sourceNotePath, nextMarkdown)
+				.then(() => {
+					notePersistedCache.current.set(sourceNotePath, nextMarkdown);
+					setWorkspace((current) =>
+						current
+							? updateWorkspaceNote(current, sourceNotePath, {
+									preview: markdownPreview(nextMarkdown),
+									updatedAt: Date.now(),
+								})
+							: current,
+					);
+				})
+				.catch(() => setSaveStatus("error"));
+		},
+		[notesApi],
+	);
+
 	const activeNoteReadOnly = appState.activeNotePath
 		? appState.readOnlyNotes[appState.activeNotePath] === true
 		: false;
@@ -1003,7 +1028,7 @@ function Index() {
 					<div className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-2 rounded-lg bg-popover p-2.5 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10">
 						<div className="flex items-center gap-2">
 							<input
-								autoFocus
+								ref={findInputRef}
 								value={findText}
 								placeholder="Find..."
 								className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 outline-none focus-visible:border-ring"
@@ -1048,7 +1073,8 @@ function Index() {
 						) : null}
 					</div>
 				) : null}
-				<div
+				<section
+					aria-label="Note editor"
 					className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
 					onKeyDown={(event) => {
 						if (
@@ -1065,12 +1091,12 @@ function Index() {
 						notePath={appState.activeNotePath}
 						readOnly={activeNoteReadOnly}
 						searchQuery={searchPanelMode ? findText : ""}
-						onChange={setMarkdown}
+						onChange={updateNoteMarkdown}
 						onContentRendered={completeSwitchBenchmark}
 						onRename={renameActiveNote}
 						onTitleChange={updateActiveTitleDraft}
 					/>
-				</div>
+				</section>
 			</SidebarInset>
 		</SidebarProvider>
 	);
@@ -1228,6 +1254,11 @@ function omitDecoration<T>(decorations: Record<string, T>, pathToOmit: string) {
 			([path]) => !isSameOrChildPath(pathToOmit, path),
 		),
 	);
+}
+
+function omitExact<T>(record: Record<string, T>, pathToOmit: string) {
+	const { [pathToOmit]: _omitted, ...rest } = record;
+	return rest;
 }
 
 function updateWorkspaceNote(

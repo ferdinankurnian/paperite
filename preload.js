@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld("electron", {
 	},
 	notes: {
 		getWorkspace: () => ipcRenderer.invoke("notes:get-workspace"),
+		search: (query) => ipcRenderer.invoke("notes:search", query),
 		readNote: (path) => ipcRenderer.invoke("notes:read-note", path),
 		writeNote: (path, markdown) =>
 			ipcRenderer.invoke("notes:write-note", path, markdown),
@@ -35,6 +36,7 @@ contextBridge.exposeInMainWorld("electron", {
 			ipcRenderer.invoke("notes:move-item", path, nextParentPath),
 		deleteItem: (path) => ipcRenderer.invoke("notes:delete-item", path),
 		readAppState: () => ipcRenderer.invoke("notes:read-app-state"),
-		writeAppState: (state) => ipcRenderer.invoke("notes:write-app-state", state),
+		writeAppState: (state) =>
+			ipcRenderer.invoke("notes:write-app-state", state),
 	},
 });

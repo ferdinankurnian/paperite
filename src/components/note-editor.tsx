@@ -33,7 +33,7 @@ type NoteEditorProps = {
 	notePath: string | null;
 	readOnly: boolean;
 	searchQuery: string;
-	onChange: (markdown: string) => void;
+	onChange: (markdown: string, notePath: string | null) => void;
 	onContentRendered?: (notePath: string) => void;
 	onRename: (title: string) => void;
 	onTitleChange: (title: string) => void;
@@ -95,7 +95,7 @@ export function NoteEditor({
 			}
 
 			lastEditorMarkdown.current = nextMarkdown;
-			onChange(nextMarkdown);
+			onChange(nextMarkdown, lastLoadedPath.current);
 		},
 		[onChange, turndown],
 	);
