@@ -29,6 +29,7 @@ interface Window {
 		};
 		notes: {
 			getWorkspace: () => Promise<WorkspaceSnapshot>;
+			search: (query: string) => Promise<NoteSearchResult[]>;
 			readNote: (path: string) => Promise<string>;
 			writeNote: (path: string, markdown: string) => Promise<{ ok: true }>;
 			createNote: (
@@ -41,7 +42,10 @@ interface Window {
 			) => Promise<{ path: string; title: string }>;
 			createSpace: (title: string) => Promise<{ path: string; title: string }>;
 			renameItem: (path: string, nextName: string) => Promise<{ path: string }>;
-			moveItem: (path: string, nextParentPath: string) => Promise<{ path: string }>;
+			moveItem: (
+				path: string,
+				nextParentPath: string,
+			) => Promise<{ path: string }>;
 			deleteItem: (path: string) => Promise<{ ok: true }>;
 			readAppState: () => Promise<Partial<PaperiteAppState>>;
 			writeAppState: (state: PaperiteAppState) => Promise<{ ok: true }>;
@@ -75,6 +79,14 @@ type WorkspaceSpace = {
 type WorkspaceSnapshot = {
 	rootPath: string;
 	spaces: WorkspaceSpace[];
+};
+
+type NoteSearchResult = {
+	path: string;
+	title: string;
+	preview: string;
+	updatedAt: number;
+	rank: number;
 };
 
 type OpenNoteTab = {

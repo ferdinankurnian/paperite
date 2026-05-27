@@ -2,6 +2,7 @@ const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const path = require("node:path");
+const { DatabaseSync } = require("node:sqlite");
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
@@ -10,10 +11,15 @@ let mainWindow; // hoist ke luar
 let authCallbackServer;
 let workspaceWatchTimer;
 const workspaceWatchers = new Map();
-const notePreviewCache = new Map();
+let indexDb;
 
 const workspaceRoot = () => path.join(app.getPath("documents"), "Paperite");
 const statePath = () => path.join(workspaceRoot(), ".paperite", "state.json");
+const indexPath = () => path.join(workspaceRoot(), ".paperite", "index.sqlite");
+const revisionsRoot = () =>
+	path.join(workspaceRoot(), ".paperite", "revisions");
+const tombstonesPath = () =>
+	path.join(workspaceRoot(), ".paperite", "tombstones.jsonl");
 
 const normalizeRelativePath = (relativePath = "") => {
 	const normalized = path
@@ -39,6 +45,7 @@ const resolveWorkspacePath = (relativePath = "") => {
 const ensureWorkspace = async () => {
 	await fs.mkdir(path.join(workspaceRoot(), "Inbox"), { recursive: true });
 	await fs.mkdir(path.dirname(statePath()), { recursive: true });
+	await fs.mkdir(revisionsRoot(), { recursive: true });
 };
 
 const writeFileAtomic = async (targetPath, content) => {
@@ -55,32 +62,379 @@ const writeFileAtomic = async (targetPath, content) => {
 
 const toNoteTitle = (filename) => filename.replace(/\.md$/i, "");
 
-const toNotePreview = async (notePath, stats) => {
-	const cacheKey = `${stats.mtimeMs}:${stats.size}`;
-	const cached = notePreviewCache.get(notePath);
+const revisionKey = (notePath) => Buffer.from(notePath).toString("base64url");
 
-	if (cached?.key === cacheKey) {
-		return cached.preview;
-	}
+const writeRevisionSnapshot = async (notePath, nextMarkdown) => {
+	const absolutePath = resolveWorkspacePath(notePath);
 
 	try {
-		const markdown = await fs.readFile(resolveWorkspacePath(notePath), "utf8");
-		const preview =
-			markdown
-				.replace(/^#{1,6}\s+/gm, "")
-				.replace(/[`*_~>#-]/g, "")
-				.split(/\r?\n/)
-				.map((line) => line.trim())
-				.find(Boolean) ?? "";
+		const currentMarkdown = await fs.readFile(absolutePath, "utf8");
+		if (currentMarkdown === nextMarkdown) return;
 
-		notePreviewCache.set(notePath, { key: cacheKey, preview });
-		return preview;
-	} catch {
-		return "";
+		const revisionDirectory = path.join(revisionsRoot(), revisionKey(notePath));
+		await fs.mkdir(revisionDirectory, { recursive: true });
+		await writeFileAtomic(
+			path.join(revisionDirectory, `${Date.now()}.md`),
+			currentMarkdown,
+		);
+	} catch (error) {
+		if (error?.code === "ENOENT") return;
+		throw error;
 	}
 };
 
-const scanDirectory = async (relativePath = "") => {
+const collectDeletedNotes = async (itemPath) => {
+	const absolutePath = resolveWorkspacePath(itemPath);
+
+	try {
+		const stats = await fs.stat(absolutePath);
+
+		if (stats.isFile()) {
+			return itemPath.toLowerCase().endsWith(".md") ? [itemPath] : [];
+		}
+
+		if (!stats.isDirectory()) return [];
+
+		const entries = await fs.readdir(absolutePath, { withFileTypes: true });
+		const deletedNotes = [];
+
+		for (const entry of entries) {
+			if (entry.name.startsWith(".")) continue;
+
+			deletedNotes.push(
+				...(await collectDeletedNotes(path.posix.join(itemPath, entry.name))),
+			);
+		}
+
+		return deletedNotes;
+	} catch (error) {
+		if (error?.code === "ENOENT") return [];
+		throw error;
+	}
+};
+
+const appendTombstones = async (notePaths) => {
+	if (notePaths.length === 0) return;
+
+	const deletedAt = Date.now();
+	const lines = notePaths
+		.map((notePath) => JSON.stringify({ path: notePath, deletedAt }))
+		.join("\n");
+
+	await fs.appendFile(tombstonesPath(), `${lines}\n`, "utf8");
+};
+
+const toNotePreviewFromMarkdown = (markdown) =>
+	markdown
+		.replace(/^#{1,6}\s+/gm, "")
+		.replace(/[`*_~>#-]/g, "")
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.find(Boolean) ?? "";
+
+const createNoteId = (notePath) => revisionKey(notePath);
+
+const extractMarkdownMetadata = (markdown) => {
+	const headings = [];
+	const tasks = [];
+	const tags = new Set();
+	const backlinks = new Set();
+	const lines = markdown.split(/\r?\n/);
+
+	for (const [index, line] of lines.entries()) {
+		const heading = /^(#{1,6})\s+(.+?)\s*#*$/.exec(line);
+
+		if (heading) {
+			headings.push({
+				depth: heading[1].length,
+				text: heading[2].trim(),
+				line: index + 1,
+			});
+		}
+
+		const task = /^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/.exec(line);
+
+		if (task) {
+			tasks.push({
+				checked: task[1].toLowerCase() === "x",
+				text: task[2].trim(),
+				line: index + 1,
+			});
+		}
+
+		for (const match of line.matchAll(/(?:^|[\s(])#([A-Za-z0-9_/-]+)/g)) {
+			tags.add(match[1]);
+		}
+
+		for (const match of line.matchAll(
+			/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g,
+		)) {
+			backlinks.add(match[1].trim());
+		}
+	}
+
+	return {
+		headings,
+		tasks,
+		tags: [...tags],
+		backlinks: [...backlinks],
+	};
+};
+
+const addColumnIfMissing = (db, table, column, definition) => {
+	const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+
+	if (columns.some((existingColumn) => existingColumn.name === column)) return;
+
+	db.exec(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+};
+
+const getIndexDb = async () => {
+	if (indexDb) return indexDb;
+
+	await ensureWorkspace();
+	indexDb = new DatabaseSync(indexPath());
+	indexDb.exec(`
+		PRAGMA journal_mode = WAL;
+		PRAGMA synchronous = NORMAL;
+		CREATE TABLE IF NOT EXISTS notes (
+			id TEXT NOT NULL UNIQUE,
+			path TEXT PRIMARY KEY,
+			title TEXT NOT NULL,
+			preview TEXT NOT NULL,
+			mtime_ms REAL NOT NULL,
+			size INTEGER NOT NULL,
+			indexed_at INTEGER NOT NULL,
+			sync_status TEXT NOT NULL DEFAULT 'local',
+			sync_version INTEGER NOT NULL DEFAULT 0,
+			remote_id TEXT,
+			last_synced_at INTEGER
+		);
+		CREATE TABLE IF NOT EXISTS note_headings (
+			note_id TEXT NOT NULL,
+			depth INTEGER NOT NULL,
+			text TEXT NOT NULL,
+			line INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS note_tags (
+			note_id TEXT NOT NULL,
+			tag TEXT NOT NULL,
+			PRIMARY KEY (note_id, tag)
+		);
+		CREATE TABLE IF NOT EXISTS note_tasks (
+			note_id TEXT NOT NULL,
+			text TEXT NOT NULL,
+			checked INTEGER NOT NULL,
+			line INTEGER NOT NULL
+		);
+		CREATE TABLE IF NOT EXISTS note_backlinks (
+			note_id TEXT NOT NULL,
+			target TEXT NOT NULL,
+			PRIMARY KEY (note_id, target)
+		);
+		CREATE VIRTUAL TABLE IF NOT EXISTS note_fts USING fts5(
+			path UNINDEXED,
+			title,
+			content
+		);
+	`);
+	addColumnIfMissing(indexDb, "notes", "id", "id TEXT");
+	addColumnIfMissing(
+		indexDb,
+		"notes",
+		"sync_status",
+		"sync_status TEXT NOT NULL DEFAULT 'local'",
+	);
+	addColumnIfMissing(
+		indexDb,
+		"notes",
+		"sync_version",
+		"sync_version INTEGER NOT NULL DEFAULT 0",
+	);
+	addColumnIfMissing(indexDb, "notes", "remote_id", "remote_id TEXT");
+	addColumnIfMissing(
+		indexDb,
+		"notes",
+		"last_synced_at",
+		"last_synced_at INTEGER",
+	);
+	indexDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS notes_id_idx ON notes(id)");
+
+	return indexDb;
+};
+
+const getIndexedNote = async (notePath, stats) => {
+	const db = await getIndexDb();
+	const existing = db
+		.prepare(
+			"SELECT id, title, preview, mtime_ms AS mtimeMs, size FROM notes WHERE path = ?",
+		)
+		.get(notePath);
+
+	if (
+		existing?.id &&
+		existing.mtimeMs === stats.mtimeMs &&
+		existing.size === stats.size
+	) {
+		return {
+			title: existing.title,
+			preview: existing.preview,
+			updatedAt: existing.mtimeMs,
+		};
+	}
+
+	const markdown = await fs.readFile(resolveWorkspacePath(notePath), "utf8");
+	const id = existing?.id || createNoteId(notePath);
+	const title = toNoteTitle(path.posix.basename(notePath));
+	const preview = toNotePreviewFromMarkdown(markdown);
+	const metadata = extractMarkdownMetadata(markdown);
+
+	db.prepare(`
+		INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version)
+		VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sync_status FROM notes WHERE path = ?), 'local'), COALESCE((SELECT sync_version FROM notes WHERE path = ?), 0) + 1)
+		ON CONFLICT(path) DO UPDATE SET
+			id = excluded.id,
+			title = excluded.title,
+			preview = excluded.preview,
+			mtime_ms = excluded.mtime_ms,
+			size = excluded.size,
+			indexed_at = excluded.indexed_at,
+			sync_status = excluded.sync_status,
+			sync_version = excluded.sync_version
+	`).run(
+		id,
+		notePath,
+		title,
+		preview,
+		stats.mtimeMs,
+		stats.size,
+		Date.now(),
+		notePath,
+		notePath,
+	);
+	db.prepare("DELETE FROM note_headings WHERE note_id = ?").run(id);
+	db.prepare("DELETE FROM note_tags WHERE note_id = ?").run(id);
+	db.prepare("DELETE FROM note_tasks WHERE note_id = ?").run(id);
+	db.prepare("DELETE FROM note_backlinks WHERE note_id = ?").run(id);
+
+	const insertHeading = db.prepare(
+		"INSERT INTO note_headings (note_id, depth, text, line) VALUES (?, ?, ?, ?)",
+	);
+	const insertTag = db.prepare(
+		"INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)",
+	);
+	const insertTask = db.prepare(
+		"INSERT INTO note_tasks (note_id, text, checked, line) VALUES (?, ?, ?, ?)",
+	);
+	const insertBacklink = db.prepare(
+		"INSERT OR IGNORE INTO note_backlinks (note_id, target) VALUES (?, ?)",
+	);
+
+	for (const heading of metadata.headings) {
+		insertHeading.run(id, heading.depth, heading.text, heading.line);
+	}
+
+	for (const tag of metadata.tags) {
+		insertTag.run(id, tag);
+	}
+
+	for (const task of metadata.tasks) {
+		insertTask.run(id, task.text, task.checked ? 1 : 0, task.line);
+	}
+
+	for (const backlink of metadata.backlinks) {
+		insertBacklink.run(id, backlink);
+	}
+
+	db.prepare("DELETE FROM note_fts WHERE path = ?").run(notePath);
+	db.prepare(
+		"INSERT INTO note_fts (path, title, content) VALUES (?, ?, ?)",
+	).run(notePath, title, markdown);
+
+	return {
+		title,
+		preview,
+		updatedAt: stats.mtimeMs,
+	};
+};
+
+const deleteIndexedPath = async (itemPath) => {
+	if (!indexDb) return;
+
+	const normalized = normalizeRelativePath(itemPath).replaceAll(path.sep, "/");
+	const rows = indexDb.prepare("SELECT id, path FROM notes").all();
+
+	for (const row of rows) {
+		if (!isDescendantPath(normalized, row.path)) continue;
+
+		indexDb.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
+		indexDb.prepare("DELETE FROM note_headings WHERE note_id = ?").run(row.id);
+		indexDb.prepare("DELETE FROM note_tags WHERE note_id = ?").run(row.id);
+		indexDb.prepare("DELETE FROM note_tasks WHERE note_id = ?").run(row.id);
+		indexDb.prepare("DELETE FROM note_backlinks WHERE note_id = ?").run(row.id);
+		indexDb.prepare("DELETE FROM note_fts WHERE path = ?").run(row.path);
+	}
+};
+
+const moveIndexedPath = async (fromPath, toPath) => {
+	if (!indexDb) return;
+
+	const rows = indexDb
+		.prepare(
+			"SELECT id, path, title, preview, mtime_ms AS mtimeMs, size, indexed_at AS indexedAt, sync_status AS syncStatus, sync_version AS syncVersion, remote_id AS remoteId, last_synced_at AS lastSyncedAt FROM notes",
+		)
+		.all();
+
+	for (const row of rows) {
+		if (!isDescendantPath(fromPath, row.path)) continue;
+
+		const nextPath =
+			row.path === fromPath
+				? toPath
+				: `${toPath}/${row.path.slice(fromPath.length + 1)}`;
+		const nextTitle = toNoteTitle(path.posix.basename(nextPath));
+
+		indexDb.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
+		indexDb
+			.prepare(
+				"INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version, remote_id, last_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			)
+			.run(
+				row.id || createNoteId(nextPath),
+				nextPath,
+				nextTitle,
+				row.preview,
+				row.mtimeMs,
+				row.size,
+				row.indexedAt,
+				row.syncStatus,
+				row.syncVersion,
+				row.remoteId,
+				row.lastSyncedAt,
+			);
+		indexDb
+			.prepare("UPDATE note_fts SET path = ?, title = ? WHERE path = ?")
+			.run(nextPath, nextTitle, row.path);
+	}
+};
+
+const pruneIndex = async (knownNotePaths) => {
+	const db = await getIndexDb();
+	const rows = db.prepare("SELECT id, path FROM notes").all();
+
+	for (const row of rows) {
+		if (knownNotePaths.has(row.path)) continue;
+
+		db.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
+		db.prepare("DELETE FROM note_headings WHERE note_id = ?").run(row.id);
+		db.prepare("DELETE FROM note_tags WHERE note_id = ?").run(row.id);
+		db.prepare("DELETE FROM note_tasks WHERE note_id = ?").run(row.id);
+		db.prepare("DELETE FROM note_backlinks WHERE note_id = ?").run(row.id);
+		db.prepare("DELETE FROM note_fts WHERE path = ?").run(row.path);
+	}
+};
+
+const scanDirectory = async (relativePath = "", knownNotePaths = new Set()) => {
 	const absolutePath = resolveWorkspacePath(relativePath);
 	const entries = await fs.readdir(absolutePath, { withFileTypes: true });
 	const visibleEntries = entries.filter((entry) => !entry.name.startsWith("."));
@@ -98,7 +452,7 @@ const scanDirectory = async (relativePath = "") => {
 					type: "folder",
 					title: entry.name,
 					path: childPath,
-					children: await scanDirectory(childPath),
+					children: await scanDirectory(childPath, knownNotePaths),
 				};
 			}),
 	);
@@ -116,13 +470,15 @@ const scanDirectory = async (relativePath = "") => {
 				);
 
 				const stats = await fs.stat(resolveWorkspacePath(notePath));
+				knownNotePaths.add(notePath);
+				const indexedNote = await getIndexedNote(notePath, stats);
 
 				return {
 					type: "note",
-					title: toNoteTitle(entry.name),
+					title: indexedNote.title,
 					path: notePath,
-					preview: await toNotePreview(notePath, stats),
-					updatedAt: stats.mtimeMs,
+					preview: indexedNote.preview,
+					updatedAt: indexedNote.updatedAt,
 				};
 			}),
 	);
@@ -132,7 +488,9 @@ const scanDirectory = async (relativePath = "") => {
 };
 
 const listWorkspace = async () => {
+	const start = performance.now();
 	await ensureWorkspace();
+	const knownNotePaths = new Set();
 
 	const rootEntries = await fs.readdir(workspaceRoot(), {
 		withFileTypes: true,
@@ -148,14 +506,57 @@ const listWorkspace = async () => {
 			.map(async (entry) => ({
 				title: entry.name,
 				path: entry.name,
-				children: await scanDirectory(entry.name),
+				children: await scanDirectory(entry.name, knownNotePaths),
 			})),
 	);
+	await pruneIndex(knownNotePaths);
+	const duration = performance.now() - start;
+
+	if (duration > 50) {
+		console.info(`[paperite perf] getWorkspace ${duration.toFixed(1)}ms`);
+	}
 
 	return {
 		rootPath: workspaceRoot(),
 		spaces,
 	};
+};
+
+const searchNotes = async (query) => {
+	const start = performance.now();
+	await ensureWorkspace();
+	const trimmed = typeof query === "string" ? query.trim() : "";
+
+	if (!trimmed) return [];
+
+	const db = await getIndexDb();
+	const safeQuery = trimmed
+		.split(/\s+/)
+		.map((term) => `"${term.replaceAll('"', '""')}"*`)
+		.join(" ");
+
+	const results = db
+		.prepare(`
+			SELECT
+				notes.path,
+				notes.title,
+				notes.preview,
+				notes.mtime_ms AS updatedAt,
+				bm25(note_fts) AS rank
+			FROM note_fts
+			JOIN notes ON notes.path = note_fts.path
+			WHERE note_fts MATCH ?
+			ORDER BY rank
+			LIMIT 50
+		`)
+		.all(safeQuery);
+
+	const duration = performance.now() - start;
+	console.info(
+		`[paperite perf] search ${duration.toFixed(1)}ms ${results.length} results`,
+	);
+
+	return results;
 };
 
 const scanWorkspaceDirectories = async (relativePath = "") => {
@@ -364,6 +765,8 @@ ipcMain.handle("window:action", (event, action) => {
 
 ipcMain.handle("notes:get-workspace", async () => listWorkspace());
 
+ipcMain.handle("notes:search", async (_event, query) => searchNotes(query));
+
 ipcMain.handle("notes:read-note", async (_event, notePath) => {
 	await ensureWorkspace();
 	return fs.readFile(resolveWorkspacePath(notePath), "utf8");
@@ -371,8 +774,10 @@ ipcMain.handle("notes:read-note", async (_event, notePath) => {
 
 ipcMain.handle("notes:write-note", async (_event, notePath, markdown) => {
 	await ensureWorkspace();
+	await writeRevisionSnapshot(notePath, markdown);
 	await writeFileAtomic(resolveWorkspacePath(notePath), markdown);
-	notePreviewCache.delete(notePath);
+	const stats = await fs.stat(resolveWorkspacePath(notePath));
+	await getIndexedNote(notePath, stats);
 	return { ok: true };
 });
 
@@ -414,10 +819,7 @@ ipcMain.handle("notes:rename-item", async (_event, itemPath, nextName) => {
 		resolveWorkspacePath(current),
 		resolveWorkspacePath(nextPath),
 	);
-	if (notePreviewCache.has(current)) {
-		notePreviewCache.set(nextPath, notePreviewCache.get(current));
-		notePreviewCache.delete(current);
-	}
+	await moveIndexedPath(current, nextPath);
 	return { path: nextPath };
 });
 
@@ -439,29 +841,16 @@ ipcMain.handle("notes:move-item", async (_event, itemPath, nextParentPath) => {
 		resolveWorkspacePath(current),
 		resolveWorkspacePath(nextPath),
 	);
-	for (const cachePath of [...notePreviewCache.keys()]) {
-		if (!isDescendantPath(current, cachePath)) continue;
-
-		const cached = notePreviewCache.get(cachePath);
-		const movedCachePath =
-			cachePath === current
-				? nextPath
-				: `${nextPath}/${cachePath.slice(current.length + 1)}`;
-		notePreviewCache.delete(cachePath);
-		notePreviewCache.set(movedCachePath, cached);
-	}
+	await moveIndexedPath(current, nextPath);
 	return { path: nextPath };
 });
 
 ipcMain.handle("notes:delete-item", async (_event, itemPath) => {
 	await ensureWorkspace();
+	const deletedNotes = await collectDeletedNotes(itemPath);
+	await appendTombstones(deletedNotes);
 	await fs.rm(resolveWorkspacePath(itemPath), { recursive: true, force: true });
-	const normalized = normalizeRelativePath(itemPath).replaceAll(path.sep, "/");
-	for (const cachePath of [...notePreviewCache.keys()]) {
-		if (isDescendantPath(normalized, cachePath)) {
-			notePreviewCache.delete(cachePath);
-		}
-	}
+	await deleteIndexedPath(itemPath);
 	return { ok: true };
 });
 
@@ -508,5 +897,7 @@ app.on("open-url", (_event, url) => {
 app.on("window-all-closed", () => {
 	for (const watcher of workspaceWatchers.values()) watcher.close();
 	workspaceWatchers.clear();
+	indexDb?.close();
+	indexDb = undefined;
 	if (process.platform !== "darwin") app.quit();
 });
