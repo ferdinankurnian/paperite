@@ -1,6 +1,8 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import {
+	AlignLeftIcon,
 	BookOpenIcon,
+	CheckIcon,
 	DownloadIcon,
 	FileSearchIcon,
 	InfoIcon,
@@ -20,7 +22,7 @@ import {
 	useState,
 } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
-import { NoteEditor } from "@/components/note-editor";
+import { NoteEditor, type PageFormat } from "@/components/note-editor";
 import { SidebarHotkeys } from "@/components/sidebar-hotkeys";
 import { Button } from "@/components/ui/button";
 import {
@@ -56,7 +58,13 @@ const defaultAppState: PaperiteAppState = {
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
-type SearchPanelMode = "find" | "replace" | null;
+type FloatingPanelMode = "find" | "format" | "replace" | null;
+
+const defaultPageFormat: PageFormat = {
+	firstLineIndent: false,
+	lineHeight: "normal",
+	paragraphSpacing: "default",
+};
 
 function Index() {
 	const notesApi = getNotesEngine();
@@ -67,9 +75,13 @@ function Index() {
 	const [noteTitleDrafts, setNoteTitleDrafts] = useState<
 		Record<string, string>
 	>({});
-	const [searchPanelMode, setSearchPanelMode] = useState<SearchPanelMode>(null);
+	const [floatingPanelMode, setFloatingPanelMode] =
+		useState<FloatingPanelMode>(null);
 	const [findText, setFindText] = useState("");
 	const [replaceText, setReplaceText] = useState("");
+	const [pageFormats, setPageFormats] = useState<Record<string, PageFormat>>(
+		{},
+	);
 	const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
 	const didHydrate = useRef(false);
 	const findInputRef = useRef<HTMLInputElement>(null);
@@ -92,9 +104,15 @@ function Index() {
 	);
 
 	const activeNoteTitle =
-		(appState.activeNotePath && noteTitleDrafts[appState.activeNotePath]) ||
-		activeTab?.title ||
-		"Untitled";
+		(appState.activeNotePath &&
+		noteTitleDrafts[appState.activeNotePath] !== undefined
+			? noteTitleDrafts[appState.activeNotePath]
+			: undefined) ??
+		(activeTab?.title || "Untitled");
+
+	const activePageFormat = appState.activeNotePath
+		? (pageFormats[appState.activeNotePath] ?? defaultPageFormat)
+		: defaultPageFormat;
 
 	useEffect(() => {
 		activeNotePathRef.current = appState.activeNotePath;
@@ -113,7 +131,7 @@ function Index() {
 
 	useEffect(() => {
 		const title = appState.activeNotePath
-			? `${activeNoteTitle} - Paperite`
+			? `${displayNoteTitle(activeNoteTitle)} - Paperite`
 			: "Paperite";
 
 		document.title = title;
@@ -198,10 +216,10 @@ function Index() {
 	}, [appState, notesApi]);
 
 	useEffect(() => {
-		if (!searchPanelMode) return;
+		if (!floatingPanelMode) return;
 
 		findInputRef.current?.focus();
-	}, [searchPanelMode]);
+	}, [floatingPanelMode]);
 
 	useEffect(() => {
 		if (!notesApi || !appState.activeNotePath) {
@@ -453,8 +471,15 @@ function Index() {
 		try {
 			const note = await notesApi.createNote(parentPath, "Untitled");
 			await refreshWorkspace();
+			setNoteTitleDrafts((current) => ({ ...current, [note.path]: "" }));
 			openNote(
-				{ type: "note", preview: "", updatedAt: Date.now(), ...note },
+				{
+					type: "note",
+					preview: "",
+					updatedAt: Date.now(),
+					...note,
+					title: "",
+				},
 				"pinned",
 			);
 		} catch {
@@ -553,6 +578,7 @@ function Index() {
 			setNoteTitleDrafts((current) =>
 				moveDecorations(current, path, renamed.path),
 			);
+			setPageFormats((current) => moveDecorations(current, path, renamed.path));
 			await refreshWorkspace();
 		} catch {
 			setSaveStatus("error");
@@ -585,6 +611,7 @@ function Index() {
 			}));
 			setNotePreviews((current) => omitDecoration(current, path));
 			setNoteTitleDrafts((current) => omitDecoration(current, path));
+			setPageFormats((current) => omitDecoration(current, path));
 			await refreshWorkspace();
 		} catch {
 			setSaveStatus("error");
@@ -636,6 +663,9 @@ function Index() {
 			setNoteTitleDrafts((current) =>
 				moveDecorations(current, itemPath, moved.path),
 			);
+			setPageFormats((current) =>
+				moveDecorations(current, itemPath, moved.path),
+			);
 			setAppState((current) => ({
 				...current,
 				readOnlyNotes: moveDecorations(
@@ -676,6 +706,9 @@ function Index() {
 				const { [previousPath]: _previousTitle, ...rest } = current;
 				return { ...rest, [renamed.path]: nextTitle };
 			});
+			setPageFormats((current) =>
+				moveDecorations(current, previousPath, renamed.path),
+			);
 			await refreshWorkspace();
 		} catch {
 			setSaveStatus("error");
@@ -698,6 +731,7 @@ function Index() {
 				const { [notePath]: _title, ...rest } = current;
 				return rest;
 			});
+			setPageFormats((current) => omitExact(current, notePath));
 			await refreshWorkspace();
 		} catch {
 			setSaveStatus("error");
@@ -753,6 +787,7 @@ function Index() {
 			setNoteTitleDrafts((current) =>
 				moveDecorations(current, path, renamed.path),
 			);
+			setPageFormats((current) => moveDecorations(current, path, renamed.path));
 			await refreshWorkspace();
 		} catch {
 			setSaveStatus("error");
@@ -781,6 +816,7 @@ function Index() {
 			}));
 			setNotePreviews((current) => omitDecoration(current, path));
 			setNoteTitleDrafts((current) => omitDecoration(current, path));
+			setPageFormats((current) => omitDecoration(current, path));
 			await refreshWorkspace();
 		} catch {
 			setSaveStatus("error");
@@ -811,6 +847,21 @@ function Index() {
 			),
 		}));
 	};
+
+	const updateActivePageFormat = useCallback(
+		(patch: Partial<PageFormat>) => {
+			if (!appState.activeNotePath) return;
+
+			setPageFormats((current) => ({
+				...current,
+				[appState.activeNotePath as string]: {
+					...(current[appState.activeNotePath as string] ?? defaultPageFormat),
+					...patch,
+				},
+			}));
+		},
+		[appState.activeNotePath],
+	);
 
 	const updateNoteMarkdown = useCallback(
 		(nextMarkdown: string, sourceNotePath: string | null) => {
@@ -938,11 +989,11 @@ function Index() {
 										}))
 									}
 								>
-									{note.title}
+									{displayNoteTitle(note.title)}
 								</button>
 								<button
 									type="button"
-									aria-label={`Close ${note.title}`}
+									aria-label={`Close ${displayNoteTitle(note.title)}`}
 									className="flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
 									onClick={(event) => {
 										event.stopPropagation();
@@ -997,7 +1048,7 @@ function Index() {
 								<DropdownMenuSeparator />
 								<DropdownMenuItem
 									onSelect={() => {
-										setSearchPanelMode("find");
+										setFloatingPanelMode("find");
 									}}
 								>
 									<SearchIcon />
@@ -1005,11 +1056,19 @@ function Index() {
 								</DropdownMenuItem>
 								<DropdownMenuItem
 									onSelect={() => {
-										setSearchPanelMode("replace");
+										setFloatingPanelMode("replace");
 									}}
 								>
 									<FileSearchIcon />
 									Replace in note…
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									onSelect={() => {
+										setFloatingPanelMode("format");
+									}}
+								>
+									<AlignLeftIcon />
+									Format page…
 								</DropdownMenuItem>
 								<DropdownMenuSeparator />
 								<DropdownMenuItem
@@ -1024,53 +1083,120 @@ function Index() {
 						</DropdownMenu>
 					</div>
 				</header>
-				{searchPanelMode ? (
+				{floatingPanelMode ? (
 					<div className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-2 rounded-lg bg-popover p-2.5 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10">
-						<div className="flex items-center gap-2">
-							<input
-								ref={findInputRef}
-								value={findText}
-								placeholder="Find..."
-								className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 outline-none focus-visible:border-ring"
-								onChange={(event) => setFindText(event.target.value)}
-								onKeyDown={(event) => {
-									if (event.key === "Escape") setSearchPanelMode(null);
-								}}
-							/>
-							<Button
-								type="button"
-								size="icon-sm"
-								variant="ghost"
-								aria-label="Close find and replace"
-								onClick={() => setSearchPanelMode(null)}
-							>
-								<XIcon />
-							</Button>
-						</div>
-						{searchPanelMode === "replace" ? (
-							<div className="flex items-center gap-2">
-								<input
-									value={replaceText}
-									placeholder="Replace..."
-									className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 outline-none focus-visible:border-ring"
-									onChange={(event) => setReplaceText(event.target.value)}
-									onKeyDown={(event) => {
-										if (event.key === "Escape") setSearchPanelMode(null);
-									}}
+						{floatingPanelMode === "format" ? (
+							<>
+								<div className="flex items-center justify-between">
+									<span className="text-muted-foreground">Line height</span>
+									<Button
+										type="button"
+										size="icon-sm"
+										variant="ghost"
+										aria-label="Close format page"
+										onClick={() => setFloatingPanelMode(null)}
+									>
+										<XIcon />
+									</Button>
+								</div>
+								<div className="grid grid-cols-[1fr_auto] items-center gap-2">
+									<FormatPanelButton
+										active={activePageFormat.lineHeight === "normal"}
+										label="Normal"
+										onClick={() =>
+											updateActivePageFormat({ lineHeight: "normal" })
+										}
+									/>
+									<FormatPanelButton
+										active={activePageFormat.lineHeight === "1.5"}
+										label="1.5"
+										onClick={() =>
+											updateActivePageFormat({ lineHeight: "1.5" })
+										}
+									/>
+								</div>
+								<span className="pt-1 text-muted-foreground">
+									Paragraph spacing
+								</span>
+								<div className="grid grid-cols-[1fr_auto] items-center gap-2">
+									<FormatPanelButton
+										active={activePageFormat.paragraphSpacing === "default"}
+										label="Default"
+										onClick={() =>
+											updateActivePageFormat({
+												paragraphSpacing: "default",
+											})
+										}
+									/>
+									<FormatPanelButton
+										active={activePageFormat.paragraphSpacing === "compact"}
+										label="Compact"
+										onClick={() =>
+											updateActivePageFormat({
+												paragraphSpacing: "compact",
+											})
+										}
+									/>
+								</div>
+								<FormatPanelButton
+									active={activePageFormat.firstLineIndent}
+									label="First-line indent"
+									onClick={() =>
+										updateActivePageFormat({
+											firstLineIndent: !activePageFormat.firstLineIndent,
+										})
+									}
 								/>
-								<Button
-									type="button"
-									size="sm"
-									variant="outline"
-									onClick={replaceInNote}
-								>
-									One
-								</Button>
-								<Button type="button" size="sm" onClick={replaceAllInNote}>
-									All
-								</Button>
-							</div>
-						) : null}
+							</>
+						) : (
+							<>
+								<div className="flex items-center gap-2">
+									<input
+										ref={findInputRef}
+										value={findText}
+										placeholder="Find..."
+										className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 outline-none focus-visible:border-ring"
+										onChange={(event) => setFindText(event.target.value)}
+										onKeyDown={(event) => {
+											if (event.key === "Escape") setFloatingPanelMode(null);
+										}}
+									/>
+									<Button
+										type="button"
+										size="icon-sm"
+										variant="ghost"
+										aria-label="Close find and replace"
+										onClick={() => setFloatingPanelMode(null)}
+									>
+										<XIcon />
+									</Button>
+								</div>
+								{floatingPanelMode === "replace" ? (
+									<div className="flex items-center gap-2">
+										<input
+											value={replaceText}
+											placeholder="Replace..."
+											className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 outline-none focus-visible:border-ring"
+											onChange={(event) => setReplaceText(event.target.value)}
+											onKeyDown={(event) => {
+												if (event.key === "Escape") setFloatingPanelMode(null);
+											}}
+										/>
+										<Button
+											type="button"
+											size="sm"
+											variant="outline"
+											onClick={replaceInNote}
+										>
+											One
+										</Button>
+										<Button type="button" size="sm" onClick={replaceAllInNote}>
+											All
+										</Button>
+									</div>
+								) : null}
+							</>
+						)}
 					</div>
 				) : null}
 				<section
@@ -1089,8 +1215,13 @@ function Index() {
 						markdown={markdown}
 						noteTitle={activeNoteTitle}
 						notePath={appState.activeNotePath}
+						pageFormat={activePageFormat}
 						readOnly={activeNoteReadOnly}
-						searchQuery={searchPanelMode ? findText : ""}
+						searchQuery={
+							floatingPanelMode === "find" || floatingPanelMode === "replace"
+								? findText
+								: ""
+						}
 						onChange={updateNoteMarkdown}
 						onContentRendered={completeSwitchBenchmark}
 						onRename={renameActiveNote}
@@ -1210,6 +1341,32 @@ function saveStatusLabel(status: SaveStatus) {
 	if (status === "saved") return "Saved";
 	if (status === "error") return "Error";
 	return "";
+}
+
+function FormatPanelButton({
+	active,
+	label,
+	onClick,
+}: {
+	active: boolean;
+	label: string;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			data-active={active}
+			className="flex h-9 items-center justify-between rounded-md px-2.5 text-left text-sm transition-colors hover:bg-muted data-[active=true]:bg-muted"
+			onClick={onClick}
+		>
+			<span>{label}</span>
+			{active ? <CheckIcon className="size-4" /> : null}
+		</button>
+	);
+}
+
+function displayNoteTitle(title: string) {
+	return title.trim() || "Untitled";
 }
 
 function topLevelPath(notePath: string) {
