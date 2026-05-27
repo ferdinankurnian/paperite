@@ -13,11 +13,26 @@ import { cn } from "@/lib/utils";
 
 const fallbackTitle = "Paperite";
 
-type WindowAction = NonNullable<Window["electron"]>["window"]["action"] extends (
-	action: infer Action,
-) => Promise<{ ok: boolean }>
+type WindowAction = NonNullable<
+	Window["electron"]
+>["window"]["action"] extends (action: infer Action) => Promise<{ ok: boolean }>
 	? Action
 	: never;
+
+type EditorFormatCommand =
+	| "bold"
+	| "italic"
+	| "underline"
+	| "strike"
+	| "typography-heading"
+	| "typography-body"
+	| "align-left"
+	| "align-center"
+	| "align-right"
+	| "align-justify"
+	| "bullet-list"
+	| "ordered-list"
+	| "task-list";
 
 export function AppTitlebar() {
 	const [title, setTitle] = useState(() => document.title || fallbackTitle);
@@ -53,6 +68,14 @@ export function AppTitlebar() {
 function AppMenu() {
 	const runAction = (action: WindowAction) => {
 		window.electron?.window.action(action);
+	};
+
+	const runFormat = (command: EditorFormatCommand) => {
+		window.dispatchEvent(
+			new CustomEvent("paperite:editor-format", {
+				detail: { command },
+			}),
+		);
 	};
 
 	return (
@@ -139,6 +162,65 @@ function AppMenu() {
 					</MenubarContent>
 				</MenubarMenu>
 				<MenubarMenu>
+					<MenubarTrigger>Format</MenubarTrigger>
+					<MenubarContent>
+						<MenubarGroup>
+							<MenubarItem onSelect={() => runFormat("bold")}>
+								Bold
+								<MenubarShortcut>Ctrl+B</MenubarShortcut>
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("italic")}>
+								Italic
+								<MenubarShortcut>Ctrl+I</MenubarShortcut>
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("underline")}>
+								Underline
+								<MenubarShortcut>Ctrl+U</MenubarShortcut>
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("strike")}>
+								Strikethrough
+								<MenubarShortcut>Ctrl+Shift+X</MenubarShortcut>
+							</MenubarItem>
+						</MenubarGroup>
+						<MenubarSeparator />
+						<MenubarGroup>
+							<MenubarItem onSelect={() => runFormat("typography-heading")}>
+								Typography: Heading
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("typography-body")}>
+								Typography: Body
+							</MenubarItem>
+						</MenubarGroup>
+						<MenubarSeparator />
+						<MenubarGroup>
+							<MenubarItem onSelect={() => runFormat("align-left")}>
+								Align Left
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("align-center")}>
+								Align Center
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("align-right")}>
+								Align Right
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("align-justify")}>
+								Justify
+							</MenubarItem>
+						</MenubarGroup>
+						<MenubarSeparator />
+						<MenubarGroup>
+							<MenubarItem onSelect={() => runFormat("bullet-list")}>
+								Bullet List
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("ordered-list")}>
+								Numbered List
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("task-list")}>
+								Checkbox List
+							</MenubarItem>
+						</MenubarGroup>
+					</MenubarContent>
+				</MenubarMenu>
+				<MenubarMenu>
 					<MenubarTrigger>Window</MenubarTrigger>
 					<MenubarContent>
 						<MenubarGroup>
@@ -151,7 +233,9 @@ function AppMenu() {
 						</MenubarGroup>
 						<MenubarSeparator />
 						<MenubarGroup>
-							<MenubarItem onSelect={() => runAction("close")}>Close</MenubarItem>
+							<MenubarItem onSelect={() => runAction("close")}>
+								Close
+							</MenubarItem>
 						</MenubarGroup>
 					</MenubarContent>
 				</MenubarMenu>

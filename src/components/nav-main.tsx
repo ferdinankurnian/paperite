@@ -13,8 +13,10 @@ import {
 	PlusIcon,
 	SparklesIcon,
 	Trash2Icon,
+	UploadIcon,
+	XIcon,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { type ChangeEvent, useRef, useState } from "react";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -61,7 +63,12 @@ export function NavMain({
 	activeSpacePath: string;
 	onCreateSpace: (title: string, color: string, icon: string) => void;
 	onDeleteSpace: (path: string) => void;
-	onEditSpace: (path: string, title: string, color: string, icon: string) => void;
+	onEditSpace: (
+		path: string,
+		title: string,
+		color: string,
+		icon: string,
+	) => void;
 	onSelectSpace: (path: string) => void;
 	spaceColorsByPath: Record<string, string>;
 	spaceIconsByPath: Record<string, string>;
@@ -82,6 +89,8 @@ export function NavMain({
 	const [editSpaceIcon, setEditSpaceIcon] = useState(spaceIcons[0].key);
 	const [deleteSpacePath, setDeleteSpacePath] = useState<string | null>(null);
 	const editOpenedAt = useRef(0);
+	const createIconInputRef = useRef<HTMLInputElement>(null);
+	const editIconInputRef = useRef<HTMLInputElement>(null);
 	const inbox = spaces.find((space) => space.path === "Inbox");
 	const otherSpaces = spaces.filter((space) => space.path !== "Inbox");
 	const canCreate = spaceName.trim().length > 0;
@@ -113,6 +122,23 @@ export function NavMain({
 		onEditSpace(editSpacePath, editSpaceName, editSpaceColor, editSpaceIcon);
 		setEditSpacePath(null);
 		setEditSpaceName("");
+	};
+
+	const uploadIcon = (
+		event: ChangeEvent<HTMLInputElement>,
+		onSelect: (icon: string) => void,
+	) => {
+		const file = event.target.files?.[0];
+		event.target.value = "";
+		if (!file?.type.startsWith("image/")) return;
+
+		const reader = new FileReader();
+		reader.addEventListener("load", () => {
+			if (typeof reader.result === "string") {
+				onSelect(`${customIconPrefix}${reader.result}`);
+			}
+		});
+		reader.readAsDataURL(file);
 	};
 
 	return (
@@ -207,27 +233,13 @@ export function NavMain({
 											if (event.key === "Escape") setEditSpacePath(null);
 										}}
 									/>
-									<div className="space-y-2">
-										<div className="text-xs text-muted-foreground">Icon</div>
-										<div className="grid grid-cols-6 gap-1.5">
-											{spaceIcons.map((icon) => {
-												const Icon = icon.icon;
-
-												return (
-													<button
-														type="button"
-														key={icon.key}
-														aria-label={`Use ${icon.key}`}
-														data-active={editSpaceIcon === icon.key}
-														className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground"
-														onClick={() => setEditSpaceIcon(icon.key)}
-													>
-														<Icon className="size-4" />
-													</button>
-												);
-											})}
-										</div>
-									</div>
+									<SpaceIconPicker
+										inputRef={editIconInputRef}
+										value={editSpaceIcon}
+										onUpload={(event) => uploadIcon(event, setEditSpaceIcon)}
+										onChooseUpload={() => editIconInputRef.current?.click()}
+										onSelect={setEditSpaceIcon}
+									/>
 									<div className="space-y-2">
 										<div className="text-xs text-muted-foreground">Color</div>
 										<div className="flex flex-wrap gap-2">
@@ -284,27 +296,13 @@ export function NavMain({
 										if (event.key === "Enter") createSpace();
 									}}
 								/>
-								<div className="space-y-2">
-									<div className="text-xs text-muted-foreground">Icon</div>
-									<div className="grid grid-cols-6 gap-1.5">
-										{spaceIcons.map((icon) => {
-											const Icon = icon.icon;
-
-											return (
-												<button
-													type="button"
-													key={icon.key}
-													aria-label={`Use ${icon.key}`}
-													data-active={spaceIcon === icon.key}
-													className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground"
-													onClick={() => setSpaceIcon(icon.key)}
-												>
-													<Icon className="size-4" />
-												</button>
-											);
-										})}
-									</div>
-								</div>
+								<SpaceIconPicker
+									inputRef={createIconInputRef}
+									value={spaceIcon}
+									onUpload={(event) => uploadIcon(event, setSpaceIcon)}
+									onChooseUpload={() => createIconInputRef.current?.click()}
+									onSelect={setSpaceIcon}
+								/>
 								<div className="space-y-2">
 									<div className="text-xs text-muted-foreground">Color</div>
 									<div className="flex flex-wrap gap-2">
@@ -352,7 +350,9 @@ export function NavMain({
 			>
 				<AlertDialogContent>
 					<AlertDialogHeader>
-						<AlertDialogTitle>Delete {deleteSpace?.title ?? "space"}?</AlertDialogTitle>
+						<AlertDialogTitle>
+							Delete {deleteSpace?.title ?? "space"}?
+						</AlertDialogTitle>
 						<AlertDialogDescription>
 							This deletes the space and every note or folder inside it.
 						</AlertDialogDescription>
@@ -372,6 +372,82 @@ export function NavMain({
 				</AlertDialogContent>
 			</AlertDialog>
 		</>
+	);
+}
+
+function SpaceIconPicker({
+	inputRef,
+	onChooseUpload,
+	onSelect,
+	onUpload,
+	value,
+}: {
+	inputRef: React.RefObject<HTMLInputElement | null>;
+	onChooseUpload: () => void;
+	onSelect: (icon: string) => void;
+	onUpload: (event: ChangeEvent<HTMLInputElement>) => void;
+	value: string;
+}) {
+	const customIcon = getCustomIcon(value);
+
+	return (
+		<div className="space-y-2">
+			<div className="flex items-center justify-between gap-2">
+				<div className="text-xs text-muted-foreground">Icon</div>
+				{customIcon ? (
+					<button
+						type="button"
+						className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+						aria-label="Remove custom icon"
+						onClick={() => onSelect(spaceIcons[0].key)}
+					>
+						<XIcon className="size-3.5" />
+					</button>
+				) : null}
+			</div>
+			<div className="grid grid-cols-6 gap-1.5">
+				{spaceIcons.map((icon) => {
+					const Icon = icon.icon;
+
+					return (
+						<button
+							type="button"
+							key={icon.key}
+							aria-label={`Use ${icon.key}`}
+							data-active={value === icon.key}
+							className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground"
+							onClick={() => onSelect(icon.key)}
+						>
+							<Icon className="size-4" />
+						</button>
+					);
+				})}
+				<button
+					type="button"
+					aria-label="Upload custom icon"
+					data-active={Boolean(customIcon)}
+					className="flex size-7 items-center justify-center overflow-hidden rounded-md text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground"
+					onClick={onChooseUpload}
+				>
+					{customIcon ? (
+						<img
+							src={customIcon}
+							alt=""
+							className="size-5 rounded-sm object-cover"
+						/>
+					) : (
+						<UploadIcon className="size-4" />
+					)}
+				</button>
+				<input
+					ref={inputRef}
+					type="file"
+					accept="image/*"
+					className="hidden"
+					onChange={onUpload}
+				/>
+			</div>
+		</div>
 	);
 }
 
@@ -399,3 +475,10 @@ const spaceIcons = [
 	{ key: "brain", icon: BrainIcon },
 	{ key: "sparkles", icon: SparklesIcon },
 ];
+
+const customIconPrefix = "custom:";
+
+const getCustomIcon = (icon: string) =>
+	icon.startsWith(customIconPrefix)
+		? icon.slice(customIconPrefix.length)
+		: null;

@@ -1,18 +1,25 @@
 import { type Editor, Extension } from "@tiptap/core";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
+import TextAlign from "@tiptap/extension-text-align";
+import Underline from "@tiptap/extension-underline";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
-import { BubbleMenu } from "@tiptap/react/menus";
 import StarterKit from "@tiptap/starter-kit";
 import {
+	AlignCenterIcon,
+	AlignJustifyIcon,
+	AlignLeftIcon,
+	AlignRightIcon,
 	BoldIcon,
 	ItalicIcon,
 	ListIcon,
 	ListOrderedIcon,
 	ListTodoIcon,
+	StrikethroughIcon,
+	UnderlineIcon,
 } from "lucide-react";
 import { marked } from "marked";
 import type { ComponentType } from "react";
@@ -31,6 +38,7 @@ type NoteEditorProps = {
 	markdown: string;
 	noteTitle: string;
 	notePath: string | null;
+	pageFormat?: PageFormat;
 	readOnly: boolean;
 	searchQuery: string;
 	onChange: (markdown: string, notePath: string | null) => void;
@@ -39,10 +47,37 @@ type NoteEditorProps = {
 	onTitleChange: (title: string) => void;
 };
 
+export type PageFormat = {
+	firstLineIndent: boolean;
+	lineHeight: "normal" | "1.5";
+	paragraphSpacing: "default" | "compact";
+};
+
 type SearchHighlightStorage = {
 	searchHighlight: {
 		query: string;
 	};
+};
+
+type EditorFormatCommand =
+	| "bold"
+	| "italic"
+	| "underline"
+	| "strike"
+	| "typography-heading"
+	| "typography-body"
+	| "align-left"
+	| "align-center"
+	| "align-right"
+	| "align-justify"
+	| "bullet-list"
+	| "ordered-list"
+	| "task-list";
+
+const defaultPageFormat: PageFormat = {
+	firstLineIndent: false,
+	lineHeight: "normal",
+	paragraphSpacing: "default",
 };
 
 const taskCheckboxClassName =
@@ -55,6 +90,7 @@ export function NoteEditor({
 	markdown,
 	notePath,
 	noteTitle,
+	pageFormat = defaultPageFormat,
 	readOnly,
 	searchQuery,
 	onChange,
@@ -62,8 +98,13 @@ export function NoteEditor({
 	onRename,
 	onTitleChange,
 }: NoteEditorProps) {
-	const [draftTitle, setDraftTitle] = useState(noteTitle);
+	const [draftTitle, setDraftTitle] = useState(editableTitle(noteTitle));
 	const [blockStyleSelectOpen, setBlockStyleSelectOpen] = useState(false);
+	const [formatMenuPosition, setFormatMenuPosition] = useState({
+		left: 0,
+		top: 0,
+		visible: false,
+	});
 	const titleInputRef = useRef<HTMLInputElement>(null);
 	const lastEditorMarkdown = useRef(markdown);
 	const lastLoadedPath = useRef(notePath);
@@ -109,6 +150,10 @@ export function NoteEditor({
 			}),
 			TaskMarkdownShortcut,
 			SearchHighlight,
+			TextAlign.configure({
+				types: ["heading", "paragraph"],
+			}),
+			Underline,
 		],
 		content: markdownToHtml(markdown),
 		editable: !readOnly,
@@ -211,15 +256,109 @@ export function NoteEditor({
 	}, [editor, readOnly]);
 
 	useEffect(() => {
-		setDraftTitle(noteTitle);
+		if (!editor) return;
+
+		const handleFormat = (event: Event) => {
+			if (readOnly) return;
+
+			const detail = (event as CustomEvent<{ command?: EditorFormatCommand }>)
+				.detail;
+			const command = detail?.command;
+			if (!command) return;
+
+			switch (command) {
+				case "bold":
+					editor.chain().focus().toggleBold().run();
+					break;
+				case "italic":
+					editor.chain().focus().toggleItalic().run();
+					break;
+				case "underline":
+					editor.chain().focus().toggleUnderline().run();
+					break;
+				case "strike":
+					editor.chain().focus().toggleStrike().run();
+					break;
+				case "typography-heading":
+					editor.chain().focus().toggleHeading({ level: 1 }).run();
+					break;
+				case "typography-body":
+					editor.chain().focus().setParagraph().run();
+					break;
+				case "align-left":
+					editor.chain().focus().setTextAlign("left").run();
+					break;
+				case "align-center":
+					editor.chain().focus().setTextAlign("center").run();
+					break;
+				case "align-right":
+					editor.chain().focus().setTextAlign("right").run();
+					break;
+				case "align-justify":
+					editor.chain().focus().setTextAlign("justify").run();
+					break;
+				case "bullet-list":
+					editor.chain().focus().toggleBulletList().run();
+					break;
+				case "ordered-list":
+					editor.chain().focus().toggleOrderedList().run();
+					break;
+				case "task-list":
+					toggleCurrentBlockTask(editor);
+					break;
+			}
+		};
+
+		window.addEventListener("paperite:editor-format", handleFormat);
+		return () => {
+			window.removeEventListener("paperite:editor-format", handleFormat);
+		};
+	}, [editor, readOnly]);
+
+	useEffect(() => {
+		if (!editor) return;
+
+		const updateFormatMenuPosition = () => {
+			const { from, to, empty } = editor.state.selection;
+
+			if (readOnly || (empty && !blockStyleSelectOpen)) {
+				setFormatMenuPosition((current) =>
+					current.visible ? { ...current, visible: false } : current,
+				);
+				return;
+			}
+
+			const start = editor.view.coordsAtPos(from);
+			const end = editor.view.coordsAtPos(to);
+			const left = Math.max(12, Math.min(start.left, end.left));
+			const top = Math.max(12, Math.max(start.bottom, end.bottom) + 10);
+
+			setFormatMenuPosition((current) =>
+				current.left === left && current.top === top && current.visible
+					? current
+					: { left, top, visible: true },
+			);
+		};
+
+		updateFormatMenuPosition();
+		editor.on("selectionUpdate", updateFormatMenuPosition);
+		window.addEventListener("resize", updateFormatMenuPosition);
+		window.addEventListener("scroll", updateFormatMenuPosition, true);
+		return () => {
+			editor.off("selectionUpdate", updateFormatMenuPosition);
+			window.removeEventListener("resize", updateFormatMenuPosition);
+			window.removeEventListener("scroll", updateFormatMenuPosition, true);
+		};
+	}, [blockStyleSelectOpen, editor, readOnly]);
+
+	useEffect(() => {
+		setDraftTitle(editableTitle(noteTitle));
 	}, [noteTitle]);
 
 	const commitTitle = () => {
 		const nextTitle = draftTitle.trim();
 
 		if (!nextTitle) {
-			setDraftTitle(noteTitle);
-			onTitleChange(noteTitle);
 			return;
 		}
 
@@ -270,28 +409,21 @@ export function NoteEditor({
 						}
 					}}
 				/>
-				{editor ? (
-					<BubbleMenu
-						editor={editor}
-						updateDelay={80}
-						options={{
-							placement: "bottom-start",
-							offset: 10,
-							flip: true,
-							shift: { padding: 12 },
+				{editor && formatMenuPosition.visible ? (
+					<div
+						className="app-region-no-drag no-scrollbar fixed z-50 flex max-w-[350px] origin-top-left animate-in items-center gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 duration-100 fade-in-0 zoom-in-95 slide-in-from-top-1"
+						style={{
+							left: formatMenuPosition.left,
+							top: formatMenuPosition.top,
 						}}
-						shouldShow={({ editor, state }) =>
-							!readOnly &&
-							(blockStyleSelectOpen ||
-								(editor.isFocused && !state.selection.empty))
-						}
-						className="app-region-no-drag flex origin-top-left animate-in items-center gap-1 rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 duration-100 fade-in-0 zoom-in-95 slide-in-from-top-1"
 						onPointerDown={(event) => event.stopPropagation()}
 					>
 						<BlockStyleSelect
 							editor={editor}
 							open={blockStyleSelectOpen}
-							onOpenChange={setBlockStyleSelectOpen}
+							onOpenChange={(nextOpen) => {
+								setBlockStyleSelectOpen(nextOpen);
+							}}
 						/>
 						<span className="mx-0.5 h-5 w-px bg-border" />
 						<FormatButton
@@ -305,6 +437,47 @@ export function NoteEditor({
 							active={editor.isActive("italic")}
 							onClick={() => editor.chain().focus().toggleItalic().run()}
 							icon={ItalicIcon}
+						/>
+						<FormatButton
+							label="Underline"
+							active={editor.isActive("underline")}
+							onClick={() => editor.chain().focus().toggleUnderline().run()}
+							icon={UnderlineIcon}
+						/>
+						<FormatButton
+							label="Strikethrough"
+							active={editor.isActive("strike")}
+							onClick={() => editor.chain().focus().toggleStrike().run()}
+							icon={StrikethroughIcon}
+						/>
+						<span className="mx-0.5 h-5 w-px bg-border" />
+						<FormatButton
+							label="Align left"
+							active={editor.isActive({ textAlign: "left" })}
+							onClick={() => editor.chain().focus().setTextAlign("left").run()}
+							icon={AlignLeftIcon}
+						/>
+						<FormatButton
+							label="Align center"
+							active={editor.isActive({ textAlign: "center" })}
+							onClick={() =>
+								editor.chain().focus().setTextAlign("center").run()
+							}
+							icon={AlignCenterIcon}
+						/>
+						<FormatButton
+							label="Align right"
+							active={editor.isActive({ textAlign: "right" })}
+							onClick={() => editor.chain().focus().setTextAlign("right").run()}
+							icon={AlignRightIcon}
+						/>
+						<FormatButton
+							label="Justify"
+							active={editor.isActive({ textAlign: "justify" })}
+							onClick={() =>
+								editor.chain().focus().setTextAlign("justify").run()
+							}
+							icon={AlignJustifyIcon}
 						/>
 						<span className="mx-0.5 h-5 w-px bg-border" />
 						<FormatButton
@@ -325,11 +498,17 @@ export function NoteEditor({
 							onClick={() => toggleCurrentBlockTask(editor)}
 							icon={ListTodoIcon}
 						/>
-					</BubbleMenu>
+					</div>
 				) : null}
 				<EditorContent
 					editor={editor}
-					className="flex min-h-0 flex-1 px-8 pb-8 md:px-14 lg:px-20 [&_.ProseMirror]:min-h-full [&_.ProseMirror]:flex-1"
+					className={cn(
+						"flex min-h-0 flex-1 px-8 pb-8 md:px-14 lg:px-20 [&_.ProseMirror]:min-h-full [&_.ProseMirror]:flex-1",
+						pageFormat.lineHeight === "1.5" && "[&_.ProseMirror]:leading-[1.5]",
+						pageFormat.firstLineIndent && "[&_.ProseMirror_p]:first-line:pl-8",
+						pageFormat.paragraphSpacing === "compact" &&
+							"[&_.ProseMirror_p]:my-0",
+					)}
 					onClick={() => editor?.chain().focus().run()}
 				/>
 			</div>
@@ -435,7 +614,9 @@ function BlockStyleSelect({
 			open={open}
 			onOpenChange={(nextOpen) => {
 				onOpenChange(nextOpen);
-				if (!nextOpen) editor.chain().focus().run();
+				if (!nextOpen) {
+					editor.chain().focus().run();
+				}
 			}}
 			value={value}
 			onValueChange={(nextValue) => {
@@ -542,6 +723,10 @@ function FormatButton({
 			<Icon className="size-4" />
 		</button>
 	);
+}
+
+function editableTitle(title: string) {
+	return title === "Untitled" ? "" : title;
 }
 
 function markdownToHtml(markdown: string) {
