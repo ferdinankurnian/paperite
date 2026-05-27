@@ -17,6 +17,7 @@ import {
 	type CSSProperties,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -59,6 +60,10 @@ const defaultAppState: PaperiteAppState = {
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 type FloatingPanelMode = "find" | "format" | "replace" | null;
+type TabIndicator = {
+	left: number;
+	width: number;
+};
 
 const defaultPageFormat: PageFormat = {
 	firstLineIndent: false,
@@ -89,8 +94,11 @@ function Index() {
 	const lastPersistedMarkdown = useRef("");
 	const activeNotePathRef = useRef<string | null>(null);
 	const markdownRef = useRef("");
+	const tabListRef = useRef<HTMLDivElement>(null);
+	const tabRefs = useRef(new Map<string, HTMLDivElement>());
 	const noteContentCache = useRef(new Map<string, string>());
 	const notePersistedCache = useRef(new Map<string, string>());
+	const [tabIndicator, setTabIndicator] = useState<TabIndicator | null>(null);
 	const pendingSwitchBenchmark = useRef<{
 		direction: 1 | -1;
 		notePath: string;
@@ -138,6 +146,36 @@ function Index() {
 		window.dispatchEvent(new Event("paperite:title-change"));
 		window.electron?.app.setTitle(title);
 	}, [activeNoteTitle, appState.activeNotePath]);
+
+	useLayoutEffect(() => {
+		if (!appState.activeNotePath) {
+			setTabIndicator((current) => (current ? null : current));
+			return;
+		}
+
+		const listElement = tabListRef.current;
+		const tabElement = tabRefs.current.get(appState.activeNotePath);
+
+		if (!listElement || !tabElement) {
+			setTabIndicator((current) => (current ? null : current));
+			return;
+		}
+
+		const listRect = listElement.getBoundingClientRect();
+		const tabRect = tabElement.getBoundingClientRect();
+		const nextIndicator = {
+			left: tabRect.left - listRect.left + listElement.scrollLeft,
+			width: tabRect.width,
+		};
+
+		setTabIndicator((current) =>
+			current &&
+			Math.abs(current.left - nextIndicator.left) < 0.5 &&
+			Math.abs(current.width - nextIndicator.width) < 0.5
+				? current
+				: nextIndicator,
+		);
+	}, [appState.activeNotePath]);
 
 	const refreshWorkspace = useCallback(async () => {
 		if (!notesApi) return;
@@ -908,6 +946,23 @@ function Index() {
 		}));
 	};
 
+	const selectTab = useCallback((notePath: string) => {
+		setAppState((current) => ({
+			...current,
+			activeNotePath: notePath,
+			activeSpacePath: topLevelPath(notePath),
+		}));
+	}, []);
+
+	const pinTab = useCallback((notePath: string) => {
+		setAppState((current) => ({
+			...current,
+			openTabs: current.openTabs.map((tab) =>
+				tab.path === notePath ? { ...tab, preview: false } : tab,
+			),
+		}));
+	}, []);
+
 	const completeSwitchBenchmark = useCallback((notePath: string) => {
 		const benchmark = pendingSwitchBenchmark.current;
 
@@ -960,41 +1015,48 @@ function Index() {
 			/>
 			<SidebarInset className="min-w-0 overflow-hidden">
 				<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 px-3 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
-					<div className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain">
+					<div
+						ref={tabListRef}
+						className="no-scrollbar relative flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
+					>
+						{tabIndicator ? (
+							<span
+								aria-hidden="true"
+								className="pointer-events-none absolute top-2 bottom-2 z-0 rounded-md bg-muted transition-[translate,width] duration-200 ease-out"
+								style={{
+									translate: `${tabIndicator.left}px 0`,
+									width: tabIndicator.width,
+								}}
+							/>
+						) : null}
 						{appState.openTabs.map((note) => (
 							<div
 								key={note.path}
+								ref={(node) => {
+									if (node) {
+										tabRefs.current.set(note.path, node);
+									} else {
+										tabRefs.current.delete(note.path);
+									}
+								}}
 								data-active={note.path === appState.activeNotePath}
 								data-preview={note.preview}
-								className="group my-2 flex w-28 shrink-0 items-center gap-2 rounded-md pl-2.5 pe-2 text-left text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 sm:w-36 lg:w-44"
+								className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 sm:w-36 lg:w-44"
 							>
 								<button
 									type="button"
-									className="min-w-0 flex-1 pe-1 truncate text-left"
-									onClick={() =>
-										setAppState((current) => ({
-											...current,
-											activeNotePath: note.path,
-											activeSpacePath: topLevelPath(note.path),
-										}))
-									}
-									onDoubleClick={() =>
-										setAppState((current) => ({
-											...current,
-											openTabs: current.openTabs.map((tab) =>
-												tab.path === note.path
-													? { ...tab, preview: false }
-													: tab,
-											),
-										}))
-									}
+									className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
+									onClick={() => selectTab(note.path)}
+									onDoubleClick={() => pinTab(note.path)}
 								>
-									{displayNoteTitle(note.title)}
+									<span className="min-w-0 flex-1 truncate">
+										{displayNoteTitle(note.title)}
+									</span>
 								</button>
 								<button
 									type="button"
 									aria-label={`Close ${displayNoteTitle(note.title)}`}
-									className="flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
+									className="-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
 									onClick={(event) => {
 										event.stopPropagation();
 										closeTab(note.path);
