@@ -411,7 +411,7 @@ export function NoteEditor({
 				/>
 				{editor && formatMenuPosition.visible ? (
 					<div
-						className="app-region-no-drag no-scrollbar fixed z-50 flex max-w-[350px] origin-top-left animate-in items-center gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 duration-100 fade-in-0 zoom-in-95 slide-in-from-top-1"
+						className="app-region-no-drag no-scrollbar fixed z-50 flex max-w-[350px] origin-top-left animate-in items-center gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 duration-100 fade-in-0 zoom-in-95 slide-in-from-top-1 [&>*]:shrink-0"
 						style={{
 							left: formatMenuPosition.left,
 							top: formatMenuPosition.top,
@@ -635,7 +635,7 @@ function BlockStyleSelect({
 		>
 			<SelectTrigger
 				aria-label="Block style"
-				className="w-30"
+				className="w-30 shrink-0"
 				onPointerDown={(event) => event.stopPropagation()}
 			>
 				<SelectValue />
@@ -715,7 +715,7 @@ function FormatButton({
 			title={label}
 			data-active={active}
 			className={cn(
-				"flex size-8 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground data-[active=true]:bg-primary data-[active=true]:text-primary-foreground",
+				"flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground data-[active=true]:bg-primary data-[active=true]:text-primary-foreground",
 			)}
 			onMouseDown={(event) => event.preventDefault()}
 			onClick={onClick}
