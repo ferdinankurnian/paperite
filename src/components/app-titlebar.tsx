@@ -78,6 +78,10 @@ function AppMenu() {
 		);
 	};
 
+	const toggleFocusMode = () => {
+		window.dispatchEvent(new Event("paperite:toggle-focus-mode"));
+	};
+
 	return (
 		<div className="app-region-no-drag flex min-w-0 items-center px-1">
 			<Menubar className="border-none bg-transparent p-0">
@@ -147,6 +151,11 @@ function AppMenu() {
 					<MenubarTrigger>View</MenubarTrigger>
 					<MenubarContent>
 						<MenubarGroup>
+							<MenubarItem onSelect={toggleFocusMode}>
+								Toggle Focus Mode
+								<MenubarShortcut>Ctrl+Shift+F</MenubarShortcut>
+							</MenubarItem>
+							<MenubarSeparator />
 							<MenubarItem onSelect={() => runAction("toggleDevTools")}>
 								Toggle DevTools
 								<MenubarShortcut>Ctrl+Shift+I</MenubarShortcut>

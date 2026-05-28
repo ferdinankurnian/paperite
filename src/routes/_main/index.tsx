@@ -82,6 +82,7 @@ function Index() {
 	>({});
 	const [floatingPanelMode, setFloatingPanelMode] =
 		useState<FloatingPanelMode>(null);
+	const [focusMode, setFocusMode] = useState(false);
 	const [findText, setFindText] = useState("");
 	const [replaceText, setReplaceText] = useState("");
 	const [pageFormats, setPageFormats] = useState<Record<string, PageFormat>>(
@@ -258,6 +259,43 @@ function Index() {
 
 		findInputRef.current?.focus();
 	}, [floatingPanelMode]);
+
+	useEffect(() => {
+		if (focusMode) {
+			setFloatingPanelMode(null);
+		}
+	}, [focusMode]);
+
+	useEffect(() => {
+		const toggleFocusMode = () => {
+			setFocusMode((current) => !current);
+		};
+
+		const handleKeyDown = (event: KeyboardEvent) => {
+			if (
+				event.key.toLowerCase() === "f" &&
+				event.ctrlKey &&
+				event.shiftKey &&
+				!event.metaKey &&
+				!event.altKey
+			) {
+				event.preventDefault();
+				toggleFocusMode();
+				return;
+			}
+
+			if (event.key === "Escape") {
+				setFocusMode(false);
+			}
+		};
+
+		window.addEventListener("paperite:toggle-focus-mode", toggleFocusMode);
+		window.addEventListener("keydown", handleKeyDown);
+		return () => {
+			window.removeEventListener("paperite:toggle-focus-mode", toggleFocusMode);
+			window.removeEventListener("keydown", handleKeyDown);
+		};
+	}, []);
 
 	useEffect(() => {
 		if (!notesApi || !appState.activeNotePath) {
@@ -993,158 +1031,164 @@ function Index() {
 				} as CSSProperties
 			}
 		>
-			<SidebarHotkeys />
-			<AppSidebar
-				activeNotePath={appState.activeNotePath}
-				activeSpacePath={currentSpacePath}
-				expandedFolders={appState.expandedFolders}
-				spaceColors={appState.spaceColors}
-				spaceIcons={appState.spaceIcons}
-				spaces={visibleSpaces}
-				onCreateFolder={createFolder}
-				onCreateNote={createNote}
-				onCreateSpace={createSpace}
-				onDeleteItem={deleteItem}
-				onDeleteSpace={deleteSpace}
-				onEditSpace={editSpace}
-				onMoveItem={moveItem}
-				onOpenNote={openNote}
-				onRenameItem={renameItem}
-				onSelectSpace={setActiveSpacePath}
-				onToggleFolder={toggleFolder}
-			/>
+			{focusMode ? null : (
+				<>
+					<SidebarHotkeys />
+					<AppSidebar
+						activeNotePath={appState.activeNotePath}
+						activeSpacePath={currentSpacePath}
+						expandedFolders={appState.expandedFolders}
+						spaceColors={appState.spaceColors}
+						spaceIcons={appState.spaceIcons}
+						spaces={visibleSpaces}
+						onCreateFolder={createFolder}
+						onCreateNote={createNote}
+						onCreateSpace={createSpace}
+						onDeleteItem={deleteItem}
+						onDeleteSpace={deleteSpace}
+						onEditSpace={editSpace}
+						onMoveItem={moveItem}
+						onOpenNote={openNote}
+						onRenameItem={renameItem}
+						onSelectSpace={setActiveSpacePath}
+						onToggleFolder={toggleFolder}
+					/>
+				</>
+			)}
 			<SidebarInset className="min-w-0 overflow-hidden">
-				<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 px-3 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
-					<div
-						ref={tabListRef}
-						className="no-scrollbar relative flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
-					>
-						{tabIndicator ? (
-							<span
-								aria-hidden="true"
-								className="pointer-events-none absolute top-2 bottom-2 z-0 rounded-md bg-muted transition-[translate,width] duration-200 ease-out"
-								style={{
-									translate: `${tabIndicator.left}px 0`,
-									width: tabIndicator.width,
-								}}
-							/>
-						) : null}
-						{appState.openTabs.map((note) => (
-							<div
-								key={note.path}
-								ref={(node) => {
-									if (node) {
-										tabRefs.current.set(note.path, node);
-									} else {
-										tabRefs.current.delete(note.path);
-									}
-								}}
-								data-active={note.path === appState.activeNotePath}
-								data-preview={note.preview}
-								className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 sm:w-36 lg:w-44"
-							>
-								<button
-									type="button"
-									className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
-									onClick={() => selectTab(note.path)}
-									onDoubleClick={() => pinTab(note.path)}
-								>
-									<span className="min-w-0 flex-1 truncate">
-										{displayNoteTitle(note.title)}
-									</span>
-								</button>
-								<button
-									type="button"
-									aria-label={`Close ${displayNoteTitle(note.title)}`}
-									className="-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
-									onClick={(event) => {
-										event.stopPropagation();
-										closeTab(note.path);
-									}}
-								>
-									<XIcon className="size-3.5" />
-								</button>
-							</div>
-						))}
-					</div>
-					<div className="flex shrink-0 items-center gap-2">
-						<span className="min-w-12 px-2 text-right text-xs text-muted-foreground">
-							{saveStatusLabel(saveStatus)}
-						</span>
-						<Button
-							type="button"
-							variant="ghost"
-							size="icon-sm"
-							className="text-muted-foreground"
-							aria-label={activeNoteReadOnly ? "Edit note" : "Reading view"}
-							onClick={toggleReadOnly}
+				{focusMode ? null : (
+					<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 px-3 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
+						<div
+							ref={tabListRef}
+							className="no-scrollbar relative flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
 						>
-							{activeNoteReadOnly ? <PencilIcon /> : <BookOpenIcon />}
-						</Button>
-						<DropdownMenu>
-							<DropdownMenuTrigger asChild>
-								<Button
-									type="button"
-									variant="ghost"
-									size="icon-sm"
-									className="text-muted-foreground"
-									aria-label="More note actions"
-								>
-									<MoreVerticalIcon />
-								</Button>
-							</DropdownMenuTrigger>
-							<DropdownMenuContent align="end" className="w-56">
-								<DropdownMenuItem>
-									<InfoIcon />
-									Note Info
-								</DropdownMenuItem>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem>
-									<DownloadIcon />
-									Export as PDF…
-								</DropdownMenuItem>
-								<DropdownMenuItem>
-									<PrinterIcon />
-									Print…
-								</DropdownMenuItem>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									onSelect={() => {
-										setFloatingPanelMode("find");
+							{tabIndicator ? (
+								<span
+									aria-hidden="true"
+									className="pointer-events-none absolute top-2 bottom-2 z-0 rounded-md bg-muted transition-[translate,width] duration-200 ease-out"
+									style={{
+										translate: `${tabIndicator.left}px 0`,
+										width: tabIndicator.width,
 									}}
-								>
-									<SearchIcon />
-									Find in note…
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									onSelect={() => {
-										setFloatingPanelMode("replace");
+								/>
+							) : null}
+							{appState.openTabs.map((note) => (
+								<div
+									key={note.path}
+									ref={(node) => {
+										if (node) {
+											tabRefs.current.set(note.path, node);
+										} else {
+											tabRefs.current.delete(note.path);
+										}
 									}}
+									data-active={note.path === appState.activeNotePath}
+									data-preview={note.preview}
+									className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 sm:w-36 lg:w-44"
 								>
-									<FileSearchIcon />
-									Replace in note…
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									onSelect={() => {
-										setFloatingPanelMode("format");
-									}}
-								>
-									<AlignLeftIcon />
-									Format page…
-								</DropdownMenuItem>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									variant="destructive"
-									onSelect={deleteActiveNote}
-									disabled={!appState.activeNotePath}
-								>
-									<Trash2Icon />
-									Delete note
-								</DropdownMenuItem>
-							</DropdownMenuContent>
-						</DropdownMenu>
-					</div>
-				</header>
+									<button
+										type="button"
+										className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
+										onClick={() => selectTab(note.path)}
+										onDoubleClick={() => pinTab(note.path)}
+									>
+										<span className="min-w-0 flex-1 truncate">
+											{displayNoteTitle(note.title)}
+										</span>
+									</button>
+									<button
+										type="button"
+										aria-label={`Close ${displayNoteTitle(note.title)}`}
+										className="-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
+										onClick={(event) => {
+											event.stopPropagation();
+											closeTab(note.path);
+										}}
+									>
+										<XIcon className="size-3.5" />
+									</button>
+								</div>
+							))}
+						</div>
+						<div className="flex shrink-0 items-center gap-2">
+							<span className="min-w-12 px-2 text-right text-xs text-muted-foreground">
+								{saveStatusLabel(saveStatus)}
+							</span>
+							<Button
+								type="button"
+								variant="ghost"
+								size="icon-sm"
+								className="text-muted-foreground"
+								aria-label={activeNoteReadOnly ? "Edit note" : "Reading view"}
+								onClick={toggleReadOnly}
+							>
+								{activeNoteReadOnly ? <PencilIcon /> : <BookOpenIcon />}
+							</Button>
+							<DropdownMenu>
+								<DropdownMenuTrigger asChild>
+									<Button
+										type="button"
+										variant="ghost"
+										size="icon-sm"
+										className="text-muted-foreground"
+										aria-label="More note actions"
+									>
+										<MoreVerticalIcon />
+									</Button>
+								</DropdownMenuTrigger>
+								<DropdownMenuContent align="end" className="w-56">
+									<DropdownMenuItem>
+										<InfoIcon />
+										Note Info
+									</DropdownMenuItem>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem>
+										<DownloadIcon />
+										Export as PDF…
+									</DropdownMenuItem>
+									<DropdownMenuItem>
+										<PrinterIcon />
+										Print…
+									</DropdownMenuItem>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										onSelect={() => {
+											setFloatingPanelMode("find");
+										}}
+									>
+										<SearchIcon />
+										Find in note…
+									</DropdownMenuItem>
+									<DropdownMenuItem
+										onSelect={() => {
+											setFloatingPanelMode("replace");
+										}}
+									>
+										<FileSearchIcon />
+										Replace in note…
+									</DropdownMenuItem>
+									<DropdownMenuItem
+										onSelect={() => {
+											setFloatingPanelMode("format");
+										}}
+									>
+										<AlignLeftIcon />
+										Format page…
+									</DropdownMenuItem>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										variant="destructive"
+										onSelect={deleteActiveNote}
+										disabled={!appState.activeNotePath}
+									>
+										<Trash2Icon />
+										Delete note
+									</DropdownMenuItem>
+								</DropdownMenuContent>
+							</DropdownMenu>
+						</div>
+					</header>
+				)}
 				{floatingPanelMode ? (
 					<div className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-2 rounded-lg bg-popover p-2.5 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10">
 						{floatingPanelMode === "format" ? (
@@ -1263,7 +1307,7 @@ function Index() {
 				) : null}
 				<section
 					aria-label="Note editor"
-					className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+					className={`min-h-0 flex-1 overflow-y-auto overscroll-contain ${focusMode ? "pt-8 md:pt-12" : ""}`}
 					onKeyDown={(event) => {
 						if (
 							event.key.toLowerCase() === "b" &&

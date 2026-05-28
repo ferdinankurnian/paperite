@@ -213,12 +213,19 @@ export function NoteEditor({
 		turndown.addRule("taskListItems", {
 			filter: (node) =>
 				node.nodeName === "LI" &&
-				(node as Element).querySelector('input[type="checkbox"]') !== null,
+				((node as Element).matches('[data-type="taskItem"]') ||
+					(node as Element).querySelector('input[type="checkbox"]') !== null ||
+					(node as Element).querySelector('[role="checkbox"]') !== null),
 			replacement: (content, node) => {
+				const element = node as Element;
 				const checked =
-					(node as Element)
+					element.getAttribute("data-checked") === "true" ||
+					element
 						.querySelector('input[type="checkbox"]')
-						?.hasAttribute("checked") ?? false;
+						?.hasAttribute("checked") ||
+					element
+						.querySelector('[role="checkbox"]')
+						?.getAttribute("aria-checked") === "true";
 				return `- [${checked ? "x" : " "}] ${content.trim()}\n`;
 			},
 		});
@@ -657,6 +664,10 @@ function BlockStyleSelect({
 }
 
 function toggleCurrentBlockTask(editor: Editor) {
+	if (editor.chain().focus().toggleTaskList().run()) {
+		return true;
+	}
+
 	const { $from } = editor.state.selection;
 
 	if ($from.parent.isTextblock) {
