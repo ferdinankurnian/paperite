@@ -364,12 +364,15 @@ export function NoteEditor({
 
 	const commitTitle = () => {
 		const nextTitle = draftTitle.trim();
+		const currentFileTitle = notePath
+			? editableTitle(notePathTitle(notePath))
+			: "";
 
 		if (!nextTitle) {
 			return;
 		}
 
-		if (nextTitle !== noteTitle) {
+		if (nextTitle !== currentFileTitle) {
 			onRename(nextTitle);
 		}
 	};
@@ -410,8 +413,11 @@ export function NoteEditor({
 						}
 
 						if (event.key === "Escape") {
-							setDraftTitle(noteTitle);
-							onTitleChange(noteTitle);
+							const currentFileTitle = notePath
+								? notePathTitle(notePath)
+								: noteTitle;
+							setDraftTitle(editableTitle(currentFileTitle));
+							onTitleChange(currentFileTitle);
 							event.currentTarget.blur();
 						}
 					}}
@@ -738,6 +744,11 @@ function FormatButton({
 
 function editableTitle(title: string) {
 	return title === "Untitled" ? "" : title;
+}
+
+function notePathTitle(notePath: string) {
+	const filename = notePath.split("/").at(-1) ?? notePath;
+	return filename.replace(/\.md$/i, "");
 }
 
 function markdownToHtml(markdown: string) {

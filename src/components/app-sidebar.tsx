@@ -88,6 +88,7 @@ import {
 	SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { clerk } from "@/lib/clerk";
+import { cn } from "@/lib/utils";
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	spaces: WorkspaceSpace[];
@@ -132,13 +133,14 @@ const SpaceIcon = ({
 }) => {
 	if (path === "Inbox") return <InboxIcon className={className} />;
 	const customIcon = getCustomIcon(icon);
+	const iconClassName = cn("size-4 shrink-0", className);
 
 	if (customIcon) {
 		return (
 			<img
 				src={customIcon}
 				alt=""
-				className={className}
+				className={iconClassName}
 				style={{
 					borderRadius: 4,
 					objectFit: "cover",
@@ -148,7 +150,9 @@ const SpaceIcon = ({
 	}
 
 	const Icon = spaceIconMap[icon as keyof typeof spaceIconMap] ?? CloudIcon;
-	return <Icon className={className} style={{ color: color ?? "#E94C08" }} />;
+	return (
+		<Icon className={iconClassName} style={{ color: color ?? "#E94C08" }} />
+	);
 };
 
 function NoteTree({
