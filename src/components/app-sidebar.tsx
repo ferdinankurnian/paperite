@@ -47,6 +47,7 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import {
 	Collapsible,
 	CollapsibleContent,
@@ -67,6 +68,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {
 	Empty,
+	EmptyContent,
 	EmptyDescription,
 	EmptyHeader,
 	EmptyMedia,
@@ -86,6 +88,7 @@ import {
 	SidebarHeader,
 	SidebarRail,
 	SidebarTrigger,
+	useSidebar,
 } from "@/components/ui/sidebar";
 import { clerk } from "@/lib/clerk";
 import { cn } from "@/lib/utils";
@@ -154,6 +157,38 @@ const SpaceIcon = ({
 		<Icon className={iconClassName} style={{ color: color ?? "#E94C08" }} />
 	);
 };
+
+function filterWorkspaceItems(
+	items: WorkspaceItem[],
+	query: string,
+): WorkspaceItem[] {
+	const normalizedQuery = query.trim().toLocaleLowerCase();
+	if (!normalizedQuery) return items;
+
+	const filteredItems: WorkspaceItem[] = [];
+
+	for (const item of items) {
+		if (item.type === "note") {
+			if (
+				item.title.toLocaleLowerCase().includes(normalizedQuery) ||
+				item.preview.toLocaleLowerCase().includes(normalizedQuery)
+			) {
+				filteredItems.push(item);
+			}
+			continue;
+		}
+
+		const children = filterWorkspaceItems(item.children, normalizedQuery);
+		if (
+			item.title.toLocaleLowerCase().includes(normalizedQuery) ||
+			children.length > 0
+		) {
+			filteredItems.push({ ...item, children });
+		}
+	}
+
+	return filteredItems;
+}
 
 function NoteTree({
 	activeNotePath,
@@ -305,6 +340,7 @@ function NoteFolderItem({
 										type="button"
 										className="flex size-6 items-center justify-center rounded-md text-sidebar-foreground/70 outline-none hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
 										aria-label="Add note"
+										onPointerDown={(event) => event.stopPropagation()}
 										onClick={(event) => {
 											event.stopPropagation();
 											onCreateNote(item.path);
@@ -316,6 +352,7 @@ function NoteFolderItem({
 										type="button"
 										className="flex size-6 items-center justify-center rounded-md text-sidebar-foreground/70 outline-none hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
 										aria-label="Add folder"
+										onPointerDown={(event) => event.stopPropagation()}
 										onClick={(event) => {
 											event.stopPropagation();
 											onCreateFolder(item.path);
@@ -706,8 +743,16 @@ export function AppSidebar({
 	...props
 }: AppSidebarProps) {
 	const navigate = useNavigate();
+	const { open, setOpen } = useSidebar();
 	const [user, setUser] = React.useState(fallbackUser);
+	const [searchQuery, setSearchQuery] = React.useState("");
+	const [notesSheetOpen, setNotesSheetOpen] = React.useState(false);
+	const [tabletLayout, setTabletLayout] = React.useState(false);
 	const activeSpace = spaces.find((space) => space.path === activeSpacePath);
+	const visibleChildren = React.useMemo(
+		() => filterWorkspaceItems(activeSpace?.children ?? [], searchQuery),
+		[activeSpace?.children, searchQuery],
+	);
 	const sensors = useSensors(
 		useSensor(PointerSensor, {
 			activationConstraint: {
@@ -715,6 +760,36 @@ export function AppSidebar({
 			},
 		}),
 	);
+
+	React.useEffect(() => {
+		const narrowWindow = window.matchMedia("(max-width: 56rem)");
+		const collapseSpaceSidebar = () => {
+			setTabletLayout(narrowWindow.matches);
+			setNotesSheetOpen(false);
+		};
+
+		collapseSpaceSidebar();
+		narrowWindow.addEventListener("change", collapseSpaceSidebar);
+		return () =>
+			narrowWindow.removeEventListener("change", collapseSpaceSidebar);
+	}, []);
+
+	React.useEffect(() => {
+		const toggleNotesSheet = () => {
+			if (tabletLayout) {
+				setNotesSheetOpen((open) => !open);
+			} else {
+				setOpen(!open);
+			}
+		};
+
+		window.addEventListener("paperite:toggle-notes-sheet", toggleNotesSheet);
+		return () =>
+			window.removeEventListener(
+				"paperite:toggle-notes-sheet",
+				toggleNotesSheet,
+			);
+	}, [open, setOpen, tabletLayout]);
 
 	React.useEffect(() => {
 		const syncUser = () => {
@@ -748,13 +823,26 @@ export function AppSidebar({
 
 	return (
 		<>
-			<Sidebar collapsible="icon" className="w-58" {...props}>
+			<Sidebar
+				collapsible="icon"
+				forceDesktop
+				forceCollapsed={tabletLayout}
+				wrapperClassName={cn(
+					"paperite-space-sidebar-wrapper",
+					notesSheetOpen && "paperite-space-sidebar-wrapper-open",
+				)}
+				className="paperite-space-sidebar"
+				{...props}
+			>
 				<SidebarHeader className="group-data-[collapsible=icon]:p-1 group-data-[collapsible=icon]:pt-3 pb-0">
 					<div className="flex h-10 items-center justify-between px-2 group-data-[collapsible=icon]:h-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
 						<div className="font-brand text-xl text-[#E94C08] group-data-[collapsible=icon]:hidden">
 							Paperite
 						</div>
-						<SidebarTrigger className="size-8 rounded-md group-data-[collapsible=icon]:p-2 [&_svg]:size-4" />
+						<SidebarTrigger
+							toggleNotesSheet={tabletLayout}
+							className="size-8 rounded-md group-data-[collapsible=icon]:p-2 [&_svg]:size-4"
+						/>
 					</div>
 				</SidebarHeader>
 				<SidebarContent>
@@ -785,9 +873,17 @@ export function AppSidebar({
 				</SidebarFooter>
 				<SidebarRail />
 			</Sidebar>
-			<Sidebar
-				collapsible="none"
-				className="hidden h-full min-h-0 w-80 max-w-80 shrink-0 border-r border-sidebar-border md:flex"
+			{tabletLayout && notesSheetOpen ? (
+				<button
+					type="button"
+					aria-label="Close notes sidebar"
+					className="paperite-note-sidebar-backdrop"
+					onClick={() => setNotesSheetOpen(false)}
+				/>
+			) : null}
+			<aside
+				data-open={notesSheetOpen}
+				className="paperite-note-sidebar flex h-full min-h-0 w-80 max-w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
 			>
 				<DndContext sensors={sensors} onDragEnd={moveDroppedItem}>
 					<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
@@ -807,17 +903,21 @@ export function AppSidebar({
 							<InputGroupAddon>
 								<SearchIcon className="size-4" />
 							</InputGroupAddon>
-							<InputGroupInput placeholder="Search..." />
+							<InputGroupInput
+								value={searchQuery}
+								placeholder="Search..."
+								onChange={(event) => setSearchQuery(event.target.value)}
+							/>
 						</InputGroup>
 					</SidebarHeader>
 					<SidebarContent className="[mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)] [-webkit-mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)]">
 						<SidebarGroup className="px-3 pt-4 pb-8">
 							<SidebarGroupContent>
-								{activeSpace && activeSpace.children.length > 0 ? (
+								{activeSpace && visibleChildren.length > 0 ? (
 									<NoteTree
 										activeNotePath={activeNotePath}
 										expandedFolders={expandedFolders}
-										items={activeSpace.children}
+										items={visibleChildren}
 										onCreateFolder={onCreateFolder}
 										onCreateNote={onCreateNote}
 										onDeleteItem={onDeleteItem}
@@ -838,13 +938,32 @@ export function AppSidebar({
 												Create a note or drop one into this space.
 											</EmptyDescription>
 										</EmptyHeader>
+										<EmptyContent className="flex-row justify-center">
+											<Button
+												type="button"
+												size="sm"
+												variant="outline"
+												onClick={() => onCreateFolder(activeSpacePath)}
+											>
+												<FolderPlusIcon />
+												New folder
+											</Button>
+											<Button
+												type="button"
+												size="sm"
+												onClick={() => onCreateNote(activeSpacePath)}
+											>
+												<StickyNotePlusIcon />
+												New note
+											</Button>
+										</EmptyContent>
 									</Empty>
 								)}
 							</SidebarGroupContent>
 						</SidebarGroup>
 					</SidebarContent>
 				</DndContext>
-			</Sidebar>
+			</aside>
 		</>
 	);
 }

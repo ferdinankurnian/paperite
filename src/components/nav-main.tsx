@@ -16,7 +16,7 @@ import {
 	UploadIcon,
 	XIcon,
 } from "lucide-react";
-import { type ChangeEvent, useRef, useState } from "react";
+import { type ChangeEvent, type DragEvent, useRef, useState } from "react";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -28,6 +28,13 @@ import {
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuSeparator,
+	ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -49,6 +56,7 @@ import {
 	SidebarMenuButton,
 	SidebarMenuItem,
 } from "@/components/ui/sidebar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 export function NavMain({
 	activeSpacePath,
@@ -125,13 +133,10 @@ export function NavMain({
 	};
 
 	const uploadIcon = (
-		event: ChangeEvent<HTMLInputElement>,
+		file: File | undefined,
 		onSelect: (icon: string) => void,
 	) => {
-		const file = event.target.files?.[0];
-		event.target.value = "";
 		if (!file?.type.startsWith("image/")) return;
-
 		const reader = new FileReader();
 		reader.addEventListener("load", () => {
 			if (typeof reader.result === "string") {
@@ -164,14 +169,32 @@ export function NavMain({
 				<SidebarMenu className="gap-1">
 					{otherSpaces.map((space) => (
 						<SidebarMenuItem key={space.title}>
-							<SidebarMenuButton
-								tooltip={space.title}
-								isActive={activeSpacePath === space.path}
-								onClick={() => onSelectSpace(space.path)}
-							>
-								{space.icon}
-								<span>{space.title}</span>
-							</SidebarMenuButton>
+							<ContextMenu>
+								<ContextMenuTrigger asChild>
+									<SidebarMenuButton
+										tooltip={space.title}
+										isActive={activeSpacePath === space.path}
+										onClick={() => onSelectSpace(space.path)}
+									>
+										{space.icon}
+										<span>{space.title}</span>
+									</SidebarMenuButton>
+								</ContextMenuTrigger>
+								<ContextMenuContent className="w-44">
+									<ContextMenuItem onSelect={() => openEdit(space)}>
+										<PencilIcon className="text-muted-foreground" />
+										<span>Rename Space</span>
+									</ContextMenuItem>
+									<ContextMenuSeparator />
+									<ContextMenuItem
+										variant="destructive"
+										onSelect={() => setDeleteSpacePath(space.path)}
+									>
+										<Trash2Icon />
+										<span>Delete Space</span>
+									</ContextMenuItem>
+								</ContextMenuContent>
+							</ContextMenu>
 							<Popover
 								open={editSpacePath === space.path}
 								onOpenChange={(open) => {
@@ -236,7 +259,7 @@ export function NavMain({
 									<SpaceIconPicker
 										inputRef={editIconInputRef}
 										value={editSpaceIcon}
-										onUpload={(event) => uploadIcon(event, setEditSpaceIcon)}
+										onUpload={(file) => uploadIcon(file, setEditSpaceIcon)}
 										onChooseUpload={() => editIconInputRef.current?.click()}
 										onSelect={setEditSpaceIcon}
 									/>
@@ -281,7 +304,10 @@ export function NavMain({
 					<SidebarMenuItem>
 						<Popover open={isCreateOpen} onOpenChange={setIsCreateOpen}>
 							<PopoverTrigger asChild>
-								<SidebarMenuButton className="text-sidebar-foreground/70">
+								<SidebarMenuButton
+									tooltip="Add Space"
+									className="text-sidebar-foreground/70"
+								>
 									<PlusIcon className="text-sidebar-foreground/70" />
 									<span>Add Space</span>
 								</SidebarMenuButton>
@@ -299,7 +325,7 @@ export function NavMain({
 								<SpaceIconPicker
 									inputRef={createIconInputRef}
 									value={spaceIcon}
-									onUpload={(event) => uploadIcon(event, setSpaceIcon)}
+									onUpload={(file) => uploadIcon(file, setSpaceIcon)}
 									onChooseUpload={() => createIconInputRef.current?.click()}
 									onSelect={setSpaceIcon}
 								/>
@@ -385,82 +411,100 @@ function SpaceIconPicker({
 	inputRef: React.RefObject<HTMLInputElement | null>;
 	onChooseUpload: () => void;
 	onSelect: (icon: string) => void;
-	onUpload: (event: ChangeEvent<HTMLInputElement>) => void;
+	onUpload: (file: File | undefined) => void;
 	value: string;
 }) {
 	const customIcon = getCustomIcon(value);
+	const chooseDroppedFile = (event: DragEvent<HTMLButtonElement>) => {
+		event.preventDefault();
+		onUpload(event.dataTransfer.files[0]);
+	};
 
 	return (
 		<div className="space-y-2">
-			<div className="flex items-center justify-between gap-2">
-				<div className="text-xs text-muted-foreground">Icon</div>
-				{customIcon ? (
-					<button
-						type="button"
-						className="flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-						aria-label="Remove custom icon"
-						onClick={() => onSelect(spaceIcons[0].key)}
-					>
-						<XIcon className="size-3.5" />
-					</button>
-				) : null}
-			</div>
-			<div className="grid grid-cols-6 gap-1.5">
-				{spaceIcons.map((icon) => {
-					const Icon = icon.icon;
+			<Tabs defaultValue={customIcon ? "upload" : "icons"} className="gap-2">
+				<TabsList className="grid h-8 w-full grid-cols-2">
+					<TabsTrigger value="icons">Icons</TabsTrigger>
+					<TabsTrigger value="upload">Upload</TabsTrigger>
+				</TabsList>
+				<TabsContent value="icons">
+					<div className="grid grid-cols-6 gap-1.5">
+						{spaceIcons.map((icon) => {
+							const Icon = icon.icon;
 
-					return (
+							return (
+								<button
+									type="button"
+									key={icon.key}
+									aria-label={`Use ${icon.key}`}
+									data-active={value === icon.key}
+									className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground"
+									onClick={() => onSelect(icon.key)}
+								>
+									<Icon className="size-4" />
+								</button>
+							);
+						})}
+					</div>
+				</TabsContent>
+				<TabsContent value="upload">
+					<div className="space-y-2">
 						<button
 							type="button"
-							key={icon.key}
-							aria-label={`Use ${icon.key}`}
-							data-active={value === icon.key}
-							className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground"
-							onClick={() => onSelect(icon.key)}
+							className="flex min-h-24 w-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/30 px-3 text-center text-xs text-muted-foreground transition-[background-color,border-color,scale] active:scale-[0.96] hover:border-ring hover:bg-muted/60 hover:text-foreground"
+							onClick={onChooseUpload}
+							onDragOver={(event) => event.preventDefault()}
+							onDrop={chooseDroppedFile}
 						>
-							<Icon className="size-4" />
+							{customIcon ? (
+								<img
+									src={customIcon}
+									alt=""
+									className="size-12 rounded-md object-cover shadow-[0_0_0_1px_rgb(255_255_255/0.12)]"
+								/>
+							) : (
+								<UploadIcon className="size-5" />
+							)}
+							<span>Drop image or click to upload</span>
 						</button>
-					);
-				})}
-				<button
-					type="button"
-					aria-label="Upload custom icon"
-					data-active={Boolean(customIcon)}
-					className="flex size-7 items-center justify-center overflow-hidden rounded-md text-muted-foreground hover:bg-muted hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground"
-					onClick={onChooseUpload}
-				>
-					{customIcon ? (
-						<img
-							src={customIcon}
-							alt=""
-							className="size-5 rounded-sm object-cover"
-						/>
-					) : (
-						<UploadIcon className="size-4" />
-					)}
-				</button>
-				<input
-					ref={inputRef}
-					type="file"
-					accept="image/*"
-					className="hidden"
-					onChange={onUpload}
-				/>
-			</div>
+						{customIcon ? (
+							<button
+								type="button"
+								className="flex h-7 w-full items-center justify-center gap-1.5 rounded-md text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+								onClick={() => onSelect(spaceIcons[0].key)}
+							>
+								<XIcon className="size-3.5" />
+								Remove image
+							</button>
+						) : null}
+					</div>
+				</TabsContent>
+			</Tabs>
+			<input
+				ref={inputRef}
+				type="file"
+				accept="image/*"
+				className="hidden"
+				onChange={(event: ChangeEvent<HTMLInputElement>) => {
+					onUpload(event.target.files?.[0]);
+					event.target.value = "";
+				}}
+			/>
 		</div>
 	);
 }
 
 const spaceColors = [
-	"#ef4444",
-	"#f97316",
-	"#f59e0b",
-	"#22c55e",
-	"#14b8a6",
-	"#3b82f6",
-	"#8b5cf6",
-	"#ec4899",
-	"#f43f5e",
+	"#f04438",
+	"#fb6f24",
+	"#f5b700",
+	"#35c759",
+	"#19b8a9",
+	"#2f80ed",
+	"#7c5cff",
+	"#d946ef",
+	"#ff4f86",
+	"#94a3b8",
 ];
 
 const spaceIcons = [

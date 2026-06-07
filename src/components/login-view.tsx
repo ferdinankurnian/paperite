@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
 	Card,
@@ -10,9 +10,22 @@ import {
 } from "@/components/ui/card";
 import { clerk, handleClerkRedirect, loadClerk } from "@/lib/clerk";
 
+const authCallbackUrl =
+	import.meta.env.VITE_CLERK_AUTH_CALLBACK_URL ??
+	"https://iydheko.dev/paperite/auth/success";
+
 export function LoginView() {
 	const navigate = useNavigate();
 	const [isLoading, setIsLoading] = useState(false);
+
+	const completeAuthCallback = useCallback(
+		async (url: string) => {
+			setIsLoading(true);
+			await handleClerkRedirect(url);
+			await navigate({ to: "/" });
+		},
+		[navigate],
+	);
 
 	useEffect(() => {
 		document.title = "Paperite";
@@ -21,20 +34,28 @@ export function LoginView() {
 	}, []);
 
 	useEffect(() => {
-		return window.electron?.onAuthCallback(async (url) => {
-			setIsLoading(true);
-			await handleClerkRedirect(url);
-			await navigate({ to: "/" });
+		let cancelled = false;
+
+		window.electron?.auth.getPendingCallback().then((url) => {
+			if (!url || cancelled) return;
+			completeAuthCallback(url);
 		});
-	}, [navigate]);
+
+		const unsubscribe = window.electron?.onAuthCallback(completeAuthCallback);
+
+		return () => {
+			cancelled = true;
+			unsubscribe?.();
+		};
+	}, [completeAuthCallback]);
 
 	const loginWithGoogle = async () => {
 		setIsLoading(true);
 		await loadClerk();
 		await clerk.client?.signIn.authenticateWithRedirect({
 			strategy: "oauth_google",
-			redirectUrl: "http://127.0.0.1:51732/auth/callback",
-			redirectUrlComplete: "http://127.0.0.1:51732/auth/callback",
+			redirectUrl: authCallbackUrl,
+			redirectUrlComplete: authCallbackUrl,
 		});
 	};
 

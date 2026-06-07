@@ -24,12 +24,12 @@ type EditorFormatCommand =
 	| "italic"
 	| "underline"
 	| "strike"
-	| "typography-heading"
+	| "quote"
+	| "code-block"
+	| "typography-heading-1"
+	| "typography-heading-2"
+	| "typography-heading-3"
 	| "typography-body"
-	| "align-left"
-	| "align-center"
-	| "align-right"
-	| "align-justify"
 	| "bullet-list"
 	| "ordered-list"
 	| "task-list";
@@ -193,26 +193,17 @@ function AppMenu() {
 						</MenubarGroup>
 						<MenubarSeparator />
 						<MenubarGroup>
-							<MenubarItem onSelect={() => runFormat("typography-heading")}>
-								Typography: Heading
+							<MenubarItem onSelect={() => runFormat("typography-heading-1")}>
+								Typography: Heading 1
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("typography-heading-2")}>
+								Typography: Heading 2
+							</MenubarItem>
+							<MenubarItem onSelect={() => runFormat("typography-heading-3")}>
+								Typography: Heading 3
 							</MenubarItem>
 							<MenubarItem onSelect={() => runFormat("typography-body")}>
 								Typography: Body
-							</MenubarItem>
-						</MenubarGroup>
-						<MenubarSeparator />
-						<MenubarGroup>
-							<MenubarItem onSelect={() => runFormat("align-left")}>
-								Align Left
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("align-center")}>
-								Align Center
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("align-right")}>
-								Align Right
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("align-justify")}>
-								Justify
 							</MenubarItem>
 						</MenubarGroup>
 						<MenubarSeparator />

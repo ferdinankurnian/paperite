@@ -1,14 +1,12 @@
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
-const http = require("node:http");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
-const authCallbackPort = 51732;
 let mainWindow; // hoist ke luar
-let authCallbackServer;
+let pendingAuthCallbackUrl;
 let workspaceWatchTimer;
 const workspaceWatchers = new Map();
 let indexDb;
@@ -60,22 +58,100 @@ const writeFileAtomic = async (targetPath, content) => {
 	}
 };
 
-const toNoteTitle = (filename) => filename.replace(/\.md$/i, "");
+const noteFileExtension = ".json";
+const isNoteFilePath = (itemPath) => /\.json$/i.test(itemPath);
+const isLegacyMarkdownPath = (itemPath) => /\.md$/i.test(itemPath);
+const isMigratableNotePath = (itemPath) =>
+	isNoteFilePath(itemPath) || isLegacyMarkdownPath(itemPath);
+const toNoteTitle = (filename) => filename.replace(/\.(?:json|md)$/i, "");
+
+const createEmptyNoteContent = () => ({
+	type: "doc",
+	content: [{ type: "paragraph" }],
+});
+
+const isPlainObject = (value) =>
+	typeof value === "object" && value !== null && !Array.isArray(value);
+
+const textToNoteContent = (text) => ({
+	type: "doc",
+	content: text.split(/\r?\n/).map((line) => ({
+		type: "paragraph",
+		content: line ? [{ type: "text", text: line }] : undefined,
+	})),
+});
+
+const normalizeNoteContent = (content) => {
+	if (isPlainObject(content) && typeof content.type === "string") {
+		return content;
+	}
+
+	if (typeof content === "string") return textToNoteContent(content);
+
+	return createEmptyNoteContent();
+};
+
+const serializeNoteContent = (content) =>
+	JSON.stringify(normalizeNoteContent(content), null, 2);
+
+const collectNoteText = (node, chunks) => {
+	if (typeof node?.text === "string") chunks.push(node.text);
+
+	for (const child of node?.content ?? []) collectNoteText(child, chunks);
+
+	if (
+		node?.type === "paragraph" ||
+		node?.type === "heading" ||
+		node?.type === "blockquote" ||
+		node?.type === "codeBlock" ||
+		node?.type === "listItem" ||
+		node?.type === "taskItem"
+	) {
+		if (chunks.at(-1) !== "\n") chunks.push("\n");
+	}
+};
+
+const noteContentText = (content) => {
+	const chunks = [];
+	collectNoteText(normalizeNoteContent(content), chunks);
+	return chunks.join("").replace(/\n+$/g, "");
+};
+
+const toNotePreviewFromContent = (content) =>
+	noteContentText(content)
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.find(Boolean) ?? "";
+
+const readNoteContent = async (notePath) => {
+	const rawContent = await fs.readFile(resolveWorkspacePath(notePath), "utf8");
+	const trimmedContent = rawContent.trim();
+
+	if (!trimmedContent) return createEmptyNoteContent();
+
+	if (isLegacyMarkdownPath(notePath)) return textToNoteContent(rawContent);
+
+	try {
+		return normalizeNoteContent(JSON.parse(rawContent));
+	} catch {
+		return textToNoteContent(rawContent);
+	}
+};
 
 const revisionKey = (notePath) => Buffer.from(notePath).toString("base64url");
 
-const writeRevisionSnapshot = async (notePath, nextMarkdown) => {
-	const absolutePath = resolveWorkspacePath(notePath);
-
+const writeRevisionSnapshot = async (notePath, nextContent) => {
 	try {
-		const currentMarkdown = await fs.readFile(absolutePath, "utf8");
-		if (currentMarkdown === nextMarkdown) return;
+		const currentContent = await readNoteContent(notePath);
+		const currentSerialized = serializeNoteContent(currentContent);
+		const nextSerialized = serializeNoteContent(nextContent);
+		if (currentSerialized === nextSerialized) return;
 
 		const revisionDirectory = path.join(revisionsRoot(), revisionKey(notePath));
 		await fs.mkdir(revisionDirectory, { recursive: true });
 		await writeFileAtomic(
-			path.join(revisionDirectory, `${Date.now()}.md`),
-			currentMarkdown,
+			path.join(revisionDirectory, `${Date.now()}${noteFileExtension}`),
+			currentSerialized,
 		);
 	} catch (error) {
 		if (error?.code === "ENOENT") return;
@@ -90,7 +166,7 @@ const collectDeletedNotes = async (itemPath) => {
 		const stats = await fs.stat(absolutePath);
 
 		if (stats.isFile()) {
-			return itemPath.toLowerCase().endsWith(".md") ? [itemPath] : [];
+			return isMigratableNotePath(itemPath) ? [itemPath] : [];
 		}
 
 		if (!stats.isDirectory()) return [];
@@ -124,49 +200,75 @@ const appendTombstones = async (notePaths) => {
 	await fs.appendFile(tombstonesPath(), `${lines}\n`, "utf8");
 };
 
-const toNotePreviewFromMarkdown = (markdown) =>
-	markdown
-		.replace(/^#{1,6}\s+/gm, "")
-		.replace(/[`*_~>#-]/g, "")
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.find(Boolean) ?? "";
-
 const createNoteId = (notePath) => revisionKey(notePath);
 
-const extractMarkdownMetadata = (markdown) => {
+const createAvailableNoteId = (db, notePath) => {
+	const baseId = createNoteId(notePath);
+	let candidate = baseId;
+	let suffix = 1;
+
+	while (db.prepare("SELECT 1 FROM notes WHERE id = ?").get(candidate)) {
+		candidate = `${baseId}-${suffix}`;
+		suffix += 1;
+	}
+
+	return candidate;
+};
+
+const nodeTextContent = (node) => {
+	const chunks = [];
+	collectNoteText(node, chunks);
+	return chunks.join("").replace(/\n+$/g, "").trim();
+};
+
+const extractNoteMetadata = (content) => {
 	const headings = [];
 	const tasks = [];
 	const tags = new Set();
 	const backlinks = new Set();
-	const lines = markdown.split(/\r?\n/);
+	let line = 1;
 
-	for (const [index, line] of lines.entries()) {
-		const heading = /^(#{1,6})\s+(.+?)\s*#*$/.exec(line);
+	const visit = (node) => {
+		if (!node) return;
 
-		if (heading) {
+		if (node.type === "heading") {
 			headings.push({
-				depth: heading[1].length,
-				text: heading[2].trim(),
-				line: index + 1,
+				depth: Number(node.attrs?.level) || 1,
+				text: nodeTextContent(node),
+				line,
 			});
 		}
 
-		const task = /^\s*[-*+]\s+\[([ xX])\]\s+(.+)$/.exec(line);
-
-		if (task) {
+		if (node.type === "taskItem") {
 			tasks.push({
-				checked: task[1].toLowerCase() === "x",
-				text: task[2].trim(),
-				line: index + 1,
+				checked: node.attrs?.checked === true,
+				text: nodeTextContent(node),
+				line,
 			});
 		}
 
-		for (const match of line.matchAll(/(?:^|[\s(])#([A-Za-z0-9_/-]+)/g)) {
+		for (const child of node.content ?? []) visit(child);
+
+		if (
+			node.type === "paragraph" ||
+			node.type === "heading" ||
+			node.type === "blockquote" ||
+			node.type === "codeBlock" ||
+			node.type === "listItem" ||
+			node.type === "taskItem"
+		) {
+			line += 1;
+		}
+	};
+
+	visit(normalizeNoteContent(content));
+
+	for (const textLine of noteContentText(content).split(/\r?\n/)) {
+		for (const match of textLine.matchAll(/(?:^|[\s(])#([A-Za-z0-9_/-]+)/g)) {
 			tags.add(match[1]);
 		}
 
-		for (const match of line.matchAll(
+		for (const match of textLine.matchAll(
 			/\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]/g,
 		)) {
 			backlinks.add(match[1].trim());
@@ -283,11 +385,12 @@ const getIndexedNote = async (notePath, stats) => {
 		};
 	}
 
-	const markdown = await fs.readFile(resolveWorkspacePath(notePath), "utf8");
-	const id = existing?.id || createNoteId(notePath);
+	const content = await readNoteContent(notePath);
+	const plainText = noteContentText(content);
+	const id = existing?.id || createAvailableNoteId(db, notePath);
 	const title = toNoteTitle(path.posix.basename(notePath));
-	const preview = toNotePreviewFromMarkdown(markdown);
-	const metadata = extractMarkdownMetadata(markdown);
+	const preview = toNotePreviewFromContent(content);
+	const metadata = extractNoteMetadata(content);
 
 	db.prepare(`
 		INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version)
@@ -349,7 +452,7 @@ const getIndexedNote = async (notePath, stats) => {
 	db.prepare("DELETE FROM note_fts WHERE path = ?").run(notePath);
 	db.prepare(
 		"INSERT INTO note_fts (path, title, content) VALUES (?, ?, ?)",
-	).run(notePath, title, markdown);
+	).run(notePath, title, plainText);
 
 	return {
 		title,
@@ -434,6 +537,39 @@ const pruneIndex = async (knownNotePaths) => {
 	}
 };
 
+const migrateMarkdownNotes = async (relativePath = "") => {
+	const absolutePath = resolveWorkspacePath(relativePath);
+	const entries = await fs.readdir(absolutePath, { withFileTypes: true });
+
+	for (const entry of entries) {
+		if (entry.name.startsWith(".")) continue;
+
+		const itemPath = path.posix.join(
+			relativePath.replaceAll(path.sep, "/"),
+			entry.name,
+		);
+
+		if (entry.isDirectory()) {
+			await migrateMarkdownNotes(itemPath);
+			continue;
+		}
+
+		if (!entry.isFile() || !isLegacyMarkdownPath(entry.name)) continue;
+
+		const markdown = await fs.readFile(resolveWorkspacePath(itemPath), "utf8");
+		const nextPath = await uniquePath(
+			relativePath,
+			`${toNoteTitle(entry.name)}${noteFileExtension}`,
+		);
+
+		await writeFileAtomic(
+			resolveWorkspacePath(nextPath),
+			serializeNoteContent(textToNoteContent(markdown)),
+		);
+		await fs.rm(resolveWorkspacePath(itemPath), { force: true });
+	}
+};
+
 const scanDirectory = async (relativePath = "", knownNotePaths = new Set()) => {
 	const absolutePath = resolveWorkspacePath(relativePath);
 	const entries = await fs.readdir(absolutePath, { withFileTypes: true });
@@ -459,9 +595,7 @@ const scanDirectory = async (relativePath = "", knownNotePaths = new Set()) => {
 
 	const notes = await Promise.all(
 		visibleEntries
-			.filter(
-				(entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".md"),
-			)
+			.filter((entry) => entry.isFile() && isNoteFilePath(entry.name))
 			.sort((first, second) => first.name.localeCompare(second.name))
 			.map(async (entry) => {
 				const notePath = path.posix.join(
@@ -490,6 +624,7 @@ const scanDirectory = async (relativePath = "", knownNotePaths = new Set()) => {
 const listWorkspace = async () => {
 	const start = performance.now();
 	await ensureWorkspace();
+	await migrateMarkdownNotes();
 	const knownNotePaths = new Set();
 
 	const rootEntries = await fs.readdir(workspaceRoot(), {
@@ -577,9 +712,10 @@ const scanWorkspaceDirectories = async (relativePath = "") => {
 	return directories;
 };
 
-const ensureMarkdownExtension = (name) => {
+const ensureNoteExtension = (name) => {
 	const trimmed = name.trim() || "Untitled";
-	return trimmed.toLowerCase().endsWith(".md") ? trimmed : `${trimmed}.md`;
+	const base = toNoteTitle(trimmed) || "Untitled";
+	return `${base}${noteFileExtension}`;
 };
 
 const isDescendantPath = (parentPath, childPath) =>
@@ -613,7 +749,7 @@ const createWindow = () => {
 	mainWindow = new BrowserWindow({
 		width: 800,
 		height: 600,
-		minWidth: 760,
+		minWidth: 420,
 		minHeight: 520,
 		frame: false,
 		title: "Paperite",
@@ -711,35 +847,24 @@ const windowActions = {
 
 app.setAsDefaultProtocolClient("paperite");
 
+const isAuthCallbackUrl = (url) => url.startsWith("paperite://auth/");
+
+const getAuthCallbackArg = (argv) => argv.find(isAuthCallbackUrl);
+
 const sendAuthCallback = (url) => {
+	pendingAuthCallbackUrl = url;
 	mainWindow?.webContents.send("auth-callback", url);
 	mainWindow?.focus();
 };
 
-const startAuthCallbackServer = () => {
-	if (authCallbackServer) return;
-
-	authCallbackServer = http.createServer((request, response) => {
-		if (!request.url?.startsWith("/auth/callback")) {
-			response.writeHead(404);
-			response.end("Not found");
-			return;
-		}
-
-		const callbackUrl = `http://127.0.0.1:${authCallbackPort}${request.url}`;
-		sendAuthCallback(callbackUrl);
-
-		response.writeHead(200, { "content-type": "text/html" });
-		response.end(
-			"<title>Paperite</title><p>You're signed in. You can close this tab now.</p>",
-		);
-	});
-
-	authCallbackServer.listen(authCallbackPort, "127.0.0.1");
-};
-
 ipcMain.handle("open-external", async (_event, url) => {
 	await shell.openExternal(url);
+});
+
+ipcMain.handle("auth:get-pending-callback", () => {
+	const url = pendingAuthCallbackUrl ?? null;
+	pendingAuthCallbackUrl = undefined;
+	return url;
 });
 
 ipcMain.handle("app:set-title", (event, title) => {
@@ -769,13 +894,17 @@ ipcMain.handle("notes:search", async (_event, query) => searchNotes(query));
 
 ipcMain.handle("notes:read-note", async (_event, notePath) => {
 	await ensureWorkspace();
-	return fs.readFile(resolveWorkspacePath(notePath), "utf8");
+	return readNoteContent(notePath);
 });
 
-ipcMain.handle("notes:write-note", async (_event, notePath, markdown) => {
+ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	await ensureWorkspace();
-	await writeRevisionSnapshot(notePath, markdown);
-	await writeFileAtomic(resolveWorkspacePath(notePath), markdown);
+	const normalizedContent = normalizeNoteContent(content);
+	await writeRevisionSnapshot(notePath, normalizedContent);
+	await writeFileAtomic(
+		resolveWorkspacePath(notePath),
+		serializeNoteContent(normalizedContent),
+	);
 	const stats = await fs.stat(resolveWorkspacePath(notePath));
 	await getIndexedNote(notePath, stats);
 	return { ok: true };
@@ -783,8 +912,12 @@ ipcMain.handle("notes:write-note", async (_event, notePath, markdown) => {
 
 ipcMain.handle("notes:create-note", async (_event, parentPath, title) => {
 	await ensureWorkspace();
-	const notePath = await uniquePath(parentPath, ensureMarkdownExtension(title));
-	await fs.writeFile(resolveWorkspacePath(notePath), "", "utf8");
+	const notePath = await uniquePath(parentPath, ensureNoteExtension(title));
+	await fs.writeFile(
+		resolveWorkspacePath(notePath),
+		serializeNoteContent(createEmptyNoteContent()),
+		"utf8",
+	);
 	return { path: notePath, title: toNoteTitle(path.basename(notePath)) };
 });
 
@@ -807,10 +940,8 @@ ipcMain.handle("notes:create-space", async (_event, title) => {
 ipcMain.handle("notes:rename-item", async (_event, itemPath, nextName) => {
 	await ensureWorkspace();
 	const current = normalizeRelativePath(itemPath);
-	const extension = current.toLowerCase().endsWith(".md") ? ".md" : "";
-	const nextBase = extension
-		? ensureMarkdownExtension(nextName)
-		: nextName.trim();
+	const extension = isMigratableNotePath(current) ? noteFileExtension : "";
+	const nextBase = extension ? ensureNoteExtension(nextName) : nextName.trim();
 	const nextPath = path.posix.join(
 		path.posix.dirname(current),
 		nextBase || "Untitled",
@@ -870,9 +1001,10 @@ ipcMain.handle("notes:write-app-state", async (_event, state) => {
 });
 
 app.whenReady().then(() => {
-	startAuthCallbackServer();
 	refreshWorkspaceWatchers().catch(() => undefined);
 	createWindow();
+	const startupAuthCallback = getAuthCallbackArg(process.argv);
+	if (startupAuthCallback) sendAuthCallback(startupAuthCallback);
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) createWindow();
 	});
@@ -884,14 +1016,15 @@ if (!gotLock) {
 	app.quit();
 } else {
 	app.on("second-instance", (_event, argv) => {
-		const url = argv.find((arg) => arg.startsWith("paperite://"));
+		const url = getAuthCallbackArg(argv);
 		if (url) sendAuthCallback(url);
 	});
 }
 
 // mac
-app.on("open-url", (_event, url) => {
-	sendAuthCallback(url);
+app.on("open-url", (event, url) => {
+	event.preventDefault();
+	if (isAuthCallbackUrl(url)) sendAuthCallback(url);
 });
 
 app.on("window-all-closed", () => {

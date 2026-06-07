@@ -5,6 +5,7 @@ import {
 	CheckIcon,
 	DownloadIcon,
 	FileSearchIcon,
+	FileTextIcon,
 	InfoIcon,
 	MoreVerticalIcon,
 	PencilIcon,
@@ -33,8 +34,25 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
+import {
+	Empty,
+	EmptyDescription,
+	EmptyHeader,
+	EmptyMedia,
+	EmptyTitle,
+} from "@/components/ui/empty";
+import {
+	SidebarInset,
+	SidebarProvider,
+	SidebarTrigger,
+} from "@/components/ui/sidebar";
 import { clerk, loadClerk } from "@/lib/clerk";
+import {
+	createEmptyNoteContent,
+	noteContentPreview,
+	replaceInNoteContent,
+	serializeNoteContent,
+} from "@/lib/note-content";
 import { getNotesEngine } from "@/lib/notes-engine";
 
 export const Route = createFileRoute("/_main/")({
@@ -56,6 +74,7 @@ const defaultAppState: PaperiteAppState = {
 	spaceColors: {},
 	spaceIcons: {},
 	readOnlyNotes: {},
+	sidebarOpen: true,
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
@@ -75,7 +94,10 @@ function Index() {
 	const notesApi = getNotesEngine();
 	const [workspace, setWorkspace] = useState<WorkspaceSnapshot | null>(null);
 	const [appState, setAppState] = useState<PaperiteAppState>(defaultAppState);
-	const [markdown, setMarkdown] = useState("");
+	const [noteContent, setNoteContent] = useState<NoteContent>(() =>
+		createEmptyNoteContent(),
+	);
+	const [loadedNotePath, setLoadedNotePath] = useState<string | null>(null);
 	const [notePreviews, setNotePreviews] = useState<Record<string, string>>({});
 	const [noteTitleDrafts, setNoteTitleDrafts] = useState<
 		Record<string, string>
@@ -92,13 +114,15 @@ function Index() {
 	const didHydrate = useRef(false);
 	const findInputRef = useRef<HTMLInputElement>(null);
 	const lastLoadedNote = useRef<string | null>(null);
-	const lastPersistedMarkdown = useRef("");
+	const lastPersistedContent = useRef("");
 	const activeNotePathRef = useRef<string | null>(null);
-	const markdownRef = useRef("");
+	const noteContentRef = useRef<NoteContent>(createEmptyNoteContent());
 	const tabListRef = useRef<HTMLDivElement>(null);
 	const tabRefs = useRef(new Map<string, HTMLDivElement>());
-	const noteContentCache = useRef(new Map<string, string>());
-	const notePersistedCache = useRef(new Map<string, string>());
+	const activeEditorContentRef = useRef<(() => NoteContent) | null>(null);
+	const noteContentCache = useRef(new Map<string, NoteContent>());
+	const notePersistedCache = useRef(new Map<string, NoteContent>());
+	const noteWriteQueue = useRef(new Map<string, Promise<void>>());
 	const [tabIndicator, setTabIndicator] = useState<TabIndicator | null>(null);
 	const pendingSwitchBenchmark = useRef<{
 		direction: 1 | -1;
@@ -107,6 +131,37 @@ function Index() {
 		start: number;
 	} | null>(null);
 	const saveSequence = useRef(0);
+
+	const getActiveContent = useCallback(
+		() => activeEditorContentRef.current?.() ?? noteContentRef.current,
+		[],
+	);
+
+	const enqueueNoteWrite = useCallback(
+		(notePath: string, content: NoteContent) => {
+			if (!notesApi) return Promise.resolve();
+
+			const previousWrite =
+				noteWriteQueue.current.get(notePath) ?? Promise.resolve();
+			const queuedWrite = previousWrite
+				.catch(() => undefined)
+				.then(() =>
+					notesApi.writeNote(notePath, content).then(() => undefined),
+				);
+			const trackedWrite = queuedWrite
+				.catch(() => undefined)
+				.finally(() => {
+					if (noteWriteQueue.current.get(notePath) === trackedWrite) {
+						noteWriteQueue.current.delete(notePath);
+					}
+				});
+
+			noteWriteQueue.current.set(notePath, trackedWrite);
+
+			return queuedWrite;
+		},
+		[notesApi],
+	);
 
 	const activeTab = appState.openTabs.find(
 		(tab) => tab.path === appState.activeNotePath,
@@ -128,15 +183,15 @@ function Index() {
 	}, [appState.activeNotePath]);
 
 	useEffect(() => {
-		markdownRef.current = markdown;
+		noteContentRef.current = noteContent;
 
 		if (
 			appState.activeNotePath &&
 			lastLoadedNote.current === appState.activeNotePath
 		) {
-			noteContentCache.current.set(appState.activeNotePath, markdown);
+			noteContentCache.current.set(appState.activeNotePath, noteContent);
 		}
-	}, [appState.activeNotePath, markdown]);
+	}, [appState.activeNotePath, noteContent]);
 
 	useEffect(() => {
 		const title = appState.activeNotePath
@@ -162,20 +217,33 @@ function Index() {
 			return;
 		}
 
-		const listRect = listElement.getBoundingClientRect();
-		const tabRect = tabElement.getBoundingClientRect();
-		const nextIndicator = {
-			left: tabRect.left - listRect.left + listElement.scrollLeft,
-			width: tabRect.width,
+		const updateTabIndicator = () => {
+			const listRect = listElement.getBoundingClientRect();
+			const tabRect = tabElement.getBoundingClientRect();
+			const nextIndicator = {
+				left: tabRect.left - listRect.left + listElement.scrollLeft,
+				width: tabRect.width,
+			};
+
+			setTabIndicator((current) =>
+				current &&
+				Math.abs(current.left - nextIndicator.left) < 0.5 &&
+				Math.abs(current.width - nextIndicator.width) < 0.5
+					? current
+					: nextIndicator,
+			);
 		};
 
-		setTabIndicator((current) =>
-			current &&
-			Math.abs(current.left - nextIndicator.left) < 0.5 &&
-			Math.abs(current.width - nextIndicator.width) < 0.5
-				? current
-				: nextIndicator,
-		);
+		updateTabIndicator();
+		const resizeObserver = new ResizeObserver(updateTabIndicator);
+		resizeObserver.observe(listElement);
+		resizeObserver.observe(tabElement);
+		listElement.addEventListener("scroll", updateTabIndicator);
+
+		return () => {
+			resizeObserver.disconnect();
+			listElement.removeEventListener("scroll", updateTabIndicator);
+		};
 	}, [appState.activeNotePath]);
 
 	const refreshWorkspace = useCallback(async () => {
@@ -197,23 +265,30 @@ function Index() {
 
 		const activeNotePath = appState.activeNotePath;
 		if (!activeNotePath || !notePaths.has(activeNotePath)) return;
-		if (markdown !== lastPersistedMarkdown.current) return;
+		if (serializeNoteContent(noteContent) !== lastPersistedContent.current) {
+			return;
+		}
 
 		try {
 			const content = await notesApi.readNote(activeNotePath);
 			if (activeNotePathRef.current !== activeNotePath) return;
-			if (markdownRef.current !== lastPersistedMarkdown.current) return;
+			if (
+				serializeNoteContent(noteContentRef.current) !==
+				lastPersistedContent.current
+			) {
+				return;
+			}
 
 			lastLoadedNote.current = activeNotePath;
-			lastPersistedMarkdown.current = content;
+			lastPersistedContent.current = serializeNoteContent(content);
 			noteContentCache.current.set(activeNotePath, content);
 			notePersistedCache.current.set(activeNotePath, content);
-			setMarkdown(content);
+			setNoteContent(content);
 			setSaveStatus("saved");
 		} catch {
 			setSaveStatus("error");
 		}
-	}, [appState.activeNotePath, markdown, notesApi]);
+	}, [appState.activeNotePath, noteContent, notesApi]);
 
 	useEffect(() => {
 		if (!notesApi) return;
@@ -229,11 +304,19 @@ function Index() {
 			if (cancelled) return;
 
 			setWorkspace(nextWorkspace);
-			setAppState(normalizeAppState({ ...defaultAppState, ...savedState }));
+			setAppState(
+				reconcileAppState(
+					normalizeAppState({ ...defaultAppState, ...savedState }),
+					nextWorkspace,
+				),
+			);
 			didHydrate.current = true;
 		};
 
-		hydrate();
+		hydrate().catch((error) => {
+			console.error("[paperite] failed to hydrate workspace", error);
+			setSaveStatus("error");
+		});
 
 		return () => {
 			cancelled = true;
@@ -299,8 +382,8 @@ function Index() {
 
 	useEffect(() => {
 		if (!notesApi || !appState.activeNotePath) {
-			setMarkdown("");
 			lastLoadedNote.current = null;
+			setLoadedNotePath(null);
 			return;
 		}
 
@@ -313,17 +396,24 @@ function Index() {
 			setNotePreviews((current) => omitExact(current, notePath));
 
 			if (cachedContent !== undefined) {
+				const persistedContent = notePersistedCache.current.get(notePath);
+				const cachedSerialized = serializeNoteContent(cachedContent);
+				const persistedSerialized = persistedContent
+					? serializeNoteContent(persistedContent)
+					: "";
+
 				lastLoadedNote.current = notePath;
-				lastPersistedMarkdown.current =
-					notePersistedCache.current.get(notePath) ?? cachedContent;
-				setMarkdown(cachedContent);
+				lastPersistedContent.current = persistedSerialized;
+				setNoteContent(cachedContent);
+				setLoadedNotePath(notePath);
 				setSaveStatus(
-					cachedContent === lastPersistedMarkdown.current ? "saved" : "saving",
+					cachedSerialized === persistedSerialized ? "saved" : "saving",
 				);
 			} else {
 				lastLoadedNote.current = null;
-				lastPersistedMarkdown.current = "";
-				setMarkdown("");
+				lastPersistedContent.current = "";
+				setLoadedNotePath(null);
+				setNoteContent(createEmptyNoteContent());
 			}
 
 			const readStart = performance.now();
@@ -334,22 +424,38 @@ function Index() {
 
 			const currentCachedContent = noteContentCache.current.get(notePath);
 			const currentPersistedContent = notePersistedCache.current.get(notePath);
+			const readSerialized = serializeNoteContent(content);
+			const currentCachedSerialized = currentCachedContent
+				? serializeNoteContent(currentCachedContent)
+				: undefined;
+			const currentPersistedSerialized = currentPersistedContent
+				? serializeNoteContent(currentPersistedContent)
+				: undefined;
 			const hasDirtyCachedContent =
-				currentCachedContent !== undefined &&
-				currentPersistedContent !== undefined &&
-				currentCachedContent !== currentPersistedContent;
+				currentCachedSerialized !== undefined &&
+				currentCachedSerialized !== readSerialized &&
+				(noteWriteQueue.current.has(notePath) ||
+					currentPersistedSerialized === undefined ||
+					currentCachedSerialized !== currentPersistedSerialized);
 
 			if (hasDirtyCachedContent) {
 				lastLoadedNote.current = notePath;
-				lastPersistedMarkdown.current = currentPersistedContent;
+				lastPersistedContent.current =
+					currentPersistedSerialized ?? readSerialized;
+				if (!currentPersistedContent) {
+					notePersistedCache.current.set(notePath, content);
+				}
+				setLoadedNotePath(notePath);
+				setSaveStatus("saving");
 				return;
 			}
 
 			lastLoadedNote.current = notePath;
-			lastPersistedMarkdown.current = content;
+			lastPersistedContent.current = readSerialized;
 			noteContentCache.current.set(notePath, content);
 			notePersistedCache.current.set(notePath, content);
-			setMarkdown(content);
+			setNoteContent(content);
+			setLoadedNotePath(notePath);
 			setSaveStatus("saved");
 
 			if (readDuration > 16) {
@@ -368,8 +474,11 @@ function Index() {
 
 	useEffect(() => {
 		if (!notesApi || !appState.activeNotePath) return;
+		if (loadedNotePath !== appState.activeNotePath) return;
 		if (lastLoadedNote.current !== appState.activeNotePath) return;
-		if (markdown === lastPersistedMarkdown.current) {
+		const serializedContent = serializeNoteContent(noteContent);
+
+		if (serializedContent === lastPersistedContent.current) {
 			setSaveStatus("saved");
 			return;
 		}
@@ -378,11 +487,21 @@ function Index() {
 		const saveTimer = window.setTimeout(() => {
 			const notePath = appState.activeNotePath;
 			if (!notePath) return;
+			const latestContent =
+				notePath === activeNotePathRef.current
+					? getActiveContent()
+					: noteContent;
+			const latestSerializedContent = serializeNoteContent(latestContent);
+
+			if (latestSerializedContent === lastPersistedContent.current) {
+				setSaveStatus("saved");
+				return;
+			}
+
 			const sequence = saveSequence.current + 1;
 			saveSequence.current = sequence;
 
-			notesApi
-				.writeNote(notePath, markdown)
+			enqueueNoteWrite(notePath, latestContent)
 				.then(() => {
 					if (
 						saveSequence.current !== sequence ||
@@ -391,14 +510,19 @@ function Index() {
 						return;
 					}
 
-					lastPersistedMarkdown.current = markdown;
-					noteContentCache.current.set(notePath, markdown);
-					notePersistedCache.current.set(notePath, markdown);
-					setSaveStatus(markdownRef.current === markdown ? "saved" : "saving");
+					lastPersistedContent.current = latestSerializedContent;
+					noteContentCache.current.set(notePath, latestContent);
+					notePersistedCache.current.set(notePath, latestContent);
+					setSaveStatus(
+						serializeNoteContent(noteContentRef.current) ===
+							latestSerializedContent
+							? "saved"
+							: "saving",
+					);
 					setWorkspace((current) =>
 						current
 							? updateWorkspaceNote(current, notePath, {
-									preview: markdownPreview(markdown),
+									preview: noteContentPreview(latestContent),
 									updatedAt: Date.now(),
 								})
 							: current,
@@ -408,7 +532,14 @@ function Index() {
 		}, 700);
 
 		return () => window.clearTimeout(saveTimer);
-	}, [appState.activeNotePath, markdown, notesApi]);
+	}, [
+		appState.activeNotePath,
+		enqueueNoteWrite,
+		getActiveContent,
+		loadedNotePath,
+		noteContent,
+		notesApi,
+	]);
 
 	const currentSpacePath = useMemo(() => {
 		if (
@@ -437,6 +568,11 @@ function Index() {
 	};
 
 	const openNote = (note: WorkspaceNote, mode: "preview" | "pinned") => {
+		const activeNotePath = activeNotePathRef.current;
+		if (activeNotePath && activeNotePath !== note.path) {
+			flushNote(activeNotePath, getActiveContent());
+		}
+
 		setAppState((current) => {
 			const existing = current.openTabs.find((tab) => tab.path === note.path);
 			const previewIndex = current.openTabs.findIndex((tab) => tab.preview);
@@ -462,25 +598,87 @@ function Index() {
 		});
 	};
 
-	const closeTab = useCallback((path: string) => {
-		setAppState((current) => {
-			const tabIndex = current.openTabs.findIndex((tab) => tab.path === path);
-			const openTabs = current.openTabs.filter((tab) => tab.path !== path);
-			const fallbackTab = openTabs[Math.max(0, tabIndex - 1)] ?? openTabs[0];
+	const flushNote = useCallback(
+		(notePath: string, content: NoteContent) => {
+			if (!notesApi) return;
 
-			return {
-				...current,
-				activeNotePath:
-					current.activeNotePath === path
-						? (fallbackTab?.path ?? null)
-						: current.activeNotePath,
-				openTabs,
-			};
-		});
-	}, []);
+			const serializedContent = serializeNoteContent(content);
+			const persistedContent = notePersistedCache.current.get(notePath);
+			const persistedSerialized = persistedContent
+				? serializeNoteContent(persistedContent)
+				: lastLoadedNote.current === notePath
+					? lastPersistedContent.current
+					: "";
+
+			if (serializedContent === persistedSerialized) return;
+
+			const sequence = saveSequence.current + 1;
+			saveSequence.current = sequence;
+			setSaveStatus("saving");
+
+			enqueueNoteWrite(notePath, content)
+				.then(() => {
+					noteContentCache.current.set(notePath, content);
+					notePersistedCache.current.set(notePath, content);
+
+					if (
+						saveSequence.current === sequence &&
+						activeNotePathRef.current === notePath
+					) {
+						lastPersistedContent.current = serializedContent;
+						setSaveStatus(
+							serializeNoteContent(noteContentRef.current) === serializedContent
+								? "saved"
+								: "saving",
+						);
+					}
+
+					setWorkspace((current) =>
+						current
+							? updateWorkspaceNote(current, notePath, {
+									preview: noteContentPreview(content),
+									updatedAt: Date.now(),
+								})
+							: current,
+					);
+				})
+				.catch(() => setSaveStatus("error"));
+		},
+		[enqueueNoteWrite, notesApi],
+	);
+
+	const closeTab = useCallback(
+		(path: string, options: { flush?: boolean } = {}) => {
+			if (options.flush !== false && path === activeNotePathRef.current) {
+				const content = getActiveContent();
+
+				noteContentCache.current.set(path, content);
+				flushNote(path, content);
+			}
+
+			setAppState((current) => {
+				const tabIndex = current.openTabs.findIndex((tab) => tab.path === path);
+				const openTabs = current.openTabs.filter((tab) => tab.path !== path);
+				const fallbackTab = openTabs[Math.max(0, tabIndex - 1)] ?? openTabs[0];
+
+				return {
+					...current,
+					activeNotePath:
+						current.activeNotePath === path
+							? (fallbackTab?.path ?? null)
+							: current.activeNotePath,
+					openTabs,
+				};
+			});
+		},
+		[flushNote, getActiveContent],
+	);
 
 	const switchTab = useCallback(
 		(direction: 1 | -1, source: "benchmark" | "tabs" = "tabs") => {
+			const activeNotePath = activeNotePathRef.current;
+			if (activeNotePath) flushNote(activeNotePath, getActiveContent());
+
 			setAppState((current) => {
 				if (current.openTabs.length < 2) return current;
 
@@ -507,7 +705,7 @@ function Index() {
 				};
 			});
 		},
-		[],
+		[flushNote, getActiveContent],
 	);
 
 	useEffect(() => {
@@ -726,7 +924,7 @@ function Index() {
 						? {
 								...tab,
 								path: movePath(tab.path, itemPath, moved.path),
-								title: stripMarkdownExtension(
+								title: stripNoteExtension(
 									fileName(movePath(tab.path, itemPath, moved.path)),
 								),
 							}
@@ -762,7 +960,7 @@ function Index() {
 		try {
 			const previousPath = appState.activeNotePath;
 			const renamed = await notesApi.renameItem(previousPath, title);
-			const nextTitle = stripMarkdownExtension(fileName(renamed.path));
+			const nextTitle = stripNoteExtension(fileName(renamed.path));
 
 			setAppState((current) => ({
 				...current,
@@ -798,7 +996,7 @@ function Index() {
 
 		try {
 			await notesApi.deleteItem(notePath);
-			closeTab(notePath);
+			closeTab(notePath, { flush: false });
 			setNotePreviews((current) => {
 				const { [notePath]: _preview, ...rest } = current;
 				return rest;
@@ -819,7 +1017,7 @@ function Index() {
 
 		try {
 			const renamed = await notesApi.renameItem(path, title);
-			const nextTitle = stripMarkdownExtension(fileName(renamed.path));
+			const nextTitle = stripNoteExtension(fileName(renamed.path));
 
 			setAppState((current) => ({
 				...current,
@@ -845,7 +1043,7 @@ function Index() {
 								title:
 									tab.path === path
 										? nextTitle
-										: stripMarkdownExtension(
+										: stripNoteExtension(
 												fileName(movePath(tab.path, path, renamed.path)),
 											),
 							}
@@ -901,12 +1099,16 @@ function Index() {
 
 	const replaceInNote = () => {
 		if (!findText) return;
-		setMarkdown((current) => current.replace(findText, replaceText));
+		setNoteContent((current) =>
+			replaceInNoteContent(current, findText, replaceText, false),
+		);
 	};
 
 	const replaceAllInNote = () => {
 		if (!findText) return;
-		setMarkdown((current) => current.split(findText).join(replaceText));
+		setNoteContent((current) =>
+			replaceInNoteContent(current, findText, replaceText, true),
+		);
 	};
 
 	const updateActiveTitleDraft = (title: string) => {
@@ -939,33 +1141,23 @@ function Index() {
 		[appState.activeNotePath],
 	);
 
-	const updateNoteMarkdown = useCallback(
-		(nextMarkdown: string, sourceNotePath: string | null) => {
+	const updateNoteContent = useCallback(
+		(nextContent: NoteContent, sourceNotePath: string | null) => {
 			if (!sourceNotePath) return;
+			if (sourceNotePath !== activeNotePathRef.current) return;
 
-			noteContentCache.current.set(sourceNotePath, nextMarkdown);
-
-			if (sourceNotePath === activeNotePathRef.current) {
-				setMarkdown(nextMarkdown);
-				return;
-			}
-
-			notesApi
-				?.writeNote(sourceNotePath, nextMarkdown)
-				.then(() => {
-					notePersistedCache.current.set(sourceNotePath, nextMarkdown);
-					setWorkspace((current) =>
-						current
-							? updateWorkspaceNote(current, sourceNotePath, {
-									preview: markdownPreview(nextMarkdown),
-									updatedAt: Date.now(),
-								})
-							: current,
-					);
-				})
-				.catch(() => setSaveStatus("error"));
+			noteContentRef.current = nextContent;
+			noteContentCache.current.set(sourceNotePath, nextContent);
+			setNoteContent(nextContent);
 		},
-		[notesApi],
+		[],
+	);
+
+	const updateActiveContentSnapshot = useCallback(
+		(getContent: (() => NoteContent) | null) => {
+			activeEditorContentRef.current = getContent;
+		},
+		[],
 	);
 
 	const activeNoteReadOnly = appState.activeNotePath
@@ -984,13 +1176,21 @@ function Index() {
 		}));
 	};
 
-	const selectTab = useCallback((notePath: string) => {
-		setAppState((current) => ({
-			...current,
-			activeNotePath: notePath,
-			activeSpacePath: topLevelPath(notePath),
-		}));
-	}, []);
+	const selectTab = useCallback(
+		(notePath: string) => {
+			const activeNotePath = activeNotePathRef.current;
+			if (activeNotePath && activeNotePath !== notePath) {
+				flushNote(activeNotePath, getActiveContent());
+			}
+
+			setAppState((current) => ({
+				...current,
+				activeNotePath: notePath,
+				activeSpacePath: topLevelPath(notePath),
+			}));
+		},
+		[flushNote, getActiveContent],
+	);
 
 	const pinTab = useCallback((notePath: string) => {
 		setAppState((current) => ({
@@ -1025,6 +1225,10 @@ function Index() {
 	return (
 		<SidebarProvider
 			className="h-full min-h-0"
+			open={appState.sidebarOpen}
+			onOpenChange={(sidebarOpen) =>
+				setAppState((current) => ({ ...current, sidebarOpen }))
+			}
 			style={
 				{
 					"--sidebar-width": "14.5rem",
@@ -1056,8 +1260,14 @@ function Index() {
 				</>
 			)}
 			<SidebarInset className="min-w-0 overflow-hidden">
-				{focusMode ? null : (
+				{focusMode || !appState.activeNotePath ? null : (
 					<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 px-3 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
+						<div className="flex shrink-0 items-center min-[56.0625rem]:hidden">
+							<SidebarTrigger
+								toggleNotesSheet
+								className="text-muted-foreground min-[56.0625rem]:hidden"
+							/>
+						</div>
 						<div
 							ref={tabListRef}
 							className="no-scrollbar relative flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
@@ -1307,7 +1517,7 @@ function Index() {
 				) : null}
 				<section
 					aria-label="Note editor"
-					className={`min-h-0 flex-1 overflow-y-auto overscroll-contain ${focusMode ? "pt-8 md:pt-12" : ""}`}
+					className={`flex min-h-0 flex-1 overflow-y-auto overscroll-contain ${focusMode ? "pt-8 md:pt-12" : ""}`}
 					onKeyDown={(event) => {
 						if (
 							event.key.toLowerCase() === "b" &&
@@ -1317,22 +1527,43 @@ function Index() {
 						}
 					}}
 				>
-					<NoteEditor
-						markdown={markdown}
-						noteTitle={activeNoteTitle}
-						notePath={appState.activeNotePath}
-						pageFormat={activePageFormat}
-						readOnly={activeNoteReadOnly}
-						searchQuery={
-							floatingPanelMode === "find" || floatingPanelMode === "replace"
-								? findText
-								: ""
-						}
-						onChange={updateNoteMarkdown}
-						onContentRendered={completeSwitchBenchmark}
-						onRename={renameActiveNote}
-						onTitleChange={updateActiveTitleDraft}
-					/>
+					{appState.activeNotePath &&
+					loadedNotePath === appState.activeNotePath ? (
+						<NoteEditor
+							key={appState.activeNotePath}
+							content={noteContent}
+							noteTitle={activeNoteTitle}
+							notePath={appState.activeNotePath}
+							pageFormat={activePageFormat}
+							readOnly={activeNoteReadOnly}
+							searchQuery={
+								floatingPanelMode === "find" || floatingPanelMode === "replace"
+									? findText
+									: ""
+							}
+							onChange={updateNoteContent}
+							onContentRendered={completeSwitchBenchmark}
+							onContentSnapshot={updateActiveContentSnapshot}
+							onRename={renameActiveNote}
+							onTitleChange={updateActiveTitleDraft}
+						/>
+					) : appState.activeNotePath ? (
+						<div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
+							Loading note...
+						</div>
+					) : (
+						<Empty>
+							<EmptyHeader>
+								<EmptyMedia variant="icon">
+									<FileTextIcon />
+								</EmptyMedia>
+								<EmptyTitle>No note open</EmptyTitle>
+								<EmptyDescription>
+									Open a note from the sidebar to start writing.
+								</EmptyDescription>
+							</EmptyHeader>
+						</Empty>
+					)}
 				</section>
 			</SidebarInset>
 		</SidebarProvider>
@@ -1348,6 +1579,7 @@ function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		spaceColors: state.spaceColors ?? {},
 		spaceIcons: state.spaceIcons ?? {},
 		readOnlyNotes: state.readOnlyNotes ?? {},
+		sidebarOpen: state.sidebarOpen ?? true,
 	};
 }
 
@@ -1380,6 +1612,7 @@ function reconcileAppState(
 		spaceColors: state.spaceColors,
 		spaceIcons: state.spaceIcons,
 		readOnlyNotes: state.readOnlyNotes,
+		sidebarOpen: state.sidebarOpen,
 	};
 }
 
@@ -1483,8 +1716,8 @@ function fileName(notePath: string) {
 	return notePath.split("/").at(-1) ?? notePath;
 }
 
-function stripMarkdownExtension(filename: string) {
-	return filename.replace(/\.md$/i, "");
+function stripNoteExtension(filename: string) {
+	return filename.replace(/\.(?:json|md)$/i, "");
 }
 
 function isSameOrChildPath(parentPath: string, childPath: string) {
@@ -1565,17 +1798,6 @@ function updateWorkspaceItems(
 		if (first.type === "folder" || second.type === "folder") return 0;
 		return second.updatedAt - first.updatedAt;
 	});
-}
-
-function markdownPreview(markdown: string) {
-	return (
-		markdown
-			.replace(/^#{1,6}\s+/gm, "")
-			.replace(/[`*_~>#-]/g, "")
-			.split(/\r?\n/)
-			.map((line) => line.trim())
-			.find(Boolean) ?? ""
-	);
 }
 
 function applyNoteDecorations(

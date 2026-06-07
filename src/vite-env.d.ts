@@ -1,9 +1,16 @@
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+	readonly VITE_CLERK_AUTH_CALLBACK_URL?: string;
+}
+
 interface Window {
 	electron?: {
 		onAuthCallback: (callback: (url: string) => void) => () => void;
 		onWorkspaceChanged: (callback: () => void) => () => void;
+		auth: {
+			getPendingCallback: () => Promise<string | null>;
+		};
 		openExternal: (url: string) => Promise<void>;
 		app: {
 			setTitle: (title: string) => Promise<{ ok: true }>;
@@ -30,8 +37,8 @@ interface Window {
 		notes: {
 			getWorkspace: () => Promise<WorkspaceSnapshot>;
 			search: (query: string) => Promise<NoteSearchResult[]>;
-			readNote: (path: string) => Promise<string>;
-			writeNote: (path: string, markdown: string) => Promise<{ ok: true }>;
+			readNote: (path: string) => Promise<NoteContent>;
+			writeNote: (path: string, content: NoteContent) => Promise<{ ok: true }>;
 			createNote: (
 				parentPath: string,
 				title: string,
@@ -52,6 +59,18 @@ interface Window {
 		};
 	};
 }
+
+type NoteContent = {
+	type?: string;
+	attrs?: Record<string, unknown>;
+	content?: NoteContent[];
+	marks?: Array<{
+		type: string;
+		attrs?: Record<string, unknown>;
+	}>;
+	text?: string;
+	[key: string]: unknown;
+};
 
 type WorkspaceNote = {
 	type: "note";
@@ -103,4 +122,5 @@ type PaperiteAppState = {
 	spaceColors: Record<string, string>;
 	spaceIcons: Record<string, string>;
 	readOnlyNotes: Record<string, boolean>;
+	sidebarOpen: boolean;
 };
