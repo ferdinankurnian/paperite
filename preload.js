@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld("electron", {
 		ipcRenderer.on("workspace:changed", listener);
 		return () => ipcRenderer.removeListener("workspace:changed", listener);
 	},
+	auth: {
+		getPendingCallback: () => ipcRenderer.invoke("auth:get-pending-callback"),
+	},
 	openExternal: (url) => ipcRenderer.invoke("open-external", url),
 	app: {
 		setTitle: (title) => ipcRenderer.invoke("app:set-title", title),
@@ -23,8 +26,8 @@ contextBridge.exposeInMainWorld("electron", {
 		getWorkspace: () => ipcRenderer.invoke("notes:get-workspace"),
 		search: (query) => ipcRenderer.invoke("notes:search", query),
 		readNote: (path) => ipcRenderer.invoke("notes:read-note", path),
-		writeNote: (path, markdown) =>
-			ipcRenderer.invoke("notes:write-note", path, markdown),
+		writeNote: (path, content) =>
+			ipcRenderer.invoke("notes:write-note", path, content),
 		createNote: (parentPath, title) =>
 			ipcRenderer.invoke("notes:create-note", parentPath, title),
 		createFolder: (parentPath, title) =>

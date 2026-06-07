@@ -1,12 +1,17 @@
-import { type Editor, Extension } from "@tiptap/core";
+import { Extension, type Editor as TiptapEditor } from "@tiptap/core";
+import Color from "@tiptap/extension-color";
+import Highlight from "@tiptap/extension-highlight";
+import Image from "@tiptap/extension-image";
+import Link from "@tiptap/extension-link";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
 import TextAlign from "@tiptap/extension-text-align";
+import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
-import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
+import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
 import StarterKit from "@tiptap/starter-kit";
 import {
 	AlignCenterIcon,
@@ -14,17 +19,30 @@ import {
 	AlignLeftIcon,
 	AlignRightIcon,
 	BoldIcon,
+	ChevronUpIcon,
+	Code2Icon,
+	HighlighterIcon,
+	ImagePlusIcon,
 	ItalicIcon,
 	ListIcon,
 	ListOrderedIcon,
 	ListTodoIcon,
+	QuoteIcon,
 	StrikethroughIcon,
 	UnderlineIcon,
 } from "lucide-react";
-import { marked } from "marked";
-import type { ComponentType } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import TurndownService from "turndown";
+import {
+	type ChangeEvent,
+	type ComponentType,
+	type MouseEvent,
+	type RefObject,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import {
 	Select,
 	SelectContent,
@@ -32,17 +50,19 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import { normalizeNoteContent, serializeNoteContent } from "@/lib/note-content";
 import { cn } from "@/lib/utils";
 
 type NoteEditorProps = {
-	markdown: string;
+	content: NoteContent;
 	noteTitle: string;
 	notePath: string | null;
 	pageFormat?: PageFormat;
 	readOnly: boolean;
 	searchQuery: string;
-	onChange: (markdown: string, notePath: string | null) => void;
+	onChange: (content: NoteContent, notePath: string | null) => void;
 	onContentRendered?: (notePath: string) => void;
+	onContentSnapshot?: (getContent: (() => NoteContent) | null) => void;
 	onRename: (title: string) => void;
 	onTitleChange: (title: string) => void;
 };
@@ -53,26 +73,75 @@ export type PageFormat = {
 	paragraphSpacing: "default" | "compact";
 };
 
-type SearchHighlightStorage = {
-	searchHighlight: {
-		query: string;
-	};
-};
+type TextAlignment = "left" | "center" | "right" | "justify";
 
 type EditorFormatCommand =
 	| "bold"
 	| "italic"
 	| "underline"
 	| "strike"
-	| "typography-heading"
+	| "highlight"
+	| "quote"
+	| "code-block"
+	| "typography-heading-1"
+	| "typography-heading-2"
+	| "typography-heading-3"
 	| "typography-body"
+	| "bullet-list"
+	| "ordered-list"
+	| "task-list"
 	| "align-left"
 	| "align-center"
 	| "align-right"
-	| "align-justify"
-	| "bullet-list"
-	| "ordered-list"
-	| "task-list";
+	| "align-justify";
+
+type LinkHover = {
+	href: string;
+	left: number;
+	top: number;
+};
+
+type EmojiItem = {
+	name: string;
+	emoji: string;
+};
+
+const textColors = [
+	"#ff6b6b",
+	"#ff9f43",
+	"#ffd43b",
+	"#69db7c",
+	"#38d9a9",
+	"#4dabf7",
+	"#b197fc",
+	"#f783ac",
+	"#e599f7",
+	"#74c0fc",
+];
+
+const highlightColors = [
+	"#fde047",
+	"#fb923c",
+	"#fb7185",
+	"#86efac",
+	"#5eead4",
+	"#93c5fd",
+	"#c4b5fd",
+	"#f0abfc",
+];
+
+const emojiItems = [
+	{ name: "smile", emoji: "😄" },
+	{ name: "laugh", emoji: "😂" },
+	{ name: "heart", emoji: "❤️" },
+	{ name: "fire", emoji: "🔥" },
+	{ name: "sparkles", emoji: "✨" },
+	{ name: "thumbsup", emoji: "👍" },
+	{ name: "check", emoji: "✅" },
+	{ name: "eyes", emoji: "👀" },
+	{ name: "thinking", emoji: "🤔" },
+	{ name: "rocket", emoji: "🚀" },
+] satisfies EmojiItem[];
 
 const defaultPageFormat: PageFormat = {
 	firstLineIndent: false,
@@ -80,14 +149,51 @@ const defaultPageFormat: PageFormat = {
 	paragraphSpacing: "default",
 };
 
-const taskCheckboxClassName =
-	"peer relative flex size-4 shrink-0 items-center justify-center rounded-[4px] border border-input transition-colors outline-none group-has-disabled/field:opacity-50 after:absolute after:-inset-x-3 after:-inset-y-2 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 aria-invalid:aria-checked:border-primary dark:bg-input/30 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 data-checked:border-primary data-checked:bg-primary data-checked:text-primary-foreground dark:data-checked:bg-primary";
+const alignCommands = [
+	{
+		command: "align-left",
+		icon: AlignLeftIcon,
+		label: "Align left",
+		value: "left",
+	},
+	{
+		command: "align-center",
+		icon: AlignCenterIcon,
+		label: "Align center",
+		value: "center",
+	},
+	{
+		command: "align-right",
+		icon: AlignRightIcon,
+		label: "Align right",
+		value: "right",
+	},
+	{
+		command: "align-justify",
+		icon: AlignJustifyIcon,
+		label: "Justify",
+		value: "justify",
+	},
+] satisfies Array<{
+	command: EditorFormatCommand;
+	icon: ComponentType<{ className?: string }>;
+	label: string;
+	value: TextAlignment;
+}>;
 
-const taskCheckboxIndicatorClassName =
-	"grid place-content-center text-current transition-none [&>svg]:size-3.5";
+const blockStyleOptions = [
+	{ value: "heading-1", label: "Heading 1", command: "typography-heading-1" },
+	{ value: "heading-2", label: "Heading 2", command: "typography-heading-2" },
+	{ value: "heading-3", label: "Heading 3", command: "typography-heading-3" },
+	{ value: "body", label: "Body", command: "typography-body" },
+] satisfies Array<{
+	value: string;
+	label: string;
+	command: EditorFormatCommand;
+}>;
 
 export function NoteEditor({
-	markdown,
+	content,
 	notePath,
 	noteTitle,
 	pageFormat = defaultPageFormat,
@@ -95,286 +201,205 @@ export function NoteEditor({
 	searchQuery,
 	onChange,
 	onContentRendered,
+	onContentSnapshot,
 	onRename,
 	onTitleChange,
 }: NoteEditorProps) {
 	const [draftTitle, setDraftTitle] = useState(editableTitle(noteTitle));
-	const [blockStyleSelectOpen, setBlockStyleSelectOpen] = useState(false);
-	const [formatMenuPosition, setFormatMenuPosition] = useState({
-		left: 0,
-		top: 0,
-		visible: false,
-	});
+	const [, setToolbarVersion] = useState(0);
+	const [linkHover, setLinkHover] = useState<LinkHover | null>(null);
 	const titleInputRef = useRef<HTMLInputElement>(null);
-	const lastEditorMarkdown = useRef(markdown);
-	const lastLoadedPath = useRef(notePath);
-	const serializeTimer = useRef<number | null>(null);
-	const turndown = useMemo(
-		() =>
-			new TurndownService({
-				codeBlockStyle: "fenced",
-				headingStyle: "atx",
+	const notePathRef = useRef(notePath);
+	const onChangeRef = useRef(onChange);
+	const readOnlyRef = useRef(readOnly);
+	const searchQueryRef = useRef(searchQuery);
+	const syncingExternalDocRef = useRef(false);
+	const initialContentRef = useRef(normalizeNoteContent(content));
+
+	notePathRef.current = notePath;
+	onChangeRef.current = onChange;
+	readOnlyRef.current = readOnly;
+
+	const extensions = useMemo(
+		() => [
+			StarterKit.configure({ underline: false }),
+			Underline,
+			TextStyle.configure({
+				mergeNestedSpanStyles: true,
 			}),
-		[],
-	);
-
-	const flushMarkdown = useCallback(
-		(editor: Editor) => {
-			if (serializeTimer.current !== null) {
-				window.clearTimeout(serializeTimer.current);
-				serializeTimer.current = null;
-			}
-
-			const serializeStart = performance.now();
-			const nextMarkdown = turndown.turndown(editor.getHTML());
-			const serializeDuration = performance.now() - serializeStart;
-
-			if (serializeDuration > 16) {
-				console.info(
-					`[paperite perf] markdown serialize ${serializeDuration.toFixed(1)}ms`,
-				);
-			}
-
-			lastEditorMarkdown.current = nextMarkdown;
-			onChange(nextMarkdown, lastLoadedPath.current);
-		},
-		[onChange, turndown],
-	);
-
-	const editor = useEditor({
-		extensions: [
-			StarterKit,
-			TaskList,
-			ShadcnTaskItem.configure({
-				nested: true,
+			Color,
+			Highlight.configure({ multicolor: true }),
+			Image.configure({
+				allowBase64: true,
+				HTMLAttributes: {
+					class: "paperite-editor-image",
+				},
+				resize: {
+					enabled: true,
+					directions: ["left", "right", "bottom-left", "bottom-right"],
+					minWidth: 120,
+					minHeight: 80,
+					alwaysPreserveAspectRatio: true,
+				},
 			}),
-			TaskMarkdownShortcut,
-			SearchHighlight,
+			Link.configure({
+				autolink: true,
+				defaultProtocol: "https",
+				enableClickSelection: true,
+				linkOnPaste: true,
+				openOnClick: false,
+				HTMLAttributes: {
+					rel: "noopener noreferrer",
+					target: null,
+				},
+			}),
 			TextAlign.configure({
 				types: ["heading", "paragraph"],
 			}),
-			Underline,
+			TaskList,
+			TaskItem.configure({
+				nested: true,
+			}),
+			createTitleNavigationExtension(titleInputRef),
+			createSearchHighlightExtension(searchQueryRef),
+			createEmojiSuggestionExtension(),
 		],
-		content: markdownToHtml(markdown),
-		editable: !readOnly,
-		editorProps: {
-			attributes: {
-				class: "prose-paperite max-w-none min-h-full outline-none",
-			},
-			handleKeyDown: (_view, event) => {
-				if (event.key !== "ArrowUp") return false;
-				const { empty, from } = editor?.state.selection ?? {
-					empty: false,
-					from: Number.POSITIVE_INFINITY,
-				};
-
-				if (empty && from <= 1) {
-					event.preventDefault();
-					titleInputRef.current?.focus();
-					titleInputRef.current?.setSelectionRange(
-						titleInputRef.current.value.length,
-						titleInputRef.current.value.length,
-					);
-					return true;
-				}
-
-				return false;
-			},
-		},
-		onUpdate: ({ editor }) => {
-			if (serializeTimer.current !== null) {
-				window.clearTimeout(serializeTimer.current);
-			}
-
-			serializeTimer.current = window.setTimeout(() => {
-				flushMarkdown(editor);
-			}, 250);
-		},
-	});
-
-	useEffect(
-		() => () => {
-			if (serializeTimer.current !== null) {
-				window.clearTimeout(serializeTimer.current);
-			}
-		},
 		[],
 	);
 
-	useEffect(() => {
-		if (!editor) return;
-		(
-			editor.storage as unknown as SearchHighlightStorage
-		).searchHighlight.query = searchQuery;
-		editor.view.dispatch(editor.state.tr);
-	}, [editor, searchQuery]);
-
-	useEffect(() => {
-		turndown.addRule("taskListItems", {
-			filter: (node) =>
-				node.nodeName === "LI" &&
-				((node as Element).matches('[data-type="taskItem"]') ||
-					(node as Element).querySelector('input[type="checkbox"]') !== null ||
-					(node as Element).querySelector('[role="checkbox"]') !== null),
-			replacement: (content, node) => {
-				const element = node as Element;
-				const checked =
-					element.getAttribute("data-checked") === "true" ||
-					element
-						.querySelector('input[type="checkbox"]')
-						?.hasAttribute("checked") ||
-					element
-						.querySelector('[role="checkbox"]')
-						?.getAttribute("aria-checked") === "true";
-				return `- [${checked ? "x" : " "}] ${content.trim()}\n`;
+	const editor = useEditor({
+		extensions,
+		content: initialContentRef.current,
+		editable: !readOnly,
+		editorProps: {
+			attributes: {
+				"aria-label": "Note content",
+				class: "paperite-prosemirror min-h-full outline-none",
 			},
-		});
-	}, [turndown]);
+			handleDOMEvents: {
+				mouseover: (_view, event) => {
+					const target = event.target;
+					if (!(target instanceof HTMLElement)) return false;
+
+					const link = target.closest("a[href]");
+					if (!(link instanceof HTMLAnchorElement)) return false;
+
+					const rect = link.getBoundingClientRect();
+					setLinkHover({
+						href: link.href,
+						left: rect.left + rect.width / 2,
+						top: rect.top,
+					});
+					return false;
+				},
+			},
+		},
+		onSelectionUpdate: () => setToolbarVersion((version) => version + 1),
+		onUpdate: ({ editor: currentEditor }) => {
+			if (syncingExternalDocRef.current) return;
+
+			onChangeRef.current(
+				currentEditor.getJSON() as NoteContent,
+				notePathRef.current,
+			);
+			setToolbarVersion((version) => version + 1);
+		},
+	});
 
 	useEffect(() => {
 		if (!editor) return;
-		const isSameNote = notePath === lastLoadedPath.current;
+		const nextContent = normalizeNoteContent(content);
+		const currentSerialized = serializeNoteContent(
+			editor.getJSON() as NoteContent,
+		);
+		const nextSerialized = serializeNoteContent(nextContent);
 
-		if (isSameNote && markdown === lastEditorMarkdown.current) return;
-
-		if (!isSameNote) {
-			flushMarkdown(editor);
+		if (currentSerialized !== nextSerialized) {
+			syncingExternalDocRef.current = true;
+			try {
+				editor.commands.setContent(nextContent, { emitUpdate: false });
+			} finally {
+				syncingExternalDocRef.current = false;
+			}
 		}
 
-		lastLoadedPath.current = notePath;
-		lastEditorMarkdown.current = markdown;
-		const setContentStart = performance.now();
-		editor.commands.setContent(markdownToHtml(markdown), { emitUpdate: false });
-		const setContentDuration = performance.now() - setContentStart;
+		if (notePath) requestAnimationFrame(() => onContentRendered?.(notePath));
+	}, [content, editor, notePath, onContentRendered]);
 
-		if (setContentDuration > 16) {
-			console.info(
-				`[paperite perf] editor setContent ${setContentDuration.toFixed(1)}ms`,
-			);
+	useLayoutEffect(() => {
+		if (!editor || !notePath) {
+			onContentSnapshot?.(null);
+			return;
 		}
 
-		if (notePath) {
-			requestAnimationFrame(() => onContentRendered?.(notePath));
-		}
-	}, [editor, flushMarkdown, markdown, notePath, onContentRendered]);
+		const getContent = () => editor.getJSON() as NoteContent;
+		onContentSnapshot?.(getContent);
+
+		return () => onContentSnapshot?.(null);
+	}, [editor, notePath, onContentSnapshot]);
 
 	useEffect(() => {
 		editor?.setEditable(!readOnly);
 	}, [editor, readOnly]);
 
 	useEffect(() => {
+		searchQueryRef.current = searchQuery;
 		if (!editor) return;
 
+		editor.view.dispatch(editor.state.tr.setMeta("paperiteSearchQuery", true));
+	}, [editor, searchQuery]);
+
+	useEffect(() => {
 		const handleFormat = (event: Event) => {
-			if (readOnly) return;
+			const command = (event as CustomEvent<{ command?: EditorFormatCommand }>)
+				.detail?.command;
 
-			const detail = (event as CustomEvent<{ command?: EditorFormatCommand }>)
-				.detail;
-			const command = detail?.command;
-			if (!command) return;
-
-			switch (command) {
-				case "bold":
-					editor.chain().focus().toggleBold().run();
-					break;
-				case "italic":
-					editor.chain().focus().toggleItalic().run();
-					break;
-				case "underline":
-					editor.chain().focus().toggleUnderline().run();
-					break;
-				case "strike":
-					editor.chain().focus().toggleStrike().run();
-					break;
-				case "typography-heading":
-					editor.chain().focus().toggleHeading({ level: 1 }).run();
-					break;
-				case "typography-body":
-					editor.chain().focus().setParagraph().run();
-					break;
-				case "align-left":
-					editor.chain().focus().setTextAlign("left").run();
-					break;
-				case "align-center":
-					editor.chain().focus().setTextAlign("center").run();
-					break;
-				case "align-right":
-					editor.chain().focus().setTextAlign("right").run();
-					break;
-				case "align-justify":
-					editor.chain().focus().setTextAlign("justify").run();
-					break;
-				case "bullet-list":
-					editor.chain().focus().toggleBulletList().run();
-					break;
-				case "ordered-list":
-					editor.chain().focus().toggleOrderedList().run();
-					break;
-				case "task-list":
-					toggleCurrentBlockTask(editor);
-					break;
-			}
+			if (command && !readOnlyRef.current) runFormatCommand(editor, command);
 		};
 
 		window.addEventListener("paperite:editor-format", handleFormat);
-		return () => {
+		return () =>
 			window.removeEventListener("paperite:editor-format", handleFormat);
-		};
-	}, [editor, readOnly]);
-
-	useEffect(() => {
-		if (!editor) return;
-
-		const updateFormatMenuPosition = () => {
-			const { from, to, empty } = editor.state.selection;
-
-			if (readOnly || (empty && !blockStyleSelectOpen)) {
-				setFormatMenuPosition((current) =>
-					current.visible ? { ...current, visible: false } : current,
-				);
-				return;
-			}
-
-			const start = editor.view.coordsAtPos(from);
-			const end = editor.view.coordsAtPos(to);
-			const left = Math.max(12, Math.min(start.left, end.left));
-			const top = Math.max(12, Math.max(start.bottom, end.bottom) + 10);
-
-			setFormatMenuPosition((current) =>
-				current.left === left && current.top === top && current.visible
-					? current
-					: { left, top, visible: true },
-			);
-		};
-
-		updateFormatMenuPosition();
-		editor.on("selectionUpdate", updateFormatMenuPosition);
-		window.addEventListener("resize", updateFormatMenuPosition);
-		window.addEventListener("scroll", updateFormatMenuPosition, true);
-		return () => {
-			editor.off("selectionUpdate", updateFormatMenuPosition);
-			window.removeEventListener("resize", updateFormatMenuPosition);
-			window.removeEventListener("scroll", updateFormatMenuPosition, true);
-		};
-	}, [blockStyleSelectOpen, editor, readOnly]);
+	}, [editor]);
 
 	useEffect(() => {
 		setDraftTitle(editableTitle(noteTitle));
 	}, [noteTitle]);
+
+	useEffect(() => {
+		if (!linkHover) return;
+
+		const closeWhenAway = (event: globalThis.MouseEvent) => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			if (target.closest("a[href], .paperite-link-hover-card")) return;
+			setLinkHover(null);
+		};
+
+		window.addEventListener("mousemove", closeWhenAway);
+		return () => window.removeEventListener("mousemove", closeWhenAway);
+	}, [linkHover]);
+
+	const focusEditorCanvas = useCallback(
+		(event: MouseEvent<HTMLDivElement>) => {
+			if (!editor) return;
+
+			if (event.target === event.currentTarget) {
+				editor.commands.focus("end");
+				return;
+			}
+
+			editor.commands.focus();
+		},
+		[editor],
+	);
 
 	const commitTitle = () => {
 		const nextTitle = draftTitle.trim();
 		const currentFileTitle = notePath
 			? editableTitle(notePathTitle(notePath))
 			: "";
-
-		if (!nextTitle) {
-			return;
-		}
-
-		if (nextTitle !== currentFileTitle) {
-			onRename(nextTitle);
-		}
+		if (nextTitle && nextTitle !== currentFileTitle) onRename(nextTitle);
 	};
 
 	if (!notePath) {
@@ -386,360 +411,755 @@ export function NoteEditor({
 	}
 
 	return (
-		<div className="flex min-h-full flex-1 flex-col">
-			<div className="mx-auto flex min-h-full w-full max-w-4xl flex-1 flex-col">
-				<input
-					type="text"
-					ref={titleInputRef}
-					value={draftTitle}
-					aria-label="Note title"
-					className="mx-8 mt-10 mb-2 bg-transparent text-3xl font-semibold tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 lg:mx-20"
-					readOnly={readOnly}
-					placeholder="Untitled"
-					onBlur={commitTitle}
-					onChange={(event) => {
-						setDraftTitle(event.target.value);
-						onTitleChange(event.target.value);
-					}}
-					onKeyDown={(event) => {
-						if (event.key === "Enter") {
-							event.preventDefault();
-							event.currentTarget.blur();
-						}
-
-						if (event.key === "ArrowDown") {
-							event.preventDefault();
-							editor?.chain().focus("start").run();
-						}
-
-						if (event.key === "Escape") {
-							const currentFileTitle = notePath
-								? notePathTitle(notePath)
-								: noteTitle;
-							setDraftTitle(editableTitle(currentFileTitle));
-							onTitleChange(currentFileTitle);
-							event.currentTarget.blur();
-						}
-					}}
-				/>
-				{editor && formatMenuPosition.visible ? (
-					<div
-						className="app-region-no-drag no-scrollbar fixed z-50 flex max-w-[350px] origin-top-left animate-in items-center gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 duration-100 fade-in-0 zoom-in-95 slide-in-from-top-1 [&>*]:shrink-0"
-						style={{
-							left: formatMenuPosition.left,
-							top: formatMenuPosition.top,
+		<div className="relative flex min-h-0 flex-1 overflow-hidden">
+			<div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto overscroll-contain">
+				<div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
+					<input
+						type="text"
+						ref={titleInputRef}
+						value={draftTitle}
+						aria-label="Note title"
+						className="mx-8 mt-10 mb-2 bg-transparent text-3xl font-semibold tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 lg:mx-20"
+						readOnly={readOnly}
+						placeholder="Untitled"
+						onBlur={commitTitle}
+						onChange={(event) => {
+							setDraftTitle(event.target.value);
+							onTitleChange(event.target.value);
 						}}
-						onPointerDown={(event) => event.stopPropagation()}
+						onKeyDown={(event) => {
+							if (event.key === "Enter") {
+								event.preventDefault();
+								event.currentTarget.blur();
+							}
+							if (event.key === "ArrowDown") {
+								event.preventDefault();
+								editor?.commands.focus();
+							}
+							if (event.key === "Escape") {
+								const currentFileTitle = notePath
+									? notePathTitle(notePath)
+									: noteTitle;
+								setDraftTitle(editableTitle(currentFileTitle));
+								onTitleChange(currentFileTitle);
+								event.currentTarget.blur();
+							}
+						}}
+					/>
+					<div
+						role="application"
+						tabIndex={readOnly ? -1 : 0}
+						className={cn(
+							"paperite-tiptap flex min-h-0 flex-1 px-8 pb-44 md:px-14 lg:px-20",
+							pageFormat.lineHeight === "1.5" &&
+								"paperite-tiptap-leading-compact",
+							pageFormat.paragraphSpacing === "compact" &&
+								"paperite-tiptap-spacing-compact",
+							pageFormat.firstLineIndent && "paperite-tiptap-indent",
+						)}
+						onClick={focusEditorCanvas}
+						onKeyDown={() => editor?.commands.focus()}
 					>
-						<BlockStyleSelect
-							editor={editor}
-							open={blockStyleSelectOpen}
-							onOpenChange={(nextOpen) => {
-								setBlockStyleSelectOpen(nextOpen);
-							}}
-						/>
-						<span className="mx-0.5 h-5 w-px bg-border" />
-						<FormatButton
-							label="Bold"
-							active={editor.isActive("bold")}
-							onClick={() => editor.chain().focus().toggleBold().run()}
-							icon={BoldIcon}
-						/>
-						<FormatButton
-							label="Italic"
-							active={editor.isActive("italic")}
-							onClick={() => editor.chain().focus().toggleItalic().run()}
-							icon={ItalicIcon}
-						/>
-						<FormatButton
-							label="Underline"
-							active={editor.isActive("underline")}
-							onClick={() => editor.chain().focus().toggleUnderline().run()}
-							icon={UnderlineIcon}
-						/>
-						<FormatButton
-							label="Strikethrough"
-							active={editor.isActive("strike")}
-							onClick={() => editor.chain().focus().toggleStrike().run()}
-							icon={StrikethroughIcon}
-						/>
-						<span className="mx-0.5 h-5 w-px bg-border" />
-						<FormatButton
-							label="Align left"
-							active={editor.isActive({ textAlign: "left" })}
-							onClick={() => editor.chain().focus().setTextAlign("left").run()}
-							icon={AlignLeftIcon}
-						/>
-						<FormatButton
-							label="Align center"
-							active={editor.isActive({ textAlign: "center" })}
-							onClick={() =>
-								editor.chain().focus().setTextAlign("center").run()
-							}
-							icon={AlignCenterIcon}
-						/>
-						<FormatButton
-							label="Align right"
-							active={editor.isActive({ textAlign: "right" })}
-							onClick={() => editor.chain().focus().setTextAlign("right").run()}
-							icon={AlignRightIcon}
-						/>
-						<FormatButton
-							label="Justify"
-							active={editor.isActive({ textAlign: "justify" })}
-							onClick={() =>
-								editor.chain().focus().setTextAlign("justify").run()
-							}
-							icon={AlignJustifyIcon}
-						/>
-						<span className="mx-0.5 h-5 w-px bg-border" />
-						<FormatButton
-							label="Bullet list"
-							active={editor.isActive("bulletList")}
-							onClick={() => editor.chain().focus().toggleBulletList().run()}
-							icon={ListIcon}
-						/>
-						<FormatButton
-							label="Numbered list"
-							active={editor.isActive("orderedList")}
-							onClick={() => editor.chain().focus().toggleOrderedList().run()}
-							icon={ListOrderedIcon}
-						/>
-						<FormatButton
-							label="Checkbox"
-							active={editor.isActive("taskList")}
-							onClick={() => toggleCurrentBlockTask(editor)}
-							icon={ListTodoIcon}
-						/>
+						<EditorContent editor={editor} className="min-h-full flex-1" />
 					</div>
-				) : null}
-				<EditorContent
+				</div>
+				{editor ? <FormatMenu editor={editor} readOnly={readOnly} /> : null}
+			</div>
+			{linkHover ? (
+				<LinkHoverCard hover={linkHover} onClose={() => setLinkHover(null)} />
+			) : null}
+		</div>
+	);
+}
+
+function FormatMenu({
+	editor,
+	readOnly,
+}: {
+	editor: TiptapEditor;
+	readOnly: boolean;
+}) {
+	const imageInputRef = useRef<HTMLInputElement>(null);
+	const savedTextSelectionRef = useRef<{ from: number; to: number } | null>(null);
+
+	useEffect(() => {
+		const rememberSelection = () => {
+			const { from, to, empty } = editor.state.selection;
+			if (!empty && from !== to) savedTextSelectionRef.current = { from, to };
+		};
+
+		rememberSelection();
+		editor.on("selectionUpdate", rememberSelection);
+		return () => {
+			editor.off("selectionUpdate", rememberSelection);
+		};
+	}, [editor]);
+
+	const uploadImage = (event: ChangeEvent<HTMLInputElement>) => {
+		const file = event.target.files?.[0];
+		event.target.value = "";
+		if (!file?.type.startsWith("image/")) return;
+
+		const reader = new FileReader();
+		reader.addEventListener("load", () => {
+			if (typeof reader.result !== "string") return;
+			editor
+				.chain()
+				.focus()
+				.setImage({ src: reader.result, alt: file.name })
+				.run();
+		});
+		reader.readAsDataURL(file);
+	};
+
+	return (
+		<div className="sticky right-0 bottom-4 left-0 z-30 mx-auto mt-[-3rem] w-full max-w-4xl px-8 md:px-14 lg:px-20">
+			<div
+				className="app-region-no-drag no-scrollbar flex w-full items-center gap-1 overflow-x-auto overflow-y-hidden rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 [&>*]:shrink-0"
+				onPointerDown={(event) => event.stopPropagation()}
+			>
+				<BlockStyleSelect editor={editor} disabled={readOnly} />
+				<span className="mx-0.5 h-5 w-px bg-border" />
+				<FormatButton
+					label="Bold"
+					icon={BoldIcon}
+					command="bold"
 					editor={editor}
-					className={cn(
-						"flex min-h-0 flex-1 px-8 pb-8 md:px-14 lg:px-20 [&_.ProseMirror]:min-h-full [&_.ProseMirror]:flex-1",
-						pageFormat.lineHeight === "1.5" && "[&_.ProseMirror]:leading-[1.5]",
-						pageFormat.firstLineIndent && "[&_.ProseMirror_p]:first-line:pl-8",
-						pageFormat.paragraphSpacing === "compact" &&
-							"[&_.ProseMirror_p]:my-0",
-					)}
-					onClick={() => editor?.chain().focus().run()}
+					disabled={readOnly}
+				/>
+				<FormatButton
+					label="Italic"
+					icon={ItalicIcon}
+					command="italic"
+					editor={editor}
+					disabled={readOnly}
+				/>
+				<FormatButton
+					label="Underline"
+					icon={UnderlineIcon}
+					command="underline"
+					editor={editor}
+					disabled={readOnly}
+				/>
+				<FormatButton
+					label="Strikethrough"
+					icon={StrikethroughIcon}
+					command="strike"
+					editor={editor}
+					disabled={readOnly}
+				/>
+				<span className="mx-0.5 h-5 w-px bg-border" />
+				<ColorMenu
+					editor={editor}
+					disabled={readOnly}
+					label="Highlight"
+					icon={HighlighterIcon}
+					mode="highlight"
+					colors={highlightColors}
+					savedSelectionRef={savedTextSelectionRef}
+				/>
+				<ColorMenu
+					editor={editor}
+					disabled={readOnly}
+					label="Text color"
+					mode="text-color"
+					colors={textColors}
+					savedSelectionRef={savedTextSelectionRef}
+				/>
+				<span className="mx-0.5 h-5 w-px bg-border" />
+				<FormatButton
+					label="Quote"
+					icon={QuoteIcon}
+					command="quote"
+					editor={editor}
+					disabled={readOnly}
+				/>
+				<FormatButton
+					label="Code block"
+					icon={Code2Icon}
+					command="code-block"
+					editor={editor}
+					disabled={readOnly}
+				/>
+				<button
+					type="button"
+					aria-label="Upload image"
+					title="Upload image"
+					disabled={readOnly}
+					className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+					onMouseDown={(event) => event.preventDefault()}
+					onClick={() => imageInputRef.current?.click()}
+				>
+					<ImagePlusIcon className="size-4" />
+				</button>
+				<input
+					ref={imageInputRef}
+					type="file"
+					accept="image/*"
+					className="hidden"
+					onChange={uploadImage}
+				/>
+				<span className="mx-0.5 h-5 w-px bg-border" />
+				{alignCommands.map(({ command, icon, label }) => (
+					<FormatButton
+						key={command}
+						label={label}
+						icon={icon}
+						command={command}
+						editor={editor}
+						disabled={readOnly}
+					/>
+				))}
+				<span className="mx-0.5 h-5 w-px bg-border" />
+				<FormatButton
+					label="Bullet list"
+					icon={ListIcon}
+					command="bullet-list"
+					editor={editor}
+					disabled={readOnly}
+				/>
+				<FormatButton
+					label="Numbered list"
+					icon={ListOrderedIcon}
+					command="ordered-list"
+					editor={editor}
+					disabled={readOnly}
+				/>
+				<FormatButton
+					label="Checkbox"
+					icon={ListTodoIcon}
+					command="task-list"
+					editor={editor}
+					disabled={readOnly}
 				/>
 			</div>
 		</div>
 	);
 }
 
-const ShadcnTaskItem = TaskItem.extend({
-	addNodeView() {
-		return ({ node, HTMLAttributes, getPos, editor }) => {
-			const listItem = document.createElement("li");
-			const checkboxWrapper = document.createElement("label");
-			const checkbox = document.createElement("button");
-			const indicator = document.createElement("span");
-			const content = document.createElement("div");
+function ColorMenu({
+	colors,
+	disabled,
+	editor,
+	icon: Icon,
+	label,
+	mode,
+	savedSelectionRef,
+}: {
+	colors: string[];
+	disabled: boolean;
+	editor: TiptapEditor;
+	icon?: ComponentType<{ className?: string }>;
+	label: string;
+	mode: "highlight" | "text-color";
+	savedSelectionRef: RefObject<{ from: number; to: number } | null>;
+}) {
+	const [open, setOpen] = useState(false);
+	const [selectedColor, setSelectedColor] = useState(colors[0]);
+	const [dropupPosition, setDropupPosition] = useState({ left: 0, top: 0 });
+	const triggerRef = useRef<HTMLButtonElement>(null);
+	const active =
+		mode === "highlight" ? editor.isActive("highlight") : editor.isActive("textStyle");
 
-			const syncCheckbox = (currentNode: ProseMirrorNode) => {
-				const checked = Boolean(currentNode.attrs.checked);
-				listItem.dataset.checked = String(checked);
-				checkbox.dataset.state = checked ? "checked" : "unchecked";
-				checkbox.setAttribute("aria-checked", String(checked));
-				checkbox.toggleAttribute("data-checked", checked);
-				indicator.hidden = !checked;
-			};
+	const updateDropupPosition = useCallback(() => {
+		const rect = triggerRef.current?.getBoundingClientRect();
+		if (!rect) return;
 
-			checkboxWrapper.contentEditable = "false";
-			checkbox.type = "button";
-			checkbox.setAttribute("role", "checkbox");
-			checkbox.setAttribute("data-slot", "checkbox");
-			checkbox.className = taskCheckboxClassName;
-			checkbox.addEventListener("mousedown", (event) => event.preventDefault());
-			checkbox.addEventListener("click", () => {
-				if (!editor.isEditable || typeof getPos !== "function") return;
+		setDropupPosition({
+			left: rect.left,
+			top: rect.top - 8,
+		});
+	}, []);
 
-				editor
-					.chain()
-					.focus(undefined, { scrollIntoView: false })
-					.command(({ tr }) => {
-						const position = getPos();
+	useLayoutEffect(() => {
+		if (!open) return;
 
-						if (typeof position !== "number") return false;
+		updateDropupPosition();
+		window.addEventListener("resize", updateDropupPosition);
+		window.addEventListener("scroll", updateDropupPosition, true);
 
-						const currentNode = tr.doc.nodeAt(position);
-						tr.setNodeMarkup(position, undefined, {
-							...currentNode?.attrs,
-							checked: !currentNode?.attrs.checked,
-						});
-
-						return true;
-					})
-					.run();
-			});
-
-			indicator.setAttribute("data-slot", "checkbox-indicator");
-			indicator.className = taskCheckboxIndicatorClassName;
-			indicator.innerHTML =
-				'<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-
-			for (const [key, value] of Object.entries(this.options.HTMLAttributes)) {
-				listItem.setAttribute(key, value);
-			}
-
-			for (const [key, value] of Object.entries(HTMLAttributes)) {
-				listItem.setAttribute(key, value);
-			}
-
-			checkbox.append(indicator);
-			checkboxWrapper.append(checkbox);
-			listItem.append(checkboxWrapper, content);
-			syncCheckbox(node);
-
-			return {
-				dom: listItem,
-				contentDOM: content,
-				update: (updatedNode) => {
-					if (updatedNode.type !== this.type) return false;
-
-					syncCheckbox(updatedNode);
-					return true;
-				},
-			};
+		return () => {
+			window.removeEventListener("resize", updateDropupPosition);
+			window.removeEventListener("scroll", updateDropupPosition, true);
 		};
-	},
-});
+	}, [open, updateDropupPosition]);
+
+	const selectionRange = () => {
+		const { from, to, empty } = editor.state.selection;
+		if (!empty && from !== to) return { from, to };
+		return savedSelectionRef.current;
+	};
+
+	const applySelectedColor = () => {
+		const range = selectionRange();
+		const hasActiveMark =
+			mode === "highlight"
+				? editor.isActive("highlight")
+				: Boolean(editor.getAttributes("textStyle").color);
+		const chain = editor.chain().focus();
+		if (range) chain.setTextSelection(range);
+
+		if (mode === "highlight") {
+			if (hasActiveMark) {
+				chain.extendMarkRange("highlight").unsetHighlight().run();
+				return;
+			}
+
+			chain.extendMarkRange("highlight").setHighlight({ color: selectedColor }).run();
+			return;
+		}
+
+		if (hasActiveMark) {
+			chain.extendMarkRange("textStyle").unsetColor().run();
+			return;
+		}
+
+		chain.extendMarkRange("textStyle").setColor(selectedColor).run();
+	};
+
+	const clearColor = () => {
+		const range = selectionRange();
+		const chain = editor.chain().focus();
+		if (range) chain.setTextSelection(range);
+
+		if (mode === "highlight") {
+			chain.extendMarkRange("highlight").unsetHighlight().run();
+			return;
+		}
+
+		chain.extendMarkRange("textStyle").unsetColor().run();
+	};
+
+	return (
+		<div className="relative flex shrink-0 overflow-visible rounded-md">
+			<button
+				type="button"
+				aria-label={label}
+				title={label}
+				data-active={active}
+				disabled={disabled}
+				className="flex size-8 items-center justify-center rounded-l-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[active=true]:bg-muted data-[active=true]:text-foreground"
+				onMouseDown={(event) => event.preventDefault()}
+				onClick={applySelectedColor}
+			>
+				{Icon ? (
+					<Icon className="size-4" />
+				) : (
+					<span
+						className="flex size-4 flex-col items-center justify-center font-semibold text-[13px] leading-none text-foreground"
+						aria-hidden="true"
+					>
+						A
+						<span
+							className="mt-0.5 h-0.5 w-3 rounded-full"
+							style={{ backgroundColor: selectedColor }}
+						/>
+					</span>
+				)}
+			</button>
+			<button
+				ref={triggerRef}
+				type="button"
+				aria-label={`${label} options`}
+				title={`${label} options`}
+				disabled={disabled}
+				className="flex h-8 w-4 items-center justify-center rounded-r-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+				onMouseDown={(event) => event.preventDefault()}
+				onClick={() => {
+					updateDropupPosition();
+					setOpen((current) => !current);
+				}}
+			>
+				<ChevronUpIcon className="size-3" />
+			</button>
+			{open ? (
+				<div
+					className="fixed z-50 w-40 -translate-y-full rounded-lg bg-popover p-2 shadow-lg ring-1 ring-foreground/10"
+					style={{
+						left: dropupPosition.left,
+						top: dropupPosition.top,
+					}}
+				>
+					<div className="grid grid-cols-5 gap-1.5">
+						{colors.map((color) => (
+							<button
+								type="button"
+								key={color}
+								aria-label={`${label} ${color}`}
+								className="size-6 rounded-md shadow-[inset_0_0_0_1px_rgb(255_255_255/0.16)] transition-transform active:scale-[0.96]"
+								style={{ backgroundColor: color }}
+								onMouseDown={(event) => event.preventDefault()}
+								onClick={() => {
+									setSelectedColor(color);
+									setOpen(false);
+								}}
+							/>
+						))}
+					</div>
+					<button
+						type="button"
+						className="mt-2 h-7 w-full rounded-md text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+						onMouseDown={(event) => event.preventDefault()}
+						onClick={() => {
+							clearColor();
+							setSelectedColor(colors[0]);
+							setOpen(false);
+						}}
+					>
+						Unset {mode === "highlight" ? "highlight" : "color"}
+					</button>
+				</div>
+			) : null}
+		</div>
+	);
+}
 
 function BlockStyleSelect({
 	editor,
-	open,
-	onOpenChange,
+	disabled,
 }: {
-	editor: Editor;
-	open: boolean;
-	onOpenChange: (open: boolean) => void;
+	editor: TiptapEditor;
+	disabled: boolean;
 }) {
-	const value = editor.isActive("heading", { level: 1 })
-		? "heading-1"
-		: editor.isActive("heading", { level: 2 })
-			? "heading-2"
-			: "paragraph";
+	const value =
+		blockStyleOptions.find(
+			(option) =>
+				option.value.startsWith("heading-") &&
+				editor.isActive("heading", {
+					level: Number(option.value.replace("heading-", "")),
+				}),
+		)?.value ?? "body";
 
 	return (
 		<Select
-			open={open}
-			onOpenChange={(nextOpen) => {
-				onOpenChange(nextOpen);
-				if (!nextOpen) {
-					editor.chain().focus().run();
-				}
-			}}
+			disabled={disabled}
 			value={value}
-			onValueChange={(nextValue) => {
-				if (nextValue === "heading-1") {
-					editor.chain().focus().toggleHeading({ level: 1 }).run();
-					return;
-				}
+			onValueChange={(value) => {
+				const command = blockStyleOptions.find(
+					(option) => option.value === value,
+				)?.command;
 
-				if (nextValue === "heading-2") {
-					editor.chain().focus().toggleHeading({ level: 2 }).run();
-					return;
-				}
-
-				editor.chain().focus().setParagraph().run();
+				if (command) runFormatCommand(editor, command);
 			}}
 		>
-			<SelectTrigger
-				aria-label="Block style"
-				className="w-30 shrink-0"
-				onPointerDown={(event) => event.stopPropagation()}
-			>
+			<SelectTrigger aria-label="Block style" className="w-30 shrink-0">
 				<SelectValue />
 			</SelectTrigger>
-			<SelectContent
-				align="start"
-				sideOffset={8}
-				onCloseAutoFocus={(event) => {
-					event.preventDefault();
-					editor.chain().focus().run();
-				}}
-			>
-				<SelectItem value="paragraph">Body</SelectItem>
-				<SelectItem value="heading-1">Heading 1</SelectItem>
-				<SelectItem value="heading-2">Heading 2</SelectItem>
+			<SelectContent align="start" side="top" sideOffset={8}>
+				{blockStyleOptions.map((option) => (
+					<SelectItem key={option.value} value={option.value}>
+						{option.label}
+					</SelectItem>
+				))}
 			</SelectContent>
 		</Select>
 	);
 }
 
-function toggleCurrentBlockTask(editor: Editor) {
-	if (editor.chain().focus().toggleTaskList().run()) {
-		return true;
-	}
-
-	const { $from } = editor.state.selection;
-
-	if ($from.parent.isTextblock) {
-		if (editor.isActive("taskList")) {
-			return editor.chain().focus().toggleTaskList().run();
-		}
-
-		return editor
-			.chain()
-			.focus()
-			.command(({ state, tr, dispatch }) => {
-				const paragraphDepth = $from.depth;
-				const paragraph = $from.node(paragraphDepth);
-				const taskListType = state.schema.nodes.taskList;
-				const taskItemType = state.schema.nodes.taskItem;
-
-				if (!taskListType || !taskItemType || !paragraph.isTextblock) {
-					return false;
-				}
-
-				const paragraphFrom = $from.before(paragraphDepth);
-				const paragraphTo = $from.after(paragraphDepth);
-				const taskParagraph = paragraph.type.create(
-					paragraph.attrs,
-					paragraph.content,
-					paragraph.marks,
-				);
-				const taskItem = taskItemType.create({ checked: false }, taskParagraph);
-				const taskList = taskListType.create(null, taskItem);
-
-				tr.replaceRangeWith(paragraphFrom, paragraphTo, taskList);
-				dispatch?.(tr.scrollIntoView());
-				return true;
-			})
-			.run();
-	}
-
-	return editor.chain().focus().toggleTaskList().run();
-}
-
 function FormatButton({
 	label,
-	active,
 	icon: Icon,
-	onClick,
+	command,
+	editor,
+	disabled,
 }: {
 	label: string;
-	active: boolean;
 	icon: ComponentType<{ className?: string }>;
-	onClick: () => void;
+	command: EditorFormatCommand;
+	editor: TiptapEditor;
+	disabled: boolean;
 }) {
+	const active = isFormatActive(editor, command);
+
 	return (
 		<button
 			type="button"
 			aria-label={label}
 			title={label}
 			data-active={active}
-			className={cn(
-				"flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground data-[active=true]:bg-primary data-[active=true]:text-primary-foreground",
-			)}
+			disabled={disabled}
+			className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[active=true]:bg-muted data-[active=true]:text-foreground"
 			onMouseDown={(event) => event.preventDefault()}
-			onClick={onClick}
+			onClick={() => runFormatCommand(editor, command)}
 		>
 			<Icon className="size-4" />
 		</button>
 	);
+}
+
+function runFormatCommand(
+	editor: TiptapEditor | null,
+	command: EditorFormatCommand,
+) {
+	if (!editor) return;
+
+	if (command === "bold") return editor.chain().focus().toggleBold().run();
+	if (command === "italic") return editor.chain().focus().toggleItalic().run();
+	if (command === "underline") {
+		return editor.chain().focus().toggleUnderline().run();
+	}
+	if (command === "strike") return editor.chain().focus().toggleStrike().run();
+	if (command === "highlight") {
+		return editor.chain().focus().toggleHighlight().run();
+	}
+	if (command === "quote") {
+		return editor.chain().focus().toggleBlockquote().run();
+	}
+	if (command === "code-block") {
+		return editor.chain().focus().toggleCodeBlock().run();
+	}
+	if (command === "typography-heading-1") {
+		return editor.chain().focus().setHeading({ level: 1 }).run();
+	}
+	if (command === "typography-heading-2") {
+		return editor.chain().focus().setHeading({ level: 2 }).run();
+	}
+	if (command === "typography-heading-3") {
+		return editor.chain().focus().setHeading({ level: 3 }).run();
+	}
+	if (command === "typography-body") {
+		return editor.chain().focus().setParagraph().run();
+	}
+	if (command === "bullet-list") {
+		return editor.chain().focus().toggleBulletList().run();
+	}
+	if (command === "ordered-list") {
+		return editor.chain().focus().toggleOrderedList().run();
+	}
+	if (command === "task-list") {
+		return editor.chain().focus().toggleTaskList().run();
+	}
+
+	return editor
+		.chain()
+		.focus()
+		.setTextAlign(command.replace("align-", "") as TextAlignment)
+		.run();
+}
+
+function isFormatActive(editor: TiptapEditor, command: EditorFormatCommand) {
+	if (command === "bold") return editor.isActive("bold");
+	if (command === "italic") return editor.isActive("italic");
+	if (command === "underline") return editor.isActive("underline");
+	if (command === "strike") return editor.isActive("strike");
+	if (command === "highlight") return editor.isActive("highlight");
+	if (command === "quote") return editor.isActive("blockquote");
+	if (command === "code-block") return editor.isActive("codeBlock");
+	if (command === "typography-heading-1") {
+		return editor.isActive("heading", { level: 1 });
+	}
+	if (command === "typography-heading-2") {
+		return editor.isActive("heading", { level: 2 });
+	}
+	if (command === "typography-heading-3") {
+		return editor.isActive("heading", { level: 3 });
+	}
+	if (command === "typography-body") return editor.isActive("paragraph");
+	if (command === "bullet-list") return editor.isActive("bulletList");
+	if (command === "ordered-list") return editor.isActive("orderedList");
+	if (command === "task-list") return editor.isActive("taskList");
+
+	const alignment = command.replace("align-", "") as TextAlignment;
+	return editor.isActive({ textAlign: alignment });
+}
+
+function LinkHoverCard({
+	hover,
+	onClose,
+}: {
+	hover: LinkHover;
+	onClose: () => void;
+}) {
+	return (
+		<div
+			className="paperite-link-hover-card fixed z-50 w-64 -translate-x-1/2 -translate-y-[calc(100%+0.5rem)] rounded-lg bg-popover p-2.5 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10"
+			style={{ left: hover.left, top: hover.top }}
+			onMouseLeave={onClose}
+		>
+			<div className="truncate pb-2 text-xs text-muted-foreground">
+				{hover.href}
+			</div>
+			<button
+				type="button"
+				className="flex h-8 w-full items-center justify-center rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground transition-[opacity,scale] active:scale-[0.96] hover:opacity-90"
+				onClick={() => window.electron?.openExternal(hover.href)}
+			>
+				Open in browser
+			</button>
+		</div>
+	);
+}
+
+function createEmojiSuggestionExtension() {
+	return Extension.create({
+		name: "paperiteEmojiSuggestion",
+		addProseMirrorPlugins() {
+			return [
+				Suggestion<EmojiItem>({
+					editor: this.editor,
+					char: ":",
+					pluginKey: new PluginKey("paperiteEmojiSuggestion"),
+					items: ({ query }) => {
+						const normalizedQuery = query.toLocaleLowerCase();
+						return emojiItems
+							.filter((item) => item.name.startsWith(normalizedQuery))
+							.slice(0, 6);
+					},
+					command: ({ editor, range, props }) => {
+						editor
+							.chain()
+							.focus()
+							.deleteRange(range)
+							.insertContent(props.emoji)
+							.run();
+					},
+					render: createEmojiSuggestionRenderer,
+				}),
+			];
+		},
+	});
+}
+
+function createEmojiSuggestionRenderer() {
+	let element: HTMLDivElement | null = null;
+	let props: SuggestionProps<EmojiItem> | null = null;
+	let selectedIndex = 0;
+
+	const update = (nextProps: SuggestionProps<EmojiItem>) => {
+		props = nextProps;
+		selectedIndex = Math.min(
+			selectedIndex,
+			Math.max(nextProps.items.length - 1, 0),
+		);
+		if (!element) return;
+
+		const rect = nextProps.clientRect?.();
+		if (rect) {
+			element.style.left = `${rect.left}px`;
+			element.style.top = `${rect.bottom + 6}px`;
+		}
+
+		element.innerHTML = "";
+		for (const [index, item] of nextProps.items.entries()) {
+			const button = document.createElement("button");
+			button.type = "button";
+			button.className =
+				"flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm hover:bg-muted";
+			if (index === selectedIndex) button.dataset.active = "true";
+			button.innerHTML = `<span>${item.emoji}</span><span>${item.name}</span>`;
+			button.addEventListener("mousedown", (event) => event.preventDefault());
+			button.addEventListener("click", () => nextProps.command(item));
+			element.appendChild(button);
+		}
+	};
+
+	return {
+		onStart: (nextProps: SuggestionProps<EmojiItem>) => {
+			element = document.createElement("div");
+			element.className =
+				"paperite-emoji-menu fixed z-50 w-40 rounded-lg bg-popover p-1.5 text-popover-foreground shadow-lg ring-1 ring-foreground/10";
+			document.body.appendChild(element);
+			update(nextProps);
+		},
+		onUpdate: update,
+		onKeyDown: ({ event }: { event: KeyboardEvent }) => {
+			if (!props?.items.length) return false;
+
+			if (event.key === "ArrowDown") {
+				selectedIndex = (selectedIndex + 1) % props.items.length;
+				update(props);
+				return true;
+			}
+
+			if (event.key === "ArrowUp") {
+				selectedIndex =
+					(selectedIndex - 1 + props.items.length) % props.items.length;
+				update(props);
+				return true;
+			}
+
+			if (event.key === "Enter") {
+				props.command(props.items[selectedIndex]);
+				return true;
+			}
+
+			return false;
+		},
+		onExit: () => {
+			element?.remove();
+			element = null;
+			props = null;
+			selectedIndex = 0;
+		},
+	};
+}
+
+function createTitleNavigationExtension(
+	titleInputRef: RefObject<HTMLInputElement | null>,
+) {
+	return Extension.create({
+		name: "paperiteTitleNavigation",
+		addKeyboardShortcuts() {
+			return {
+				ArrowUp: () => {
+					if (this.editor.state.selection.from > 1) return false;
+
+					titleInputRef.current?.focus();
+					return true;
+				},
+			};
+		},
+	});
+}
+
+function createSearchHighlightExtension(searchQueryRef: RefObject<string>) {
+	return Extension.create({
+		name: "paperiteSearchHighlight",
+		addProseMirrorPlugins() {
+			return [
+				new Plugin({
+					props: {
+						decorations: (state) =>
+							buildSearchDecorations(state.doc, searchQueryRef.current),
+					},
+				}),
+			];
+		},
+	});
+}
+
+function buildSearchDecorations(
+	doc: Parameters<typeof DecorationSet.create>[0],
+	query: string,
+) {
+	const trimmedQuery = query.trim();
+	if (!trimmedQuery) return DecorationSet.empty;
+
+	const decorations: Decoration[] = [];
+	const normalizedQuery = trimmedQuery.toLocaleLowerCase();
+
+	doc.descendants((node, position) => {
+		if (!node.isText || !node.text) return;
+
+		const normalizedText = node.text.toLocaleLowerCase();
+		let matchIndex = normalizedText.indexOf(normalizedQuery);
+
+		while (matchIndex !== -1) {
+			decorations.push(
+				Decoration.inline(
+					position + matchIndex,
+					position + matchIndex + trimmedQuery.length,
+					{ class: "paperite-search-match" },
+				),
+			);
+			matchIndex = normalizedText.indexOf(
+				normalizedQuery,
+				matchIndex + normalizedQuery.length,
+			);
+		}
+	});
+
+	return DecorationSet.create(doc, decorations);
 }
 
 function editableTitle(title: string) {
@@ -748,130 +1168,5 @@ function editableTitle(title: string) {
 
 function notePathTitle(notePath: string) {
 	const filename = notePath.split("/").at(-1) ?? notePath;
-	return filename.replace(/\.md$/i, "");
+	return filename.replace(/\.(?:json|md)$/i, "");
 }
-
-function markdownToHtml(markdown: string) {
-	const html = marked.parse(markdown, { async: false });
-	return typeof html === "string" ? normalizeTaskListHtml(html) : "";
-}
-
-function normalizeTaskListHtml(html: string) {
-	const template = document.createElement("template");
-	template.innerHTML = html;
-
-	for (const list of template.content.querySelectorAll("ul")) {
-		const taskItems = Array.from(list.children).filter(
-			(item): item is HTMLLIElement =>
-				item instanceof HTMLLIElement &&
-				item.querySelector(':scope > input[type="checkbox"]') !== null,
-		);
-
-		if (taskItems.length === 0) continue;
-
-		list.setAttribute("data-type", "taskList");
-
-		for (const item of taskItems) {
-			const checkbox = item.querySelector<HTMLInputElement>(
-				':scope > input[type="checkbox"]',
-			);
-
-			if (!checkbox) continue;
-
-			item.setAttribute("data-type", "taskItem");
-			item.setAttribute("data-checked", String(checkbox.checked));
-			checkbox.remove();
-		}
-	}
-
-	return template.innerHTML;
-}
-
-const SearchHighlight = Extension.create({
-	name: "searchHighlight",
-
-	addStorage() {
-		return {
-			query: "",
-		};
-	},
-
-	addProseMirrorPlugins() {
-		const extension = this;
-
-		return [
-			new Plugin({
-				key: new PluginKey("searchHighlight"),
-				props: {
-					decorations(state) {
-						const query = (
-							extension.editor.storage as unknown as SearchHighlightStorage
-						).searchHighlight.query.trim();
-
-						if (!query) return DecorationSet.empty;
-
-						const decorations: Decoration[] = [];
-						const needle = query.toLocaleLowerCase();
-
-						state.doc.descendants((node, position) => {
-							if (!node.isText || !node.text) return;
-
-							const haystack = node.text.toLocaleLowerCase();
-							let index = haystack.indexOf(needle);
-
-							while (index !== -1) {
-								decorations.push(
-									Decoration.inline(
-										position + index,
-										position + index + query.length,
-										{ class: "paperite-search-highlight" },
-									),
-								);
-								index = haystack.indexOf(needle, index + needle.length);
-							}
-						});
-
-						return DecorationSet.create(state.doc, decorations);
-					},
-				},
-			}),
-		];
-	},
-});
-
-const TaskMarkdownShortcut = Extension.create({
-	name: "taskMarkdownShortcut",
-
-	addProseMirrorPlugins() {
-		const extension = this;
-
-		return [
-			new Plugin({
-				key: new PluginKey("taskMarkdownShortcut"),
-				props: {
-					handleTextInput(view, from, to, text) {
-						if (text !== " " || from !== to) return false;
-
-						const markerStart = Math.max(0, from - 3);
-						const marker = view.state.doc.textBetween(markerStart, from);
-						const normalizedMarker = marker.toLocaleLowerCase();
-
-						if (marker !== "[ ]" && normalizedMarker !== "[x]") {
-							return false;
-						}
-
-						return extension.editor
-							.chain()
-							.focus()
-							.deleteRange({ from: markerStart, to: from })
-							.toggleTaskList()
-							.updateAttributes("taskItem", {
-								checked: normalizedMarker === "[x]",
-							})
-							.run();
-					},
-				},
-			}),
-		];
-	},
-});
