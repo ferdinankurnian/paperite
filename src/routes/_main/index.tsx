@@ -4,6 +4,7 @@ import {
 	BookOpenIcon,
 	CheckIcon,
 	DownloadIcon,
+	ExternalLinkIcon,
 	FileSearchIcon,
 	FileTextIcon,
 	InfoIcon,
@@ -131,6 +132,9 @@ function Index() {
 		start: number;
 	} | null>(null);
 	const saveSequence = useRef(0);
+	const [lockedNotePaths, setLockedNotePaths] = useState<Set<string>>(
+		() => new Set(),
+	);
 
 	const getActiveContent = useCallback(
 		() => activeEditorContentRef.current?.() ?? noteContentRef.current,
@@ -244,7 +248,7 @@ function Index() {
 			resizeObserver.disconnect();
 			listElement.removeEventListener("scroll", updateTabIndicator);
 		};
-	}, [appState.activeNotePath]);
+	}, [appState.activeNotePath, focusMode]);
 
 	const refreshWorkspace = useCallback(async () => {
 		if (!notesApi) return;
@@ -378,6 +382,20 @@ function Index() {
 			window.removeEventListener("paperite:toggle-focus-mode", toggleFocusMode);
 			window.removeEventListener("keydown", handleKeyDown);
 		};
+	}, []);
+
+	useEffect(() => {
+		if (!window.electron) return;
+
+		const cleanup = window.electron.onPopoutClosed((notePath) => {
+			setLockedNotePaths((prev) => {
+				const next = new Set(prev);
+				next.delete(notePath);
+				return next;
+			});
+		});
+
+		return cleanup;
 	}, []);
 
 	useEffect(() => {
@@ -1350,6 +1368,33 @@ function Index() {
 									<DropdownMenuItem>
 										<InfoIcon />
 										Note Info
+									</DropdownMenuItem>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										disabled={
+											!appState.activeNotePath ||
+											lockedNotePaths.has(appState.activeNotePath)
+										}
+										onSelect={() => {
+											const activePath = appState.activeNotePath;
+											if (activePath && window.electron) {
+												window.electron.notes
+													.popoutNote(activePath)
+													.then(() => {
+														setLockedNotePaths((prev) => {
+															const next = new Set(prev);
+															next.add(activePath);
+															return next;
+														});
+													});
+											}
+										}}
+									>
+										<ExternalLinkIcon />
+										{appState.activeNotePath &&
+										lockedNotePaths.has(appState.activeNotePath)
+											? "Already open in window"
+											: "Pop out note"}
 									</DropdownMenuItem>
 									<DropdownMenuSeparator />
 									<DropdownMenuItem>

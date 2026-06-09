@@ -11,6 +11,16 @@ contextBridge.exposeInMainWorld("electron", {
 		ipcRenderer.on("workspace:changed", listener);
 		return () => ipcRenderer.removeListener("workspace:changed", listener);
 	},
+	onPopoutClosed: (cb) => {
+		const listener = (_, notePath) => cb(notePath);
+		ipcRenderer.on("popout:closed", listener);
+		return () => ipcRenderer.removeListener("popout:closed", listener);
+	},
+	onNotePathChanged: (cb) => {
+		const listener = (_, data) => cb(data);
+		ipcRenderer.on("note:path-changed", listener);
+		return () => ipcRenderer.removeListener("note:path-changed", listener);
+	},
 	auth: {
 		getPendingCallback: () => ipcRenderer.invoke("auth:get-pending-callback"),
 	},
@@ -38,6 +48,7 @@ contextBridge.exposeInMainWorld("electron", {
 		moveItem: (path, nextParentPath) =>
 			ipcRenderer.invoke("notes:move-item", path, nextParentPath),
 		deleteItem: (path) => ipcRenderer.invoke("notes:delete-item", path),
+		popoutNote: (path) => ipcRenderer.invoke("notes:popout-note", path),
 		readAppState: () => ipcRenderer.invoke("notes:read-app-state"),
 		writeAppState: (state) =>
 			ipcRenderer.invoke("notes:write-app-state", state),

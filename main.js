@@ -6,6 +6,7 @@ const { app, BrowserWindow, ipcMain, shell } = require("electron");
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 let mainWindow; // hoist ke luar
+const popoutWindows = new Map(); // key: notePath, value: BrowserWindow
 let pendingAuthCallbackUrl;
 let workspaceWatchTimer;
 const workspaceWatchers = new Map();
@@ -66,6 +67,7 @@ const isMigratableNotePath = (itemPath) =>
 const toNoteTitle = (filename) => filename.replace(/\.(?:json|md)$/i, "");
 
 const createEmptyNoteContent = () => ({
+	id: crypto.randomUUID(),
 	type: "doc",
 	content: [{ type: "paragraph" }],
 });
@@ -135,6 +137,20 @@ const readNoteContent = async (notePath) => {
 		return normalizeNoteContent(JSON.parse(rawContent));
 	} catch {
 		return textToNoteContent(rawContent);
+	}
+};
+
+const ensureNoteId = async (notePath) => {
+	try {
+		const filePath = resolveWorkspacePath(notePath);
+		const raw = await fs.readFile(filePath, "utf8");
+		const parsed = JSON.parse(raw.trim());
+		if (isPlainObject(parsed) && parsed.id) return;
+
+		parsed.id = crypto.randomUUID();
+		await writeFileAtomic(filePath, JSON.stringify(parsed, null, 2));
+	} catch {
+		// file might not exist yet or is malformed — skip
 	}
 };
 
@@ -894,12 +910,24 @@ ipcMain.handle("notes:search", async (_event, query) => searchNotes(query));
 
 ipcMain.handle("notes:read-note", async (_event, notePath) => {
 	await ensureWorkspace();
+	await ensureNoteId(notePath);
 	return readNoteContent(notePath);
 });
 
 ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	await ensureWorkspace();
 	const normalizedContent = normalizeNoteContent(content);
+
+	// preserve existing id from disk if the incoming content doesn't have one
+	if (!normalizedContent.id) {
+		try {
+			const existing = await readNoteContent(notePath);
+			if (existing.id) normalizedContent.id = existing.id;
+		} catch {
+			// new note or missing file — id already set by createEmptyNoteContent
+		}
+	}
+
 	await writeRevisionSnapshot(notePath, normalizedContent);
 	await writeFileAtomic(
 		resolveWorkspacePath(notePath),
@@ -951,6 +979,12 @@ ipcMain.handle("notes:rename-item", async (_event, itemPath, nextName) => {
 		resolveWorkspacePath(nextPath),
 	);
 	await moveIndexedPath(current, nextPath);
+	if (popoutWindows.has(current)) {
+		const win = popoutWindows.get(current);
+		popoutWindows.delete(current);
+		popoutWindows.set(nextPath, win);
+		win.webContents.send("note:path-changed", { from: current, to: nextPath });
+	}
 	return { path: nextPath };
 });
 
@@ -973,6 +1007,12 @@ ipcMain.handle("notes:move-item", async (_event, itemPath, nextParentPath) => {
 		resolveWorkspacePath(nextPath),
 	);
 	await moveIndexedPath(current, nextPath);
+	if (popoutWindows.has(current)) {
+		const win = popoutWindows.get(current);
+		popoutWindows.delete(current);
+		popoutWindows.set(nextPath, win);
+		win.webContents.send("note:path-changed", { from: current, to: nextPath });
+	}
 	return { path: nextPath };
 });
 
@@ -997,6 +1037,56 @@ ipcMain.handle("notes:read-app-state", async () => {
 ipcMain.handle("notes:write-app-state", async (_event, state) => {
 	await ensureWorkspace();
 	await writeFileAtomic(statePath(), JSON.stringify(state, null, 2));
+	return { ok: true };
+});
+
+ipcMain.handle("notes:popout-note", async (_event, notePath) => {
+	if (popoutWindows.has(notePath)) {
+		const existing = popoutWindows.get(notePath);
+		if (!existing.isDestroyed()) {
+			existing.focus();
+			return { ok: true };
+		}
+	}
+
+	const popout = new BrowserWindow({
+		width: 600,
+		height: 700,
+		minWidth: 380,
+		minHeight: 400,
+		frame: false,
+		title: "Paperite",
+		backgroundColor: "#171717",
+		webPreferences: {
+			preload: require("node:path").join(__dirname, "preload.js"),
+		},
+	});
+
+	popoutWindows.set(notePath, popout);
+
+	popout.on("closed", () => {
+		popoutWindows.delete(notePath);
+		mainWindow?.webContents.send("popout:closed", notePath);
+	});
+
+	popout.webContents.on("will-navigate", (event, url) => {
+		if (isAppUrl(url)) return;
+		event.preventDefault();
+		shell.openExternal(url);
+	});
+
+	const encodedPath = encodeURIComponent(notePath);
+
+	if (devServerUrl) {
+		await popout.loadURL(
+			`${devServerUrl}/popout.html?popout=1&note=${encodedPath}`,
+		);
+	} else {
+		await popout.loadFile("dist/popout.html", {
+			query: { popout: "1", note: encodedPath },
+		});
+	}
+
 	return { ok: true };
 });
 
