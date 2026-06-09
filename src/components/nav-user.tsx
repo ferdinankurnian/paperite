@@ -43,6 +43,7 @@ import {
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 
 const themes = [
 	{ icon: SunIcon, label: "Light", value: "light" },
@@ -64,6 +65,7 @@ export function NavUser({
 	const { theme, setTheme } = useTheme();
 	const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+	const [activeTab, setActiveTab] = useState<"general" | "account">("general");
 
 	return (
 		<>
@@ -105,7 +107,12 @@ export function NavUser({
 								</div>
 							</DropdownMenuLabel>
 							<DropdownMenuSeparator />
-							<DropdownMenuItem onSelect={() => setIsSettingsOpen(true)}>
+							<DropdownMenuItem
+								onSelect={() => {
+									setActiveTab("general");
+									setIsSettingsOpen(true);
+								}}
+							>
 								<SettingsIcon />
 								Settings
 							</DropdownMenuItem>
@@ -158,60 +165,142 @@ export function NavUser({
 							</p>
 							<button
 								type="button"
-								className="flex h-9 w-full items-center gap-2 rounded-md bg-accent px-2 text-left text-sm font-medium text-accent-foreground"
+								onClick={() => setActiveTab("general")}
+								className={cn(
+									"flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm font-medium transition-colors",
+									activeTab === "general"
+										? "bg-accent text-accent-foreground"
+										: "text-muted-foreground hover:bg-accent/50",
+								)}
 							>
 								<PaletteIcon className="size-4" />
-								Appearance
+								General
+							</button>
+							<button
+								type="button"
+								onClick={() => setActiveTab("account")}
+								className={cn(
+									"flex h-9 w-full items-center gap-2 rounded-md px-2 text-left text-sm font-medium transition-colors",
+									activeTab === "account"
+										? "bg-accent text-accent-foreground"
+										: "text-muted-foreground hover:bg-accent/50",
+								)}
+							>
+								<UserRoundIcon className="size-4" />
+								Account
 							</button>
 						</aside>
 						<div className="min-w-0 overflow-y-auto p-5 sm:p-6">
-							<DialogHeader className="mb-5 gap-1">
-								<DialogTitle className="text-lg">Appearance</DialogTitle>
-								<DialogDescription>
-									Customize how Paperite looks on this device.
-								</DialogDescription>
-							</DialogHeader>
-							<section className="rounded-xl bg-muted/45 p-4">
-								<div className="mb-3 flex items-center gap-2">
-									<PaletteIcon className="size-4 text-muted-foreground" />
-									<div>
-										<h3 className="text-sm font-medium">Theme</h3>
-										<p className="text-xs text-muted-foreground">
-											Choose your preferred color scheme.
-										</p>
-									</div>
-								</div>
-								<Tabs
-									value={theme}
-									onValueChange={(value) =>
-										setTheme(value as "light" | "dark" | "system")
-									}
-								>
-									<TabsList className="grid h-10 w-full grid-cols-3">
-										{themes.map(({ icon: Icon, label, value }) => (
-											<TabsTrigger
-												key={value}
-												value={value}
-												className="h-full gap-1.5 transition-[color,background-color,box-shadow,transform] active:scale-[0.96]"
+							{activeTab === "general" && (
+								<>
+									<DialogHeader className="mb-5 gap-1">
+										<DialogTitle className="text-lg">General</DialogTitle>
+										<DialogDescription>
+											Manage your Paperite preferences.
+										</DialogDescription>
+									</DialogHeader>
+									<section className="rounded-xl bg-muted/45 p-4">
+										<div className="mb-3 flex items-center gap-2">
+											<PaletteIcon className="size-4 text-muted-foreground" />
+											<div>
+												<h3 className="text-sm font-medium">Theme</h3>
+												<p className="text-xs text-muted-foreground">
+													Choose your preferred color scheme.
+												</p>
+											</div>
+										</div>
+										<Tabs
+											value={theme}
+											onValueChange={(value) =>
+												setTheme(value as "light" | "dark" | "system")
+											}
+										>
+											<TabsList className="grid h-10 w-full grid-cols-3">
+												{themes.map(({ icon: Icon, label, value }) => (
+													<TabsTrigger
+														key={value}
+														value={value}
+														className="h-full gap-1.5 transition-[color,background-color,box-shadow,transform] active:scale-[0.96]"
+													>
+														<Icon className="size-4" />
+														{label}
+													</TabsTrigger>
+												))}
+											</TabsList>
+										</Tabs>
+									</section>
+								</>
+							)}
+							{activeTab === "account" && (
+								<>
+									<DialogHeader className="mb-5 gap-1">
+										<DialogTitle className="text-lg">Account</DialogTitle>
+										<DialogDescription>
+											Manage your account and preferences.
+										</DialogDescription>
+									</DialogHeader>
+									<section className="rounded-xl bg-muted/45 p-4">
+										<div className="flex items-center gap-3">
+											<Avatar className="size-10 rounded-lg">
+												<AvatarImage src={user.avatar} alt={user.name} />
+												<AvatarFallback className="rounded-lg">
+													{user.name
+														.split(" ")
+														.map((n) => n[0])
+														.join("")
+														.slice(0, 2)
+														.toUpperCase()}
+												</AvatarFallback>
+											</Avatar>
+											<div className="min-w-0">
+												<h3 className="text-sm font-medium">{user.name}</h3>
+												<p className="truncate text-xs text-muted-foreground">
+													Free Plan
+												</p>
+											</div>
+										</div>
+									</section>
+									<section className="mt-4 rounded-xl bg-muted/45 p-4">
+										<div className="mb-3 flex items-center gap-2">
+											<UserRoundIcon className="size-4 text-muted-foreground" />
+											<div>
+												<h3 className="text-sm font-medium">Profile</h3>
+												<p className="text-xs text-muted-foreground">
+													Your account details from Clerk.
+												</p>
+											</div>
+										</div>
+										<div className="space-y-3">
+											<div>
+												<p className="text-xs font-medium text-muted-foreground">
+													Full Name
+												</p>
+												<p className="text-sm">{user.name}</p>
+											</div>
+										</div>
+									</section>
+									<section className="mt-4 rounded-xl bg-muted/45 p-4">
+										<div className="flex items-center justify-between">
+											<div className="flex items-center gap-2">
+												<LogOutIcon className="size-4 text-muted-foreground" />
+												<div>
+													<h3 className="text-sm font-medium">Sign Out</h3>
+													<p className="text-xs text-muted-foreground">
+														Sign out of your account on this device.
+													</p>
+												</div>
+											</div>
+											<button
+												type="button"
+												onClick={() => setIsLogoutDialogOpen(true)}
+												className="rounded-md border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent"
 											>
-												<Icon className="size-4" />
-												{label}
-											</TabsTrigger>
-										))}
-									</TabsList>
-								</Tabs>
-							</section>
-							<section className="mt-4 rounded-xl bg-muted/45 p-4">
-								<div className="flex items-center gap-3">
-									<UserRoundIcon className="size-4 text-muted-foreground" />
-									<div className="min-w-0">
-										<h3 className="text-sm font-medium">Account</h3>
-										<p className="truncate text-xs text-muted-foreground">
-											{user.name}
-										</p>
-									</div>
-								</div>
-							</section>
+												Sign Out
+											</button>
+										</div>
+									</section>
+								</>
+							)}
 						</div>
 					</div>
 				</DialogContent>

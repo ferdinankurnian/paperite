@@ -208,7 +208,7 @@ export function NoteEditor({
 	const [draftTitle, setDraftTitle] = useState(editableTitle(noteTitle));
 	const [, setToolbarVersion] = useState(0);
 	const [linkHover, setLinkHover] = useState<LinkHover | null>(null);
-	const titleInputRef = useRef<HTMLInputElement>(null);
+	const titleInputRef = useRef<HTMLTextAreaElement>(null);
 	const notePathRef = useRef(notePath);
 	const onChangeRef = useRef(onChange);
 	const readOnlyRef = useRef(readOnly);
@@ -219,6 +219,14 @@ export function NoteEditor({
 	notePathRef.current = notePath;
 	onChangeRef.current = onChange;
 	readOnlyRef.current = readOnly;
+
+	useEffect(() => {
+		const textarea = titleInputRef.current;
+		if (textarea) {
+			textarea.style.height = "auto";
+			textarea.style.height = `${textarea.scrollHeight}px`;
+		}
+	}, []);
 
 	const extensions = useMemo(
 		() => [
@@ -414,18 +422,26 @@ export function NoteEditor({
 		<div className="relative flex min-h-0 flex-1 overflow-hidden">
 			<div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto overscroll-contain">
 				<div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
-					<input
-						type="text"
+					<textarea
 						ref={titleInputRef}
 						value={draftTitle}
 						aria-label="Note title"
-						className="mx-8 mt-10 mb-2 bg-transparent text-3xl font-semibold tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 lg:mx-20"
+						className="mx-8 mt-10 mb-2 w-[calc(100%-4rem)] resize-none bg-transparent text-3xl font-semibold leading-tight tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)]"
+						rows={1}
 						readOnly={readOnly}
 						placeholder="Untitled"
 						onBlur={commitTitle}
+						onInput={(event) => {
+							const textarea = event.currentTarget;
+							textarea.style.height = "auto";
+							textarea.style.height = `${textarea.scrollHeight}px`;
+						}}
 						onChange={(event) => {
 							setDraftTitle(event.target.value);
 							onTitleChange(event.target.value);
+							const textarea = event.currentTarget;
+							textarea.style.height = "auto";
+							textarea.style.height = `${textarea.scrollHeight}px`;
 						}}
 						onKeyDown={(event) => {
 							if (event.key === "Enter") {
@@ -1094,8 +1110,8 @@ function createEmojiSuggestionRenderer() {
 	};
 }
 
-function createTitleNavigationExtension(
-	titleInputRef: RefObject<HTMLInputElement | null>,
+	function createTitleNavigationExtension(
+	titleInputRef: RefObject<HTMLTextAreaElement | null>,
 ) {
 	return Extension.create({
 		name: "paperiteTitleNavigation",
