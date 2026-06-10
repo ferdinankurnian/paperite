@@ -213,6 +213,7 @@ function NoteTree({
 	onRenameItem,
 	onToggleFolder,
 	parentPath,
+	isInbox = false,
 }: {
 	activeNotePath: string | null;
 	expandedFolders: string[];
@@ -226,6 +227,7 @@ function NoteTree({
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
 	parentPath: string;
+	isInbox?: boolean;
 }) {
 	const { isOver, setNodeRef } = useDroppable({
 		id: listDropTargetId(parentPath),
@@ -252,6 +254,7 @@ function NoteTree({
 						onOpenNote={onOpenNote}
 						onRenameItem={onRenameItem}
 						onToggleFolder={onToggleFolder}
+						isInbox={isInbox}
 					/>
 				) : (
 					<NoteCard
@@ -271,10 +274,12 @@ function NoteTree({
 
 function NoteGrid({
 	items,
+	activeNotePath,
 	onDeleteItem,
 	onOpenNote,
 }: {
 	items: WorkspaceItem[];
+	activeNotePath: string | null;
 	onDeleteItem: (path: string) => void;
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
 }) {
@@ -306,6 +311,7 @@ function NoteGrid({
 				<NoteGridCard
 					key={note.path}
 					note={note}
+					isActive={activeNotePath === note.path}
 					onDeleteItem={onDeleteItem}
 					onOpenNote={onOpenNote}
 				/>
@@ -316,30 +322,28 @@ function NoteGrid({
 
 function NoteGridCard({
 	note,
+	isActive,
 	onDeleteItem,
 	onOpenNote,
 }: {
 	note: WorkspaceNote;
+	isActive: boolean;
 	onDeleteItem: (path: string) => void;
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
 }) {
 	const [deleteOpen, setDeleteOpen] = React.useState(false);
-	const dateStr = React.useMemo(() => {
-		const d = new Date(note.updatedAt);
-		return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
-	}, [note.updatedAt]);
-
 	return (
 		<>
 			<ContextMenu>
 				<ContextMenuTrigger asChild>
 					<button
 						type="button"
-						className="mb-2 w-full break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+						className="mb-2 w-full break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground"
+						data-active={isActive}
 						onClick={() => onOpenNote(note, "preview")}
 						onDoubleClick={() => onOpenNote(note, "pinned")}
 					>
-						<div className="text-sm font-semibold leading-tight">
+						<div className="line-clamp-3 text-sm font-semibold leading-tight">
 							{note.title.trim() || "Untitled"}
 						</div>
 						{note.preview ? (
@@ -347,9 +351,6 @@ function NoteGridCard({
 								{note.preview}
 							</p>
 						) : null}
-						<div className="mt-2 text-[10px] text-muted-foreground/60">
-							{dateStr}
-						</div>
 					</button>
 				</ContextMenuTrigger>
 				<ContextMenuContent className="w-44">
@@ -397,6 +398,7 @@ function NoteFolderItem({
 	onOpenNote,
 	onRenameItem,
 	onToggleFolder,
+	isInbox = false,
 }: {
 	activeNotePath: string | null;
 	expandedFolders: string[];
@@ -409,6 +411,7 @@ function NoteFolderItem({
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
+	isInbox?: boolean;
 }) {
 	const isOpen = expandedFolders.includes(item.path);
 	const hasChildren = item.children.length > 0;
@@ -461,19 +464,20 @@ function NoteFolderItem({
 									<FolderIcon className="size-3.5" />
 									<span className="min-w-0 flex-1 truncate">{item.title}</span>
 								</CollapsibleTrigger>
-								<div className="flex shrink-0 opacity-0 transition-opacity group-hover/folder:opacity-100">
-									<button
-										type="button"
-										className="flex size-6 items-center justify-center rounded-md text-sidebar-foreground/70 outline-none hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
-										aria-label="Add note"
-										onPointerDown={(event) => event.stopPropagation()}
-										onClick={(event) => {
-											event.stopPropagation();
-											onCreateNote(item.path);
-										}}
-									>
-										<StickyNotePlusIcon className="size-3.5" />
-									</button>
+							<div className="flex shrink-0 opacity-0 transition-opacity group-hover/folder:opacity-100">
+								<button
+									type="button"
+									className="flex size-6 items-center justify-center rounded-md text-sidebar-foreground/70 outline-none hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
+									aria-label="Add note"
+									onPointerDown={(event) => event.stopPropagation()}
+									onClick={(event) => {
+										event.stopPropagation();
+										onCreateNote(item.path);
+									}}
+								>
+									<StickyNotePlusIcon className="size-3.5" />
+								</button>
+								{!isInbox && (
 									<button
 										type="button"
 										className="flex size-6 items-center justify-center rounded-md text-sidebar-foreground/70 outline-none hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
@@ -486,40 +490,44 @@ function NoteFolderItem({
 									>
 										<FolderPlusIcon className="size-3.5" />
 									</button>
-								</div>
+								)}
+							</div>
 							</div>
 							{hasChildren ? (
 								<CollapsibleContent>
 									<div className="ml-3.5 border-l border-sidebar-border pl-2">
-										<NoteTree
-											activeNotePath={activeNotePath}
-											expandedFolders={expandedFolders}
-											items={item.children}
-											level={level + 1}
-											onCreateFolder={onCreateFolder}
-											onCreateNote={onCreateNote}
-											onDeleteItem={onDeleteItem}
-											onMoveItem={onMoveItem}
-											onOpenNote={onOpenNote}
-											onRenameItem={onRenameItem}
-											onToggleFolder={onToggleFolder}
-											parentPath={item.path}
-										/>
+								<NoteTree
+										activeNotePath={activeNotePath}
+										expandedFolders={expandedFolders}
+										items={item.children}
+										level={level + 1}
+										onCreateFolder={onCreateFolder}
+										onCreateNote={onCreateNote}
+										onDeleteItem={onDeleteItem}
+										onMoveItem={onMoveItem}
+										onOpenNote={onOpenNote}
+										onRenameItem={onRenameItem}
+										onToggleFolder={onToggleFolder}
+										parentPath={item.path}
+										isInbox={isInbox}
+									/>
 									</div>
 								</CollapsibleContent>
 							) : null}
 						</Collapsible>
 					</div>
 				</ContextMenuTrigger>
-				<ContextMenuContent className="w-48">
+						<ContextMenuContent className="w-48">
 					<ContextMenuItem onSelect={() => onCreateNote(item.path)}>
 						<StickyNotePlusIcon />
 						Add note
 					</ContextMenuItem>
-					<ContextMenuItem onSelect={() => onCreateFolder(item.path)}>
-						<FolderPlusIcon />
-						Add folder
-					</ContextMenuItem>
+					{!isInbox && (
+						<ContextMenuItem onSelect={() => onCreateFolder(item.path)}>
+							<FolderPlusIcon />
+							Add folder
+						</ContextMenuItem>
+					)}
 					<ContextMenuSeparator />
 					<ContextMenuItem disabled>
 						<PaletteIcon />
@@ -840,7 +848,7 @@ function SpaceDropHeader({
 									</DropdownMenuRadioItem>
 									<DropdownMenuRadioItem value="grid">
 										<LayoutGridIcon className="text-muted-foreground" />
-										<span>Grid</span>
+										<span>Card</span>
 									</DropdownMenuRadioItem>
 								</DropdownMenuRadioGroup>
 							</DropdownMenuSubContent>
@@ -868,14 +876,16 @@ function SpaceDropHeader({
 				</DropdownMenuContent>
 			</DropdownMenu>
 			<div className="flex items-center gap-1">
-				<button
-					type="button"
-					className="flex size-7 items-center justify-center rounded-md text-sidebar-foreground/80 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
-					aria-label="Add folder"
-					onClick={() => onCreateFolder(activeSpacePath)}
-				>
-					<FolderPlusIcon className="size-3.5" />
-				</button>
+				{!isInbox && (
+					<button
+						type="button"
+						className="flex size-7 items-center justify-center rounded-md text-sidebar-foreground/80 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
+						aria-label="Add folder"
+						onClick={() => onCreateFolder(activeSpacePath)}
+					>
+						<FolderPlusIcon className="size-3.5" />
+					</button>
+				)}
 				<button
 					type="button"
 					className="flex size-7 items-center justify-center rounded-md text-sidebar-foreground/80 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
@@ -1088,11 +1098,12 @@ export function AppSidebar({
 							<SidebarGroupContent>
 							{activeSpace && visibleChildren.length > 0 ? (
 								viewMode === "grid" && activeSpacePath === "Inbox" ? (
-									<NoteGrid
-										items={visibleChildren}
-										onDeleteItem={onDeleteItem}
-										onOpenNote={onOpenNote}
-									/>
+								<NoteGrid
+									items={visibleChildren}
+									activeNotePath={activeNotePath}
+									onDeleteItem={onDeleteItem}
+									onOpenNote={onOpenNote}
+								/>
 								) : (
 									<NoteTree
 										activeNotePath={activeNotePath}
@@ -1106,6 +1117,7 @@ export function AppSidebar({
 										onRenameItem={onRenameItem}
 										onToggleFolder={onToggleFolder}
 										parentPath={activeSpacePath}
+										isInbox={activeSpacePath === "Inbox"}
 									/>
 								)
 							) : (
@@ -1119,7 +1131,8 @@ export function AppSidebar({
 												Create a note or drop one into this space.
 											</EmptyDescription>
 										</EmptyHeader>
-										<EmptyContent className="flex-row justify-center">
+									<EmptyContent className="flex-row justify-center">
+										{activeSpacePath !== "Inbox" && (
 											<Button
 												type="button"
 												size="sm"
@@ -1129,15 +1142,16 @@ export function AppSidebar({
 												<FolderPlusIcon />
 												New folder
 											</Button>
-											<Button
-												type="button"
-												size="sm"
-												onClick={() => onCreateNote(activeSpacePath)}
-											>
-												<StickyNotePlusIcon />
-												New note
-											</Button>
-										</EmptyContent>
+										)}
+										<Button
+											type="button"
+											size="sm"
+											onClick={() => onCreateNote(activeSpacePath)}
+										>
+											<StickyNotePlusIcon />
+											New note
+										</Button>
+									</EmptyContent>
 									</Empty>
 								)}
 							</SidebarGroupContent>
