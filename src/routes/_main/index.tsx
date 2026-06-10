@@ -133,6 +133,20 @@ function SortableTab({
 		isDragging: isSortableDragging,
 	} = useSortable({ id: note.path });
 
+	const [hidden, setHidden] = useState(false);
+	const prevDragging = useRef(false);
+
+	useEffect(() => {
+		if (isSortableDragging) {
+			setHidden(true);
+			prevDragging.current = true;
+		} else if (prevDragging.current) {
+			prevDragging.current = false;
+			const timer = setTimeout(() => setHidden(false), 200);
+			return () => clearTimeout(timer);
+		}
+	}, [isSortableDragging]);
+
 	const style = {
 		transform: CSS.Transform.toString(transform),
 		transition,
@@ -143,7 +157,7 @@ function SortableTab({
 			ref={setNodeRef}
 			style={{
 				...style,
-				opacity: isSortableDragging ? 0 : 1,
+				opacity: hidden || isSortableDragging ? 0 : 1,
 			}}
 			data-active={isActive}
 			data-preview={note.preview}
