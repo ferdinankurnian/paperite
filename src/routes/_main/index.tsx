@@ -22,7 +22,6 @@ import {
 	DownloadIcon,
 	ExternalLinkIcon,
 	FileSearchIcon,
-	FileTextIcon,
 	InfoIcon,
 	MoreVerticalIcon,
 	PencilIcon,
@@ -50,13 +49,7 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-	Empty,
-	EmptyDescription,
-	EmptyHeader,
-	EmptyMedia,
-	EmptyTitle,
-} from "@/components/ui/empty";
+
 import {
 	SidebarInset,
 	SidebarProvider,
@@ -133,7 +126,7 @@ function SortableTab({
 	const style = {
 		transform: CSS.Transform.toString(transform),
 		transition,
-		opacity: 1,
+		opacity: isSortableDragging ? "1" : undefined,
 	};
 
 	return (
@@ -142,7 +135,8 @@ function SortableTab({
 			style={style}
 			data-active={isActive}
 			data-preview={note.preview}
-			className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 sm:w-36 lg:w-44 cursor-grab active:cursor-grabbing"
+			data-dragging={isSortableDragging}
+			className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:bg-muted data-[dragging=true]:opacity-100 sm:w-36 lg:w-44 cursor-grab active:cursor-grabbing !opacity-100"
 			{...attributes}
 			{...listeners}
 		>
@@ -1717,17 +1711,11 @@ function Index() {
 							Loading note...
 						</div>
 					) : (
-						<Empty>
-							<EmptyHeader>
-								<EmptyMedia variant="icon">
-									<FileTextIcon />
-								</EmptyMedia>
-								<EmptyTitle>No note open</EmptyTitle>
-								<EmptyDescription>
-									Open a note from the sidebar to start writing.
-								</EmptyDescription>
-							</EmptyHeader>
-						</Empty>
+					<div className="flex flex-1 items-center justify-center">
+						<h1 className="font-brand text-5xl text-muted-foreground/50 select-none">
+							Paperite
+						</h1>
+					</div>
 					)}
 				</section>
 			</SidebarInset>
