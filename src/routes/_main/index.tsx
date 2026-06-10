@@ -133,35 +133,19 @@ function SortableTab({
 		isDragging: isSortableDragging,
 	} = useSortable({ id: note.path });
 
-	const [hidden, setHidden] = useState(false);
-	const prevDragging = useRef(false);
-
-	useEffect(() => {
-		if (isSortableDragging) {
-			setHidden(true);
-			prevDragging.current = true;
-		} else if (prevDragging.current) {
-			prevDragging.current = false;
-			const timer = setTimeout(() => setHidden(false), 200);
-			return () => clearTimeout(timer);
-		}
-	}, [isSortableDragging]);
-
 	const style = {
 		transform: CSS.Transform.toString(transform),
 		transition,
+		opacity: isSortableDragging ? 0 : undefined,
 	};
 
 	return (
 		<div
 			ref={setNodeRef}
-			style={{
-				...style,
-				opacity: hidden || isSortableDragging ? 0 : 1,
-			}}
+			style={style}
 			data-active={isActive}
 			data-preview={note.preview}
-			className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 sm:w-36 lg:w-44 cursor-grab active:cursor-grabbing"
+			className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors transition-opacity duration-200 hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 sm:w-36 lg:w-44 cursor-grab active:cursor-grabbing"
 			{...attributes}
 			{...listeners}
 		>
