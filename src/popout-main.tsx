@@ -89,7 +89,11 @@ function PopoutNote() {
 			setNoteContent(content);
 			noteContentRef.current = content;
 			setLoadedNotePath(notePath);
-			setNoteTitle(stripNoteExtension(fileName(notePath)) || "Untitled");
+			const titleFromContent =
+				typeof content.title === "string" ? content.title : "";
+			setNoteTitle(
+				titleFromContent || stripNoteExtension(fileName(notePath)) || "Untitled",
+			);
 		});
 	}, [notePath]);
 
@@ -98,7 +102,15 @@ function PopoutNote() {
 
 		const cleanup = window.electron.onNotePathChanged((data) => {
 			setCurrentNotePath(data.to);
-			setNoteTitle(stripNoteExtension(fileName(data.to)) || "Untitled");
+			window.electron.notes.readNote(data.to).then((content) => {
+				const titleFromContent =
+					typeof content.title === "string" ? content.title : "";
+				setNoteTitle(
+					titleFromContent ||
+						stripNoteExtension(fileName(data.to)) ||
+						"Untitled",
+				);
+			});
 		});
 
 		return cleanup;

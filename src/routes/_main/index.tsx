@@ -53,6 +53,7 @@ import {
 	noteContentPreview,
 	replaceInNoteContent,
 	serializeNoteContent,
+	serializeNoteContentBody,
 } from "@/lib/note-content";
 import { getNotesEngine } from "@/lib/notes-engine";
 
@@ -93,6 +94,7 @@ const defaultPageFormat: PageFormat = {
 
 function Index() {
 	const notesApi = getNotesEngine();
+	const workspaceRef = useRef<WorkspaceSnapshot | null>(null);
 	const [workspace, setWorkspace] = useState<WorkspaceSnapshot | null>(null);
 	const [appState, setAppState] = useState<PaperiteAppState>(defaultAppState);
 	const [noteContent, setNoteContent] = useState<NoteContent>(() =>
@@ -112,6 +114,7 @@ function Index() {
 		{},
 	);
 	const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+	const [inboxViewMode, setInboxViewMode] = useState<"list" | "grid">("list");
 	const didHydrate = useRef(false);
 	const findInputRef = useRef<HTMLInputElement>(null);
 	const lastLoadedNote = useRef<string | null>(null);
@@ -262,6 +265,7 @@ function Index() {
 		const nextWorkspace = await notesApi.getWorkspace();
 		const notePaths = collectNotePaths(nextWorkspace.spaces);
 
+		workspaceRef.current = nextWorkspace;
 		setWorkspace(nextWorkspace);
 		setNotePreviews((current) => pickByPaths(current, notePaths));
 		setNoteTitleDrafts((current) => pickByPaths(current, notePaths));
@@ -269,7 +273,7 @@ function Index() {
 
 		const activeNotePath = appState.activeNotePath;
 		if (!activeNotePath || !notePaths.has(activeNotePath)) return;
-		if (serializeNoteContent(noteContent) !== lastPersistedContent.current) {
+		if (serializeNoteContentBody(noteContent) !== lastPersistedContent.current) {
 			return;
 		}
 
@@ -277,14 +281,14 @@ function Index() {
 			const content = await notesApi.readNote(activeNotePath);
 			if (activeNotePathRef.current !== activeNotePath) return;
 			if (
-				serializeNoteContent(noteContentRef.current) !==
+				serializeNoteContentBody(noteContentRef.current) !==
 				lastPersistedContent.current
 			) {
 				return;
 			}
 
 			lastLoadedNote.current = activeNotePath;
-			lastPersistedContent.current = serializeNoteContent(content);
+			lastPersistedContent.current = serializeNoteContentBody(content);
 			noteContentCache.current.set(activeNotePath, content);
 			notePersistedCache.current.set(activeNotePath, content);
 			setNoteContent(content);
@@ -428,12 +432,14 @@ function Index() {
 					? serializeNoteContent(persistedContent)
 					: "";
 
-				lastLoadedNote.current = notePath;
-				lastPersistedContent.current = persistedSerialized;
 				setNoteContent(cachedContent);
 				setLoadedNotePath(notePath);
 				setSaveStatus(
-					cachedSerialized === persistedSerialized ? "saved" : "saving",
+					persistedContent
+						? cachedSerialized === persistedSerialized
+							? "saved"
+							: "saving"
+						: "idle",
 				);
 			} else {
 				lastLoadedNote.current = null;
@@ -451,11 +457,15 @@ function Index() {
 			const currentCachedContent = noteContentCache.current.get(notePath);
 			const currentPersistedContent = notePersistedCache.current.get(notePath);
 			const readSerialized = serializeNoteContent(content);
+			const readSerializedBody = serializeNoteContentBody(content);
 			const currentCachedSerialized = currentCachedContent
 				? serializeNoteContent(currentCachedContent)
 				: undefined;
 			const currentPersistedSerialized = currentPersistedContent
 				? serializeNoteContent(currentPersistedContent)
+				: undefined;
+			const currentPersistedSerializedBody = currentPersistedContent
+				? serializeNoteContentBody(currentPersistedContent)
 				: undefined;
 			const hasDirtyCachedContent =
 				currentCachedSerialized !== undefined &&
@@ -467,7 +477,7 @@ function Index() {
 			if (hasDirtyCachedContent) {
 				lastLoadedNote.current = notePath;
 				lastPersistedContent.current =
-					currentPersistedSerialized ?? readSerialized;
+					currentPersistedSerializedBody ?? readSerializedBody;
 				if (!currentPersistedContent) {
 					notePersistedCache.current.set(notePath, content);
 				}
@@ -477,7 +487,7 @@ function Index() {
 			}
 
 			lastLoadedNote.current = notePath;
-			lastPersistedContent.current = readSerialized;
+			lastPersistedContent.current = readSerializedBody;
 			noteContentCache.current.set(notePath, content);
 			notePersistedCache.current.set(notePath, content);
 			setNoteContent(content);
@@ -502,9 +512,9 @@ function Index() {
 		if (!notesApi || !appState.activeNotePath) return;
 		if (loadedNotePath !== appState.activeNotePath) return;
 		if (lastLoadedNote.current !== appState.activeNotePath) return;
-		const serializedContent = serializeNoteContent(noteContent);
+		const serializedContentBody = serializeNoteContentBody(noteContent);
 
-		if (serializedContent === lastPersistedContent.current) {
+		if (serializedContentBody === lastPersistedContent.current) {
 			setSaveStatus("saved");
 			return;
 		}
@@ -517,9 +527,9 @@ function Index() {
 				notePath === activeNotePathRef.current
 					? getActiveContent()
 					: noteContent;
-			const latestSerializedContent = serializeNoteContent(latestContent);
+			const trackedBody = serializeNoteContentBody(noteContentRef.current);
 
-			if (latestSerializedContent === lastPersistedContent.current) {
+			if (trackedBody === lastPersistedContent.current) {
 				setSaveStatus("saved");
 				return;
 			}
@@ -536,12 +546,11 @@ function Index() {
 						return;
 					}
 
-					lastPersistedContent.current = latestSerializedContent;
+					lastPersistedContent.current = trackedBody;
 					noteContentCache.current.set(notePath, latestContent);
 					notePersistedCache.current.set(notePath, latestContent);
 					setSaveStatus(
-						serializeNoteContent(noteContentRef.current) ===
-							latestSerializedContent
+						serializeNoteContentBody(noteContentRef.current) === trackedBody
 							? "saved"
 							: "saving",
 					);
@@ -566,6 +575,21 @@ function Index() {
 		noteContent,
 		notesApi,
 	]);
+
+	// debug: log workspace note order changes
+	useEffect(() => {
+		if (!workspace) return;
+		const notes: { path: string; updatedAt: number }[] = [];
+		for (const space of workspace.spaces) {
+			const collect = (items: WorkspaceItem[]) => {
+				for (const item of items) {
+					if (item.type === "note") notes.push(item);
+					if (item.type === "folder") collect(item.children);
+				}
+			};
+			collect(space.children);
+		}
+	}, [workspace]);
 
 	const currentSpacePath = useMemo(() => {
 		if (
@@ -628,15 +652,14 @@ function Index() {
 		(notePath: string, content: NoteContent) => {
 			if (!notesApi) return;
 
-			const serializedContent = serializeNoteContent(content);
+			const trackedContent = noteContentRef.current;
+			const serializedBody = serializeNoteContentBody(trackedContent);
 			const persistedContent = notePersistedCache.current.get(notePath);
-			const persistedSerialized = persistedContent
-				? serializeNoteContent(persistedContent)
-				: lastLoadedNote.current === notePath
-					? lastPersistedContent.current
-					: "";
+			const persistedBody = persistedContent
+				? serializeNoteContentBody(persistedContent)
+				: "";
 
-			if (serializedContent === persistedSerialized) return;
+			if (serializedBody === persistedBody) return;
 
 			const sequence = saveSequence.current + 1;
 			saveSequence.current = sequence;
@@ -651,9 +674,9 @@ function Index() {
 						saveSequence.current === sequence &&
 						activeNotePathRef.current === notePath
 					) {
-						lastPersistedContent.current = serializedContent;
+						lastPersistedContent.current = serializedBody;
 						setSaveStatus(
-							serializeNoteContent(noteContentRef.current) === serializedContent
+							serializeNoteContentBody(noteContentRef.current) === serializedBody
 								? "saved"
 								: "saving",
 						);
@@ -986,7 +1009,31 @@ function Index() {
 		try {
 			const previousPath = appState.activeNotePath;
 			const renamed = await notesApi.renameItem(previousPath, title);
-			const nextTitle = stripNoteExtension(fileName(renamed.path));
+			const nextTitle =
+				renamed.path === previousPath
+					? title
+					: stripNoteExtension(fileName(renamed.path));
+
+			const cachedContent = noteContentCache.current.get(previousPath);
+			if (cachedContent !== undefined) {
+				noteContentCache.current.set(renamed.path, cachedContent);
+				noteContentCache.current.delete(previousPath);
+				const persistedContent = notePersistedCache.current.get(previousPath);
+				if (persistedContent !== undefined) {
+					notePersistedCache.current.set(renamed.path, persistedContent);
+					notePersistedCache.current.delete(previousPath);
+				}
+				lastLoadedNote.current = renamed.path;
+				lastPersistedContent.current = serializeNoteContentBody(cachedContent);
+				if (renamed.path === previousPath) {
+					const updated = { ...cachedContent, title: nextTitle };
+					noteContentCache.current.set(renamed.path, updated);
+					setNoteContent(updated);
+				} else {
+					setNoteContent(cachedContent);
+				}
+				setLoadedNotePath(renamed.path);
+			}
 
 			setAppState((current) => ({
 				...current,
@@ -1043,7 +1090,10 @@ function Index() {
 
 		try {
 			const renamed = await notesApi.renameItem(path, title);
-			const nextTitle = stripNoteExtension(fileName(renamed.path));
+			const nextTitle =
+				renamed.path === path
+					? title
+					: stripNoteExtension(fileName(renamed.path));
 
 			setAppState((current) => ({
 				...current,
@@ -1271,6 +1321,8 @@ function Index() {
 						spaceColors={appState.spaceColors}
 						spaceIcons={appState.spaceIcons}
 						spaces={visibleSpaces}
+						viewMode={inboxViewMode}
+						onViewModeChange={setInboxViewMode}
 						onCreateFolder={createFolder}
 						onCreateNote={createNote}
 						onCreateSpace={createSpace}

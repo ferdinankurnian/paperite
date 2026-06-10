@@ -66,11 +66,22 @@ const isMigratableNotePath = (itemPath) =>
 	isNoteFilePath(itemPath) || isLegacyMarkdownPath(itemPath);
 const toNoteTitle = (filename) => filename.replace(/\.(?:json|md)$/i, "");
 
-const createEmptyNoteContent = () => ({
+const createEmptyNoteContent = (title) => ({
 	id: crypto.randomUUID(),
 	type: "doc",
+	...(title ? { title } : {}),
 	content: [{ type: "paragraph" }],
 });
+
+const isUuidFilename = (notePath) =>
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i.test(
+		path.posix.basename(notePath),
+	);
+
+const readNoteTitle = (content) => {
+	const normalized = normalizeNoteContent(content);
+	return typeof normalized.title === "string" ? normalized.title : "";
+};
 
 const isPlainObject = (value) =>
 	typeof value === "object" && value !== null && !Array.isArray(value);
@@ -125,32 +136,26 @@ const toNotePreviewFromContent = (content) =>
 		.map((line) => line.trim())
 		.find(Boolean) ?? "";
 
-const readNoteContent = async (notePath) => {
+const readNoteContent = async (notePath, ensureId) => {
 	const rawContent = await fs.readFile(resolveWorkspacePath(notePath), "utf8");
 	const trimmedContent = rawContent.trim();
 
 	if (!trimmedContent) return createEmptyNoteContent();
 
-	if (isLegacyMarkdownPath(notePath)) return textToNoteContent(rawContent);
-
-	try {
-		return normalizeNoteContent(JSON.parse(rawContent));
-	} catch {
-		return textToNoteContent(rawContent);
+	if (isLegacyMarkdownPath(notePath)) {
+		const content = textToNoteContent(rawContent);
+		if (ensureId && !content.id) content.id = crypto.randomUUID();
+		return content;
 	}
-};
 
-const ensureNoteId = async (notePath) => {
 	try {
-		const filePath = resolveWorkspacePath(notePath);
-		const raw = await fs.readFile(filePath, "utf8");
-		const parsed = JSON.parse(raw.trim());
-		if (isPlainObject(parsed) && parsed.id) return;
-
-		parsed.id = crypto.randomUUID();
-		await writeFileAtomic(filePath, JSON.stringify(parsed, null, 2));
+		const content = normalizeNoteContent(JSON.parse(rawContent));
+		if (ensureId && !content.id) content.id = crypto.randomUUID();
+		return content;
 	} catch {
-		// file might not exist yet or is malformed — skip
+		const content = textToNoteContent(rawContent);
+		if (ensureId && !content.id) content.id = crypto.randomUUID();
+		return content;
 	}
 };
 
@@ -404,7 +409,7 @@ const getIndexedNote = async (notePath, stats) => {
 	const content = await readNoteContent(notePath);
 	const plainText = noteContentText(content);
 	const id = existing?.id || createAvailableNoteId(db, notePath);
-	const title = toNoteTitle(path.posix.basename(notePath));
+	const title = readNoteTitle(content) || toNoteTitle(path.posix.basename(notePath));
 	const preview = toNotePreviewFromContent(content);
 	const metadata = extractNoteMetadata(content);
 
@@ -511,7 +516,17 @@ const moveIndexedPath = async (fromPath, toPath) => {
 			row.path === fromPath
 				? toPath
 				: `${toPath}/${row.path.slice(fromPath.length + 1)}`;
-		const nextTitle = toNoteTitle(path.posix.basename(nextPath));
+		let nextTitle;
+		if (isUuidFilename(nextPath)) {
+			try {
+				const content = await readNoteContent(nextPath);
+				nextTitle = readNoteTitle(content) || "Untitled";
+			} catch {
+				nextTitle = "Untitled";
+			}
+		} else {
+			nextTitle = toNoteTitle(path.posix.basename(nextPath));
+		}
 
 		indexDb.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
 		indexDb
@@ -573,14 +588,15 @@ const migrateMarkdownNotes = async (relativePath = "") => {
 		if (!entry.isFile() || !isLegacyMarkdownPath(entry.name)) continue;
 
 		const markdown = await fs.readFile(resolveWorkspacePath(itemPath), "utf8");
-		const nextPath = await uniquePath(
-			relativePath,
-			`${toNoteTitle(entry.name)}${noteFileExtension}`,
-		);
+		const title = toNoteTitle(entry.name);
+		const filename = `${crypto.randomUUID()}${noteFileExtension}`;
+		const nextPath = path.posix.join(relativePath, filename);
+		const content = textToNoteContent(markdown);
+		content.title = title;
 
 		await writeFileAtomic(
 			resolveWorkspacePath(nextPath),
-			serializeNoteContent(textToNoteContent(markdown)),
+			serializeNoteContent(content),
 		);
 		await fs.rm(resolveWorkspacePath(itemPath), { force: true });
 	}
@@ -910,8 +926,7 @@ ipcMain.handle("notes:search", async (_event, query) => searchNotes(query));
 
 ipcMain.handle("notes:read-note", async (_event, notePath) => {
 	await ensureWorkspace();
-	await ensureNoteId(notePath);
-	return readNoteContent(notePath);
+	return readNoteContent(notePath, true);
 });
 
 ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
@@ -921,11 +936,23 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	// preserve existing id from disk if the incoming content doesn't have one
 	if (!normalizedContent.id) {
 		try {
-			const existing = await readNoteContent(notePath);
+			const existing = await readNoteContent(notePath, true);
 			if (existing.id) normalizedContent.id = existing.id;
 		} catch {
 			// new note or missing file — id already set by createEmptyNoteContent
 		}
+	}
+
+	if (!normalizedContent.id) {
+		normalizedContent.id = crypto.randomUUID();
+	}
+
+	// sync title from index for UUID-named files
+	if (isUuidFilename(notePath) && !normalizedContent.title && indexDb) {
+		const row = indexDb
+			.prepare("SELECT title FROM notes WHERE path = ?")
+			.get(notePath);
+		if (row?.title) normalizedContent.title = row.title;
 	}
 
 	await writeRevisionSnapshot(notePath, normalizedContent);
@@ -940,13 +967,15 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 
 ipcMain.handle("notes:create-note", async (_event, parentPath, title) => {
 	await ensureWorkspace();
-	const notePath = await uniquePath(parentPath, ensureNoteExtension(title));
+	const noteTitle = title?.trim() || "Untitled";
+	const filename = `${crypto.randomUUID()}${noteFileExtension}`;
+	const notePath = path.posix.join(parentPath, filename);
 	await fs.writeFile(
 		resolveWorkspacePath(notePath),
-		serializeNoteContent(createEmptyNoteContent()),
+		serializeNoteContent(createEmptyNoteContent(noteTitle)),
 		"utf8",
 	);
-	return { path: notePath, title: toNoteTitle(path.basename(notePath)) };
+	return { path: notePath, title: noteTitle };
 });
 
 ipcMain.handle("notes:create-folder", async (_event, parentPath, title) => {
@@ -968,6 +997,20 @@ ipcMain.handle("notes:create-space", async (_event, title) => {
 ipcMain.handle("notes:rename-item", async (_event, itemPath, nextName) => {
 	await ensureWorkspace();
 	const current = normalizeRelativePath(itemPath);
+
+	if (isMigratableNotePath(current) && isUuidFilename(current)) {
+		const nextTitle = nextName?.trim() || "Untitled";
+		if (indexDb) {
+			indexDb
+				.prepare("UPDATE notes SET title = ? WHERE path = ?")
+				.run(nextTitle, current);
+			indexDb
+				.prepare("UPDATE note_fts SET title = ? WHERE path = ?")
+				.run(nextTitle, current);
+		}
+		return { path: current };
+	}
+
 	const extension = isMigratableNotePath(current) ? noteFileExtension : "";
 	const nextBase = extension ? ensureNoteExtension(nextName) : nextName.trim();
 	const nextPath = path.posix.join(

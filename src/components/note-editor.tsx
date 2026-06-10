@@ -216,7 +216,13 @@ export function NoteEditor({
 	const readOnlyRef = useRef(readOnly);
 	const searchQueryRef = useRef(searchQuery);
 	const syncingExternalDocRef = useRef(false);
-	const initialContentRef = useRef(normalizeNoteContent(content));
+	const editorContent = useMemo(() => {
+		const cleaned = normalizeNoteContent(content);
+		const { id: _id, title: _title, ...editorReady } = cleaned;
+		return editorReady as NoteContent;
+	}, [content]);
+
+	const initialContentRef = useRef(editorContent);
 
 	notePathRef.current = notePath;
 	onChangeRef.current = onChange;
@@ -318,23 +324,22 @@ export function NoteEditor({
 
 	useEffect(() => {
 		if (!editor) return;
-		const nextContent = normalizeNoteContent(content);
 		const currentSerialized = serializeNoteContent(
 			editor.getJSON() as NoteContent,
 		);
-		const nextSerialized = serializeNoteContent(nextContent);
+		const nextSerialized = serializeNoteContent(editorContent);
 
 		if (currentSerialized !== nextSerialized) {
 			syncingExternalDocRef.current = true;
 			try {
-				editor.commands.setContent(nextContent, { emitUpdate: false });
+				editor.commands.setContent(editorContent, { emitUpdate: false });
 			} finally {
 				syncingExternalDocRef.current = false;
 			}
 		}
 
 		if (notePath) requestAnimationFrame(() => onContentRendered?.(notePath));
-	}, [content, editor, notePath, onContentRendered]);
+	}, [editorContent, editor, notePath, onContentRendered]);
 
 	useLayoutEffect(() => {
 		if (!editor || !notePath) {
@@ -406,10 +411,8 @@ export function NoteEditor({
 
 	const commitTitle = () => {
 		const nextTitle = draftTitle.trim();
-		const currentFileTitle = notePath
-			? editableTitle(notePathTitle(notePath))
-			: "";
-		if (nextTitle && nextTitle !== currentFileTitle) onRename(nextTitle);
+		const currentTitle = noteTitle || "";
+		if (nextTitle && nextTitle !== currentTitle) onRename(nextTitle);
 	};
 
 	if (!notePath) {
@@ -455,9 +458,7 @@ export function NoteEditor({
 								editor?.commands.focus();
 							}
 							if (event.key === "Escape") {
-								const currentFileTitle = notePath
-									? notePathTitle(notePath)
-									: noteTitle;
+								const currentFileTitle = noteTitle || "Untitled";
 								setDraftTitle(editableTitle(currentFileTitle));
 								onTitleChange(currentFileTitle);
 								event.currentTarget.blur();

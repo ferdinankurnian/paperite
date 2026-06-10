@@ -17,6 +17,12 @@ export function serializeNoteContent(content: NoteContent) {
 	return JSON.stringify(normalizeNoteContent(content));
 }
 
+export function serializeNoteContentBody(content: NoteContent): string {
+	const normalized = normalizeNoteContent(content);
+	const { id, title, ...body } = normalized;
+	return JSON.stringify(body);
+}
+
 export function noteContentPreview(content: NoteContent) {
 	return (
 		noteContentText(content)

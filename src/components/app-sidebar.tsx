@@ -26,7 +26,9 @@ import {
 	HeartIcon,
 	InboxIcon,
 	InfoIcon,
+	LayoutGridIcon,
 	LightbulbIcon,
+	ListIcon,
 	PaletteIcon,
 	PencilIcon,
 	SearchIcon,
@@ -64,6 +66,12 @@ import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
+	DropdownMenuRadioGroup,
+	DropdownMenuRadioItem,
+	DropdownMenuSeparator,
+	DropdownMenuSub,
+	DropdownMenuSubContent,
+	DropdownMenuSubTrigger,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -100,6 +108,8 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	activeSpacePath: string;
 	activeNotePath: string | null;
 	expandedFolders: string[];
+	viewMode: "list" | "grid";
+	onViewModeChange: (mode: "list" | "grid") => void;
 	onCreateFolder: (parentPath: string) => void;
 	onCreateNote: (parentPath: string) => void;
 	onCreateSpace: (title: string, color: string, icon: string) => void;
@@ -256,6 +266,122 @@ function NoteTree({
 				),
 			)}
 		</div>
+	);
+}
+
+function NoteGrid({
+	items,
+	onDeleteItem,
+	onOpenNote,
+}: {
+	items: WorkspaceItem[];
+	onDeleteItem: (path: string) => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+}) {
+	const notes = React.useMemo(
+		() =>
+			items.filter(
+				(item): item is WorkspaceNote => item.type === "note",
+			),
+		[items],
+	);
+
+	if (notes.length === 0) {
+		return (
+			<Empty>
+				<EmptyHeader>
+					<EmptyMedia variant="icon">
+						<FileTextIcon />
+					</EmptyMedia>
+					<EmptyTitle>No notes yet</EmptyTitle>
+					<EmptyDescription>Create a note to get started.</EmptyDescription>
+				</EmptyHeader>
+			</Empty>
+		);
+	}
+
+	return (
+		<div className="columns-2 gap-2">
+			{notes.map((note) => (
+				<NoteGridCard
+					key={note.path}
+					note={note}
+					onDeleteItem={onDeleteItem}
+					onOpenNote={onOpenNote}
+				/>
+			))}
+		</div>
+	);
+}
+
+function NoteGridCard({
+	note,
+	onDeleteItem,
+	onOpenNote,
+}: {
+	note: WorkspaceNote;
+	onDeleteItem: (path: string) => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+}) {
+	const [deleteOpen, setDeleteOpen] = React.useState(false);
+	const dateStr = React.useMemo(() => {
+		const d = new Date(note.updatedAt);
+		return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+	}, [note.updatedAt]);
+
+	return (
+		<>
+			<ContextMenu>
+				<ContextMenuTrigger asChild>
+					<button
+						type="button"
+						className="mb-2 w-full break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+						onClick={() => onOpenNote(note, "preview")}
+						onDoubleClick={() => onOpenNote(note, "pinned")}
+					>
+						<div className="text-sm font-semibold leading-tight">
+							{note.title.trim() || "Untitled"}
+						</div>
+						{note.preview ? (
+							<p className="mt-1 text-xs leading-snug text-muted-foreground line-clamp-4">
+								{note.preview}
+							</p>
+						) : null}
+						<div className="mt-2 text-[10px] text-muted-foreground/60">
+							{dateStr}
+						</div>
+					</button>
+				</ContextMenuTrigger>
+				<ContextMenuContent className="w-44">
+					<ContextMenuItem
+						variant="destructive"
+						onSelect={() => setDeleteOpen(true)}
+					>
+						<Trash2Icon />
+						Delete note
+					</ContextMenuItem>
+				</ContextMenuContent>
+			</ContextMenu>
+			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+				<AlertDialogContent>
+					<AlertDialogHeader>
+						<AlertDialogTitle>Delete note?</AlertDialogTitle>
+						<AlertDialogDescription>
+							This will permanently delete "{note.title || "Untitled"}".
+						</AlertDialogDescription>
+					</AlertDialogHeader>
+					<AlertDialogFooter>
+						<AlertDialogCancel>Cancel</AlertDialogCancel>
+						<AlertDialogAction
+							onClick={() => onDeleteItem(note.path)}
+							className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+						>
+							Delete
+						</AlertDialogAction>
+					</AlertDialogFooter>
+				</AlertDialogContent>
+			</AlertDialog>
+		</>
 	);
 }
 
@@ -635,17 +761,28 @@ function SpaceDropHeader({
 	activeSpacePath,
 	onCreateFolder,
 	onCreateNote,
+	onDeleteSpace,
+	onEditSpace,
 	onSelectSpace,
 	spaceColor,
 	spaceIcon,
-	spaceIcons,
 	spaceColors,
+	spaceIcons,
 	spaces,
 	spaceTitle,
+	viewMode,
+	onViewModeChange,
 }: {
 	activeSpacePath: string;
 	onCreateFolder: (parentPath: string) => void;
 	onCreateNote: (parentPath: string) => void;
+	onDeleteSpace: (path: string) => void;
+	onEditSpace: (
+		path: string,
+		title: string,
+		color: string,
+		icon: string,
+	) => void;
 	onSelectSpace: (path: string) => void;
 	spaceColor?: string;
 	spaceIcon?: string;
@@ -653,10 +790,13 @@ function SpaceDropHeader({
 	spaceIcons: Record<string, string>;
 	spaces: WorkspaceSpace[];
 	spaceTitle: string;
+	viewMode: "list" | "grid";
+	onViewModeChange: (mode: "list" | "grid") => void;
 }) {
 	const { isOver, setNodeRef } = useDroppable({
 		id: dropTargetId(activeSpacePath),
 	});
+	const isInbox = activeSpacePath === "Inbox";
 
 	return (
 		<div
@@ -681,23 +821,50 @@ function SpaceDropHeader({
 					</button>
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="start" className="w-56">
-					{spaces.map((space) => (
-						<DropdownMenuItem
-							key={space.path}
-							onSelect={() => onSelectSpace(space.path)}
-						>
-							<SpaceIcon
-								className="size-3.5"
-								color={spaceColors[space.path]}
-								icon={spaceIcons[space.path]}
-								path={space.path}
-							/>
-							<span className="min-w-0 flex-1 truncate">{space.title}</span>
-							{space.path === activeSpacePath ? (
-								<CheckIcon className="size-3.5" />
-							) : null}
-						</DropdownMenuItem>
-					))}
+					{isInbox ? (
+						<DropdownMenuSub>
+							<DropdownMenuSubTrigger>
+								<ListIcon className="text-muted-foreground" />
+								<span>View Mode</span>
+							</DropdownMenuSubTrigger>
+							<DropdownMenuSubContent>
+								<DropdownMenuRadioGroup
+									value={viewMode}
+									onValueChange={(v) =>
+										onViewModeChange(v as "list" | "grid")
+									}
+								>
+									<DropdownMenuRadioItem value="list">
+										<ListIcon className="text-muted-foreground" />
+										<span>List</span>
+									</DropdownMenuRadioItem>
+									<DropdownMenuRadioItem value="grid">
+										<LayoutGridIcon className="text-muted-foreground" />
+										<span>Grid</span>
+									</DropdownMenuRadioItem>
+								</DropdownMenuRadioGroup>
+							</DropdownMenuSubContent>
+						</DropdownMenuSub>
+					) : (
+						<>
+							<DropdownMenuItem
+								onSelect={() =>
+									onEditSpace(activeSpacePath, spaceTitle, spaceColor ?? "", spaceIcon ?? "")
+								}
+							>
+								<PencilIcon className="text-muted-foreground" />
+								<span>Edit Space</span>
+							</DropdownMenuItem>
+							<DropdownMenuSeparator />
+							<DropdownMenuItem
+								variant="destructive"
+								onSelect={() => onDeleteSpace(activeSpacePath)}
+							>
+								<Trash2Icon />
+								<span>Delete Space</span>
+							</DropdownMenuItem>
+						</>
+					)}
 				</DropdownMenuContent>
 			</DropdownMenu>
 			<div className="flex items-center gap-1">
@@ -740,6 +907,8 @@ export function AppSidebar({
 	spaceColors,
 	spaceIcons,
 	spaces,
+	viewMode,
+	onViewModeChange,
 	...props
 }: AppSidebarProps) {
 	const navigate = useNavigate();
@@ -887,18 +1056,22 @@ export function AppSidebar({
 			>
 				<DndContext sensors={sensors} onDragEnd={moveDroppedItem}>
 					<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
-						<SpaceDropHeader
-							activeSpacePath={activeSpacePath}
-							spaceTitle={activeSpace?.title ?? "Inbox"}
-							spaceColor={spaceColors[activeSpacePath]}
-							spaceIcon={spaceIcons[activeSpacePath]}
-							onCreateFolder={onCreateFolder}
-							onCreateNote={onCreateNote}
-							onSelectSpace={onSelectSpace}
-							spaceColors={spaceColors}
-							spaceIcons={spaceIcons}
-							spaces={spaces}
-						/>
+					<SpaceDropHeader
+						activeSpacePath={activeSpacePath}
+						spaceTitle={activeSpace?.title ?? "Inbox"}
+						spaceColor={spaceColors[activeSpacePath]}
+						spaceIcon={spaceIcons[activeSpacePath]}
+						onCreateFolder={onCreateFolder}
+						onCreateNote={onCreateNote}
+						onDeleteSpace={onDeleteSpace}
+						onEditSpace={onEditSpace}
+						onSelectSpace={onSelectSpace}
+						spaceColors={spaceColors}
+						spaceIcons={spaceIcons}
+						spaces={spaces}
+						viewMode={viewMode}
+						onViewModeChange={onViewModeChange}
+					/>
 						<InputGroup className="h-9">
 							<InputGroupAddon>
 								<SearchIcon className="size-4" />
@@ -913,7 +1086,14 @@ export function AppSidebar({
 					<SidebarContent className="[mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)] [-webkit-mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)]">
 						<SidebarGroup className="px-3 pt-4 pb-8">
 							<SidebarGroupContent>
-								{activeSpace && visibleChildren.length > 0 ? (
+							{activeSpace && visibleChildren.length > 0 ? (
+								viewMode === "grid" && activeSpacePath === "Inbox" ? (
+									<NoteGrid
+										items={visibleChildren}
+										onDeleteItem={onDeleteItem}
+										onOpenNote={onOpenNote}
+									/>
+								) : (
 									<NoteTree
 										activeNotePath={activeNotePath}
 										expandedFolders={expandedFolders}
@@ -927,7 +1107,8 @@ export function AppSidebar({
 										onToggleFolder={onToggleFolder}
 										parentPath={activeSpacePath}
 									/>
-								) : (
+								)
+							) : (
 									<Empty>
 										<EmptyHeader>
 											<EmptyMedia variant="icon">
