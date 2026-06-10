@@ -210,6 +210,7 @@ function Index() {
 	const lastPersistedContent = useRef("");
 	const activeNotePathRef = useRef<string | null>(null);
 	const noteContentRef = useRef<NoteContent>(createEmptyNoteContent());
+	const tabListRef = useRef<HTMLDivElement>(null);
 	const activeEditorContentRef = useRef<(() => NoteContent) | null>(null);
 	const noteContentCache = useRef(new Map<string, NoteContent>());
 	const notePersistedCache = useRef(new Map<string, NoteContent>());
@@ -226,11 +227,19 @@ function Index() {
 	);
 	const [activeDragId, setActiveDragId] = useState<string | null>(null);
 
-	const restrictToHorizontalAxis: Modifier = ({ transform }) => ({
-		...transform,
-		x: transform.x,
-		y: 0,
-	});
+	const restrictToHorizontalAxis: Modifier = ({ transform, activeNodeRect }) => {
+		const listRect = tabListRef.current?.getBoundingClientRect();
+		if (!listRect) return { ...transform, y: 0 };
+
+		const minX = listRect.left - activeNodeRect.left;
+		const maxX = listRect.right - activeNodeRect.right;
+
+		return {
+			...transform,
+			x: Math.min(maxX, Math.max(minX, transform.x)),
+			y: 0,
+		};
+	};
 
 	const dndSensors = useSensors(
 		useSensor(PointerSensor, {
@@ -1426,6 +1435,7 @@ function Index() {
 							/>
 						</div>
 						<div
+							ref={tabListRef}
 							className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
 						>
 							<DndContext
