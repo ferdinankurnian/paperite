@@ -6,7 +6,7 @@
   },
   "description": "A note-taking app",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.0",
   "main": "main.js",
   "build": {
     "appId": "dev.iydheko.paperite",
@@ -78,5 +78,5 @@
     "vite": "^8.0.12",
     "wait-on": "^9.0.3"
   },
-  "packageManager": "bun@1"
+  "packageManager": "bun@1.3.13"
 }

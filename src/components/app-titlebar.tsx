@@ -36,6 +36,7 @@ type EditorFormatCommand =
 
 export function AppTitlebar() {
 	const [title, setTitle] = useState(() => document.title || fallbackTitle);
+	const [zenMode, setZenMode] = useState(false);
 
 	useEffect(() => {
 		const syncTitle = () => setTitle(document.title || fallbackTitle);
@@ -46,16 +47,26 @@ export function AppTitlebar() {
 			observer.observe(titleElement, { childList: true });
 		}
 
+		const toggleZenMode = (event: CustomEvent<{ enabled?: boolean }>) => {
+			if (event.detail?.enabled !== undefined) {
+				setZenMode(event.detail.enabled);
+			} else {
+				setZenMode((current) => !current);
+			}
+		};
+
 		window.addEventListener("paperite:title-change", syncTitle);
+		window.addEventListener("paperite:toggle-zen-mode", toggleZenMode as EventListener);
 
 		return () => {
 			observer.disconnect();
 			window.removeEventListener("paperite:title-change", syncTitle);
+			window.removeEventListener("paperite:toggle-zen-mode", toggleZenMode as EventListener);
 		};
 	}, []);
 
 	return (
-		<header className="app-region-drag relative z-50 grid h-9 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border/60 bg-background/95 text-foreground">
+		<header className={`app-region-drag relative z-50 grid h-9 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border/60 text-foreground ${zenMode ? "bg-background" : "bg-sidebar"}`}>
 			<AppMenu />
 			<div className="pointer-events-none min-w-0 px-4 text-center text-[13px] font-medium text-muted-foreground">
 				<span className="block max-w-[48vw] truncate">{title}</span>
@@ -78,8 +89,8 @@ function AppMenu() {
 		);
 	};
 
-	const toggleFocusMode = () => {
-		window.dispatchEvent(new Event("paperite:toggle-focus-mode"));
+	const toggleZenMode = () => {
+		window.dispatchEvent(new Event("paperite:toggle-zen-mode"));
 	};
 
 	return (
@@ -151,8 +162,8 @@ function AppMenu() {
 					<MenubarTrigger>View</MenubarTrigger>
 					<MenubarContent>
 						<MenubarGroup>
-							<MenubarItem onSelect={toggleFocusMode}>
-								Toggle Focus Mode
+							<MenubarItem onSelect={toggleZenMode}>
+								Toggle Zen Mode
 								<MenubarShortcut>Ctrl+Shift+F</MenubarShortcut>
 							</MenubarItem>
 							<MenubarSeparator />

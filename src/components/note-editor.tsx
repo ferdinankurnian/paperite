@@ -60,6 +60,7 @@ type NoteEditorProps = {
 	pageFormat?: PageFormat;
 	readOnly: boolean;
 	searchQuery: string;
+	zenMode?: boolean;
 	onChange: (content: NoteContent, notePath: string | null) => void;
 	onContentRendered?: (notePath: string) => void;
 	onContentSnapshot?: (getContent: (() => NoteContent) | null) => void;
@@ -199,6 +200,7 @@ export function NoteEditor({
 	pageFormat = defaultPageFormat,
 	readOnly,
 	searchQuery,
+	zenMode,
 	onChange,
 	onContentRendered,
 	onContentSnapshot,
@@ -426,7 +428,7 @@ export function NoteEditor({
 						ref={titleInputRef}
 						value={draftTitle}
 						aria-label="Note title"
-						className="mx-8 mt-10 mb-2 w-[calc(100%-4rem)] resize-none bg-transparent text-3xl font-semibold leading-tight tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)]"
+						className={`mx-8 mb-4 w-[calc(100%-4rem)] resize-none bg-transparent text-3xl font-semibold leading-tight tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
 						rows={1}
 						readOnly={readOnly}
 						placeholder="Untitled"
