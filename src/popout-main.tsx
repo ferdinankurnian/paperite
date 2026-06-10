@@ -123,12 +123,11 @@ function PopoutNote() {
 		noteContentRef.current = content;
 	}, []);
 
-	const handleContentRendered = useCallback(
-		(getContent: () => typeof noteContent) => {
-			activeEditorContentRef.current = getContent;
-		},
-		[],
-	);
+	const handleContentRendered = useCallback((_notePath: string) => {}, []);
+
+	const handleTitleChange = useCallback((title: string) => {
+		setNoteTitle(title);
+	}, []);
 
 	const handleRename = useCallback(
 		async (title: string) => {
@@ -180,6 +179,7 @@ function PopoutNote() {
 									onChange={handleContentChange}
 									onContentRendered={handleContentRendered}
 									onRename={handleRename}
+									onTitleChange={handleTitleChange}
 								/>
 							</Suspense>
 						) : (

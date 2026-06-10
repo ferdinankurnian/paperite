@@ -105,7 +105,7 @@ function Index() {
 	>({});
 	const [floatingPanelMode, setFloatingPanelMode] =
 		useState<FloatingPanelMode>(null);
-	const [focusMode, setFocusMode] = useState(false);
+	const [zenMode, setZenMode] = useState(false);
 	const [findText, setFindText] = useState("");
 	const [replaceText, setReplaceText] = useState("");
 	const [pageFormats, setPageFormats] = useState<Record<string, PageFormat>>(
@@ -248,7 +248,7 @@ function Index() {
 			resizeObserver.disconnect();
 			listElement.removeEventListener("scroll", updateTabIndicator);
 		};
-	}, [appState.activeNotePath, focusMode]);
+	}, [appState.activeNotePath, zenMode]);
 
 	const refreshWorkspace = useCallback(async () => {
 		if (!notesApi) return;
@@ -348,14 +348,18 @@ function Index() {
 	}, [floatingPanelMode]);
 
 	useEffect(() => {
-		if (focusMode) {
+		if (zenMode) {
 			setFloatingPanelMode(null);
 		}
-	}, [focusMode]);
+	}, [zenMode]);
 
 	useEffect(() => {
-		const toggleFocusMode = () => {
-			setFocusMode((current) => !current);
+		const handleToggleZenMode = (event: CustomEvent<{ enabled?: boolean }>) => {
+			if (event.detail?.enabled !== undefined) {
+				setZenMode(event.detail.enabled);
+			} else {
+				setZenMode((current) => !current);
+			}
 		};
 
 		const handleKeyDown = (event: KeyboardEvent) => {
@@ -367,19 +371,23 @@ function Index() {
 				!event.altKey
 			) {
 				event.preventDefault();
-				toggleFocusMode();
+				window.dispatchEvent(new CustomEvent("paperite:toggle-zen-mode"));
 				return;
 			}
 
 			if (event.key === "Escape") {
-				setFocusMode(false);
+				window.dispatchEvent(
+					new CustomEvent("paperite:toggle-zen-mode", {
+						detail: { enabled: false },
+					}),
+				);
 			}
 		};
 
-		window.addEventListener("paperite:toggle-focus-mode", toggleFocusMode);
+		window.addEventListener("paperite:toggle-zen-mode", handleToggleZenMode as EventListener);
 		window.addEventListener("keydown", handleKeyDown);
 		return () => {
-			window.removeEventListener("paperite:toggle-focus-mode", toggleFocusMode);
+			window.removeEventListener("paperite:toggle-zen-mode", handleToggleZenMode as EventListener);
 			window.removeEventListener("keydown", handleKeyDown);
 		};
 	}, []);
@@ -1253,7 +1261,7 @@ function Index() {
 				} as CSSProperties
 			}
 		>
-			{focusMode ? null : (
+			{zenMode ? null : (
 				<>
 					<SidebarHotkeys />
 					<AppSidebar
@@ -1278,7 +1286,7 @@ function Index() {
 				</>
 			)}
 			<SidebarInset className="min-w-0 overflow-hidden">
-				{focusMode || !appState.activeNotePath ? null : (
+				{zenMode || !appState.activeNotePath ? null : (
 					<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 px-3 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
 						<div className="flex shrink-0 items-center min-[56.0625rem]:hidden">
 							<SidebarTrigger
@@ -1364,82 +1372,82 @@ function Index() {
 										<MoreVerticalIcon />
 									</Button>
 								</DropdownMenuTrigger>
-								<DropdownMenuContent align="end" className="w-56">
-									<DropdownMenuItem>
-										<InfoIcon />
-										Note Info
-									</DropdownMenuItem>
-									<DropdownMenuSeparator />
-									<DropdownMenuItem
-										disabled={
-											!appState.activeNotePath ||
-											lockedNotePaths.has(appState.activeNotePath)
-										}
-										onSelect={() => {
-											const activePath = appState.activeNotePath;
-											if (activePath && window.electron) {
-												window.electron.notes
-													.popoutNote(activePath)
-													.then(() => {
-														setLockedNotePaths((prev) => {
-															const next = new Set(prev);
-															next.add(activePath);
-															return next;
-														});
-													});
-											}
-										}}
-									>
-										<ExternalLinkIcon />
-										{appState.activeNotePath &&
+							<DropdownMenuContent align="end" className="w-56">
+								<DropdownMenuItem>
+									<InfoIcon />
+									Note Info
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									onSelect={() => {
+										setFloatingPanelMode("format");
+									}}
+								>
+									<AlignLeftIcon />
+									Format Note...
+								</DropdownMenuItem>
+								<DropdownMenuSeparator />
+								<DropdownMenuItem
+									disabled={
+										!appState.activeNotePath ||
 										lockedNotePaths.has(appState.activeNotePath)
-											? "Already open in window"
-											: "Pop out note"}
-									</DropdownMenuItem>
-									<DropdownMenuSeparator />
-									<DropdownMenuItem>
-										<DownloadIcon />
-										Export as PDF…
-									</DropdownMenuItem>
-									<DropdownMenuItem>
-										<PrinterIcon />
-										Print…
-									</DropdownMenuItem>
-									<DropdownMenuSeparator />
-									<DropdownMenuItem
-										onSelect={() => {
-											setFloatingPanelMode("find");
-										}}
-									>
-										<SearchIcon />
-										Find in note…
-									</DropdownMenuItem>
-									<DropdownMenuItem
-										onSelect={() => {
-											setFloatingPanelMode("replace");
-										}}
-									>
-										<FileSearchIcon />
-										Replace in note…
-									</DropdownMenuItem>
-									<DropdownMenuItem
-										onSelect={() => {
-											setFloatingPanelMode("format");
-										}}
-									>
-										<AlignLeftIcon />
-										Format page…
-									</DropdownMenuItem>
-									<DropdownMenuSeparator />
-									<DropdownMenuItem
-										variant="destructive"
-										onSelect={deleteActiveNote}
-										disabled={!appState.activeNotePath}
-									>
-										<Trash2Icon />
-										Delete note
-									</DropdownMenuItem>
-								</DropdownMenuContent>
+									}
+									onSelect={() => {
+										const activePath = appState.activeNotePath;
+										if (activePath && window.electron) {
+											window.electron.notes
+												.popoutNote(activePath)
+												.then(() => {
+													setLockedNotePaths((prev) => {
+														const next = new Set(prev);
+														next.add(activePath);
+														return next;
+													});
+												});
+										}
+									}}
+								>
+									<ExternalLinkIcon />
+									{appState.activeNotePath &&
+									lockedNotePaths.has(appState.activeNotePath)
+										? "Already open in window"
+										: "Pop out note"}
+								</DropdownMenuItem>
+								<DropdownMenuSeparator />
+								<DropdownMenuItem>
+									<DownloadIcon />
+									Export as PDF…
+								</DropdownMenuItem>
+								<DropdownMenuItem>
+									<PrinterIcon />
+									Print…
+								</DropdownMenuItem>
+								<DropdownMenuSeparator />
+								<DropdownMenuItem
+									onSelect={() => {
+										setFloatingPanelMode("find");
+									}}
+								>
+									<SearchIcon />
+									Find in note…
+								</DropdownMenuItem>
+								<DropdownMenuItem
+									onSelect={() => {
+										setFloatingPanelMode("replace");
+									}}
+								>
+									<FileSearchIcon />
+									Replace in note…
+								</DropdownMenuItem>
+								<DropdownMenuSeparator />
+								<DropdownMenuItem
+									variant="destructive"
+									onSelect={deleteActiveNote}
+									disabled={!appState.activeNotePath}
+								>
+									<Trash2Icon />
+									Delete note
+								</DropdownMenuItem>
+							</DropdownMenuContent>
 							</DropdownMenu>
 						</div>
 					</header>
@@ -1562,7 +1570,7 @@ function Index() {
 				) : null}
 				<section
 					aria-label="Note editor"
-					className={`flex min-h-0 flex-1 overflow-y-auto overscroll-contain ${focusMode ? "pt-8 md:pt-12" : ""}`}
+					className="flex min-h-0 flex-1 overflow-y-auto overscroll-contain"
 					onKeyDown={(event) => {
 						if (
 							event.key.toLowerCase() === "b" &&
@@ -1586,6 +1594,7 @@ function Index() {
 									? findText
 									: ""
 							}
+							zenMode={zenMode}
 							onChange={updateNoteContent}
 							onContentRendered={completeSwitchBenchmark}
 							onContentSnapshot={updateActiveContentSnapshot}
