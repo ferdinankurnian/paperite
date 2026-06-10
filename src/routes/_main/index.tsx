@@ -229,7 +229,7 @@ function Index() {
 
 	const restrictToHorizontalAxis: Modifier = ({ transform, activeNodeRect }) => {
 		const listRect = tabListRef.current?.getBoundingClientRect();
-		if (!listRect) return { ...transform, y: 0 };
+		if (!listRect || !activeNodeRect) return { ...transform, y: 0 };
 
 		const minX = listRect.left - activeNodeRect.left;
 		const maxX = listRect.right - activeNodeRect.right;
