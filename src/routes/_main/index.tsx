@@ -1467,7 +1467,7 @@ function Index() {
 												tab.path === appState.activeNotePath;
 											return (
 												<div
-													className={`group relative z-10 my-2 h-8 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground sm:w-36 lg:w-44 ${isActive ? "bg-muted text-foreground" : ""}`}
+													className={`group relative z-10 h-8 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground sm:w-36 lg:w-44 ${isActive ? "bg-muted text-foreground" : ""}`}
 												>
 													<button
 														type="button"
