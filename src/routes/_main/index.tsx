@@ -3,7 +3,6 @@ import {
 	type DragEndEvent,
 	type Modifier,
 	DndContext,
-	DragOverlay,
 	closestCenter,
 	PointerSensor,
 	useSensor,
@@ -108,7 +107,6 @@ const defaultPageFormat: PageFormat = {
 type SortableTabProps = {
 	note: OpenNoteTab;
 	isActive: boolean;
-	isDragging: boolean;
 	displayTitle: (title: string) => string;
 	onSelect: () => void;
 	onDoubleClick: () => void;
@@ -118,7 +116,6 @@ type SortableTabProps = {
 function SortableTab({
 	note,
 	isActive,
-	isDragging,
 	displayTitle,
 	onSelect,
 	onDoubleClick,
@@ -135,7 +132,9 @@ function SortableTab({
 
 	const style = {
 		transform: CSS.Transform.toString(transform),
-		transition,
+		transition: isSortableDragging
+			? transition
+			: "transform 200ms ease-out",
 	};
 
 	return (
@@ -222,7 +221,6 @@ function Index() {
 	const [lockedNotePaths, setLockedNotePaths] = useState<Set<string>>(
 		() => new Set(),
 	);
-	const [activeDragId, setActiveDragId] = useState<string | null>(null);
 
 	const restrictToHorizontalAxis: Modifier = ({ transform, activeNodeRect }) => {
 		const listRect = tabListRef.current?.getBoundingClientRect();
@@ -246,7 +244,6 @@ function Index() {
 
 	const handleDragEnd = useCallback(
 		(event: DragEndEvent) => {
-			setActiveDragId(null);
 			const { active, over } = event;
 			if (!over || active.id === over.id) return;
 
@@ -1439,9 +1436,6 @@ function Index() {
 								sensors={dndSensors}
 								collisionDetection={closestCenter}
 								modifiers={[restrictToHorizontalAxis]}
-								onDragStart={(event) =>
-									setActiveDragId(event.active.id as string)
-								}
 								onDragEnd={handleDragEnd}
 							>
 							<SortableContext
@@ -1455,7 +1449,6 @@ function Index() {
 										isActive={
 											note.path === appState.activeNotePath
 										}
-										isDragging={activeDragId === note.path}
 										displayTitle={displayNoteTitle}
 										onSelect={() => selectTab(note.path)}
 										onDoubleClick={() => pinTab(note.path)}
@@ -1463,39 +1456,6 @@ function Index() {
 									/>
 								))}
 							</SortableContext>
-							<DragOverlay dropAnimation={null}>
-								{activeDragId
-									? (() => {
-											const tab = appState.openTabs.find(
-												(t) => t.path === activeDragId,
-											);
-											if (!tab) return null;
-											const isActive =
-												tab.path === appState.activeNotePath;
-											return (
-												<div
-													className={`group relative z-10 h-8 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground sm:w-36 lg:w-44 ${isActive ? "bg-muted text-foreground" : ""}`}
-												>
-													<button
-														type="button"
-														className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
-													>
-														<span className="min-w-0 flex-1 truncate">
-															{displayNoteTitle(tab.title)}
-														</span>
-													</button>
-													<button
-														type="button"
-														aria-label={`Close ${displayNoteTitle(tab.title)}`}
-														className={`-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center hover:opacity-100 ${isActive ? "opacity-65" : "opacity-0 group-hover:opacity-65"}`}
-													>
-														<XIcon className="size-3.5" />
-													</button>
-												</div>
-											);
-										})()
-									: null}
-							</DragOverlay>
 							</DndContext>
 						</div>
 						<div className="flex shrink-0 items-center gap-2">
