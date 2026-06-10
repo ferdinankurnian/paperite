@@ -128,4 +128,5 @@ type PaperiteAppState = {
 	spaceIcons: Record<string, string>;
 	readOnlyNotes: Record<string, boolean>;
 	sidebarOpen: boolean;
+	inboxViewMode: "list" | "grid";
 };

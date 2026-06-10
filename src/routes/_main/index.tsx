@@ -1,5 +1,22 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import {
+	type DragEndEvent,
+	type Modifier,
+	DndContext,
+	DragOverlay,
+	closestCenter,
+	PointerSensor,
+	useSensor,
+	useSensors,
+} from "@dnd-kit/core";
+import {
+	SortableContext,
+	useSortable,
+	horizontalListSortingStrategy,
+	arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import {
 	AlignLeftIcon,
 	BookOpenIcon,
 	CheckIcon,
@@ -19,7 +36,6 @@ import {
 	type CSSProperties,
 	useCallback,
 	useEffect,
-	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
@@ -77,14 +93,11 @@ const defaultAppState: PaperiteAppState = {
 	spaceIcons: {},
 	readOnlyNotes: {},
 	sidebarOpen: true,
+	inboxViewMode: "list",
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
 type FloatingPanelMode = "find" | "format" | "replace" | null;
-type TabIndicator = {
-	left: number;
-	width: number;
-};
 
 const defaultPageFormat: PageFormat = {
 	firstLineIndent: false,
@@ -92,11 +105,88 @@ const defaultPageFormat: PageFormat = {
 	paragraphSpacing: "default",
 };
 
+type SortableTabProps = {
+	note: OpenNoteTab;
+	isActive: boolean;
+	isDragging: boolean;
+	displayTitle: (title: string) => string;
+	onSelect: () => void;
+	onDoubleClick: () => void;
+	onClose: () => void;
+};
+
+function SortableTab({
+	note,
+	isActive,
+	isDragging,
+	displayTitle,
+	onSelect,
+	onDoubleClick,
+	onClose,
+}: SortableTabProps) {
+	const {
+		attributes,
+		listeners,
+		setNodeRef,
+		transform,
+		transition,
+		isDragging: isSortableDragging,
+	} = useSortable({ id: note.path });
+
+	const style = {
+		transform: CSS.Transform.toString(transform),
+		transition,
+	};
+
+	return (
+		<div
+			ref={setNodeRef}
+			style={{
+				...style,
+				opacity: isSortableDragging ? 0 : 1,
+			}}
+			data-active={isActive}
+			data-preview={note.preview}
+			className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 sm:w-36 lg:w-44 cursor-grab active:cursor-grabbing"
+			{...attributes}
+			{...listeners}
+		>
+			<button
+				type="button"
+				className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
+				onClick={onSelect}
+				onDoubleClick={onDoubleClick}
+			>
+				<span className="min-w-0 flex-1 truncate">
+					{displayTitle(note.title)}
+				</span>
+			</button>
+			<button
+				type="button"
+				aria-label={`Close ${displayTitle(note.title)}`}
+				className="-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
+				onClick={(event) => {
+					event.stopPropagation();
+					onClose();
+				}}
+			>
+				<XIcon className="size-3.5" />
+			</button>
+		</div>
+	);
+}
+
 function Index() {
 	const notesApi = getNotesEngine();
 	const workspaceRef = useRef<WorkspaceSnapshot | null>(null);
 	const [workspace, setWorkspace] = useState<WorkspaceSnapshot | null>(null);
 	const [appState, setAppState] = useState<PaperiteAppState>(defaultAppState);
+	const inboxViewMode = appState.inboxViewMode;
+	const setInboxViewMode = useCallback(
+		(mode: "list" | "grid") =>
+			setAppState((prev) => ({ ...prev, inboxViewMode: mode })),
+		[],
+	);
 	const [noteContent, setNoteContent] = useState<NoteContent>(() =>
 		createEmptyNoteContent(),
 	);
@@ -114,20 +204,16 @@ function Index() {
 		{},
 	);
 	const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
-	const [inboxViewMode, setInboxViewMode] = useState<"list" | "grid">("list");
 	const didHydrate = useRef(false);
 	const findInputRef = useRef<HTMLInputElement>(null);
 	const lastLoadedNote = useRef<string | null>(null);
 	const lastPersistedContent = useRef("");
 	const activeNotePathRef = useRef<string | null>(null);
 	const noteContentRef = useRef<NoteContent>(createEmptyNoteContent());
-	const tabListRef = useRef<HTMLDivElement>(null);
-	const tabRefs = useRef(new Map<string, HTMLDivElement>());
 	const activeEditorContentRef = useRef<(() => NoteContent) | null>(null);
 	const noteContentCache = useRef(new Map<string, NoteContent>());
 	const notePersistedCache = useRef(new Map<string, NoteContent>());
 	const noteWriteQueue = useRef(new Map<string, Promise<void>>());
-	const [tabIndicator, setTabIndicator] = useState<TabIndicator | null>(null);
 	const pendingSwitchBenchmark = useRef<{
 		direction: 1 | -1;
 		notePath: string;
@@ -137,6 +223,42 @@ function Index() {
 	const saveSequence = useRef(0);
 	const [lockedNotePaths, setLockedNotePaths] = useState<Set<string>>(
 		() => new Set(),
+	);
+	const [activeDragId, setActiveDragId] = useState<string | null>(null);
+
+	const restrictToHorizontalAxis: Modifier = ({ transform }) => ({
+		...transform,
+		x: transform.x,
+		y: 0,
+	});
+
+	const dndSensors = useSensors(
+		useSensor(PointerSensor, {
+			activationConstraint: { distance: 5 },
+		}),
+	);
+
+	const handleDragEnd = useCallback(
+		(event: DragEndEvent) => {
+			setActiveDragId(null);
+			const { active, over } = event;
+			if (!over || active.id === over.id) return;
+
+			setAppState((current) => {
+				const oldIndex = current.openTabs.findIndex(
+					(tab) => tab.path === active.id,
+				);
+				const newIndex = current.openTabs.findIndex(
+					(tab) => tab.path === over.id,
+				);
+				if (oldIndex === -1 || newIndex === -1) return current;
+				return {
+					...current,
+					openTabs: arrayMove(current.openTabs, oldIndex, newIndex),
+				};
+			});
+		},
+		[],
 	);
 
 	const getActiveContent = useCallback(
@@ -209,49 +331,6 @@ function Index() {
 		window.dispatchEvent(new Event("paperite:title-change"));
 		window.electron?.app.setTitle(title);
 	}, [activeNoteTitle, appState.activeNotePath]);
-
-	useLayoutEffect(() => {
-		if (!appState.activeNotePath) {
-			setTabIndicator((current) => (current ? null : current));
-			return;
-		}
-
-		const listElement = tabListRef.current;
-		const tabElement = tabRefs.current.get(appState.activeNotePath);
-
-		if (!listElement || !tabElement) {
-			setTabIndicator((current) => (current ? null : current));
-			return;
-		}
-
-		const updateTabIndicator = () => {
-			const listRect = listElement.getBoundingClientRect();
-			const tabRect = tabElement.getBoundingClientRect();
-			const nextIndicator = {
-				left: tabRect.left - listRect.left + listElement.scrollLeft,
-				width: tabRect.width,
-			};
-
-			setTabIndicator((current) =>
-				current &&
-				Math.abs(current.left - nextIndicator.left) < 0.5 &&
-				Math.abs(current.width - nextIndicator.width) < 0.5
-					? current
-					: nextIndicator,
-			);
-		};
-
-		updateTabIndicator();
-		const resizeObserver = new ResizeObserver(updateTabIndicator);
-		resizeObserver.observe(listElement);
-		resizeObserver.observe(tabElement);
-		listElement.addEventListener("scroll", updateTabIndicator);
-
-		return () => {
-			resizeObserver.disconnect();
-			listElement.removeEventListener("scroll", updateTabIndicator);
-		};
-	}, [appState.activeNotePath, zenMode]);
 
 	const refreshWorkspace = useCallback(async () => {
 		if (!notesApi) return;
@@ -1347,56 +1426,70 @@ function Index() {
 							/>
 						</div>
 						<div
-							ref={tabListRef}
-							className="no-scrollbar relative flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
+							className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
 						>
-							{tabIndicator ? (
-								<span
-									aria-hidden="true"
-									className="pointer-events-none absolute top-2 bottom-2 z-0 rounded-md bg-muted transition-[translate,width] duration-200 ease-out"
-									style={{
-										translate: `${tabIndicator.left}px 0`,
-										width: tabIndicator.width,
-									}}
-								/>
-							) : null}
-							{appState.openTabs.map((note) => (
-								<div
-									key={note.path}
-									ref={(node) => {
-										if (node) {
-											tabRefs.current.set(note.path, node);
-										} else {
-											tabRefs.current.delete(note.path);
+							<DndContext
+								sensors={dndSensors}
+								collisionDetection={closestCenter}
+								modifiers={[restrictToHorizontalAxis]}
+								onDragStart={(event) =>
+									setActiveDragId(event.active.id as string)
+								}
+								onDragEnd={handleDragEnd}
+							>
+							<SortableContext
+								items={appState.openTabs.map((t) => t.path)}
+								strategy={horizontalListSortingStrategy}
+							>
+								{appState.openTabs.map((note) => (
+									<SortableTab
+										key={note.path}
+										note={note}
+										isActive={
+											note.path === appState.activeNotePath
 										}
-									}}
-									data-active={note.path === appState.activeNotePath}
-									data-preview={note.preview}
-									className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 sm:w-36 lg:w-44"
-								>
-									<button
-										type="button"
-										className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
-										onClick={() => selectTab(note.path)}
+										isDragging={activeDragId === note.path}
+										displayTitle={displayNoteTitle}
+										onSelect={() => selectTab(note.path)}
 										onDoubleClick={() => pinTab(note.path)}
-									>
-										<span className="min-w-0 flex-1 truncate">
-											{displayNoteTitle(note.title)}
-										</span>
-									</button>
-									<button
-										type="button"
-										aria-label={`Close ${displayNoteTitle(note.title)}`}
-										className="-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
-										onClick={(event) => {
-											event.stopPropagation();
-											closeTab(note.path);
-										}}
-									>
-										<XIcon className="size-3.5" />
-									</button>
-								</div>
-							))}
+										onClose={() => closeTab(note.path)}
+									/>
+								))}
+							</SortableContext>
+							<DragOverlay dropAnimation={null}>
+								{activeDragId
+									? (() => {
+											const tab = appState.openTabs.find(
+												(t) => t.path === activeDragId,
+											);
+											if (!tab) return null;
+											const isActive =
+												tab.path === appState.activeNotePath;
+											return (
+												<div
+													className={`group relative z-10 my-2 h-8 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground sm:w-36 lg:w-44 ${isActive ? "bg-muted text-foreground" : ""}`}
+												>
+													<button
+														type="button"
+														className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
+													>
+														<span className="min-w-0 flex-1 truncate">
+															{displayNoteTitle(tab.title)}
+														</span>
+													</button>
+													<button
+														type="button"
+														aria-label={`Close ${displayNoteTitle(tab.title)}`}
+														className={`-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center hover:opacity-100 ${isActive ? "opacity-65" : "opacity-0 group-hover:opacity-65"}`}
+													>
+														<XIcon className="size-3.5" />
+													</button>
+												</div>
+											);
+										})()
+									: null}
+							</DragOverlay>
+							</DndContext>
 						</div>
 						<div className="flex shrink-0 items-center gap-2">
 							<span className="min-w-12 px-2 text-right text-xs text-muted-foreground">
@@ -1686,6 +1779,7 @@ function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		spaceIcons: state.spaceIcons ?? {},
 		readOnlyNotes: state.readOnlyNotes ?? {},
 		sidebarOpen: state.sidebarOpen ?? true,
+		inboxViewMode: state.inboxViewMode === "grid" ? "grid" : "list",
 	};
 }
 
@@ -1719,6 +1813,7 @@ function reconcileAppState(
 		spaceIcons: state.spaceIcons,
 		readOnlyNotes: state.readOnlyNotes,
 		sidebarOpen: state.sidebarOpen,
+		inboxViewMode: state.inboxViewMode,
 	};
 }
 
