@@ -132,7 +132,7 @@ function SortableTab({
 
 	const style = {
 		transform: CSS.Transform.toString(transform),
-		transition: isSortableDragging ? transition : "none",
+		transition,
 	};
 
 	return (
