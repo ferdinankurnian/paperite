@@ -133,6 +133,7 @@ function SortableTab({
 	const style = {
 		transform: CSS.Transform.toString(transform),
 		transition,
+		opacity: 1,
 	};
 
 	return (
