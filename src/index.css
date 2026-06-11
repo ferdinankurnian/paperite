@@ -328,7 +328,10 @@
 		@apply max-w-full rounded-lg;
 	}
 
-	.paperite-tiptap .paperite-prosemirror [data-resize-wrapper] .paperite-editor-image {
+	.paperite-tiptap
+		.paperite-prosemirror
+		[data-resize-wrapper]
+		.paperite-editor-image {
 		@apply m-0;
 	}
 
@@ -336,9 +339,18 @@
 		@apply opacity-0 transition-opacity;
 	}
 
-	.paperite-tiptap .paperite-prosemirror [data-resize-wrapper]:hover [data-resize-handle],
-	.paperite-tiptap .paperite-prosemirror [data-resize-container][data-resize-state="true"] [data-resize-handle],
-	.paperite-tiptap .paperite-prosemirror .ProseMirror-selectednode [data-resize-handle] {
+	.paperite-tiptap
+		.paperite-prosemirror
+		[data-resize-wrapper]:hover
+		[data-resize-handle],
+	.paperite-tiptap
+		.paperite-prosemirror
+		[data-resize-container][data-resize-state="true"]
+		[data-resize-handle],
+	.paperite-tiptap
+		.paperite-prosemirror
+		.ProseMirror-selectednode
+		[data-resize-handle] {
 		@apply opacity-100;
 	}
 
@@ -361,7 +373,9 @@
 		transform: translate(50%, 50%);
 	}
 
-	.paperite-tiptap .paperite-prosemirror .ProseMirror-selectednode.paperite-editor-image {
+	.paperite-tiptap
+		.paperite-prosemirror
+		.ProseMirror-selectednode.paperite-editor-image {
 		@apply ring-2 ring-ring ring-offset-2 ring-offset-background;
 	}
 

@@ -1,7 +1,9 @@
 // electron/main.ts
-import { app, BrowserWindow, shell } from "electron";
-import { fileURLToPath } from "node:url";
+
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { app, BrowserWindow, shell } from "electron";
+
 var __dirname2 = path.dirname(fileURLToPath(import.meta.url));
 var isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
 function createWindow() {

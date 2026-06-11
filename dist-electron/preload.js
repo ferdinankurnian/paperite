@@ -1,5 +1,6 @@
 // electron/preload.ts
 import { contextBridge } from "electron";
+
 contextBridge.exposeInMainWorld("paperite", {
 	platform: process.platform,
 });

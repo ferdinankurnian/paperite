@@ -409,7 +409,8 @@ const getIndexedNote = async (notePath, stats) => {
 	const content = await readNoteContent(notePath);
 	const plainText = noteContentText(content);
 	const id = existing?.id || createAvailableNoteId(db, notePath);
-	const title = readNoteTitle(content) || toNoteTitle(path.posix.basename(notePath));
+	const title =
+		readNoteTitle(content) || toNoteTitle(path.posix.basename(notePath));
 	const preview = toNotePreviewFromContent(content);
 	const metadata = extractNoteMetadata(content);
 

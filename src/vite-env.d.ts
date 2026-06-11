@@ -4,14 +4,14 @@ interface ImportMetaEnv {
 	readonly VITE_CLERK_AUTH_CALLBACK_URL?: string;
 }
 
-	interface Window {
-		electron?: {
-			onAuthCallback: (callback: (url: string) => void) => () => void;
-			onWorkspaceChanged: (callback: () => void) => () => void;
-			onPopoutClosed: (callback: (notePath: string) => void) => () => void;
-			onNotePathChanged: (
-				callback: (data: { from: string; to: string }) => void,
-			) => () => void;
+interface Window {
+	electron?: {
+		onAuthCallback: (callback: (url: string) => void) => () => void;
+		onWorkspaceChanged: (callback: () => void) => () => void;
+		onPopoutClosed: (callback: (notePath: string) => void) => () => void;
+		onNotePathChanged: (
+			callback: (data: { from: string; to: string }) => void,
+		) => () => void;
 		auth: {
 			getPendingCallback: () => Promise<string | null>;
 		};

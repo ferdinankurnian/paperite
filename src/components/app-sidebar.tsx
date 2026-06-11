@@ -26,7 +26,7 @@ import {
 	HeartIcon,
 	InboxIcon,
 	InfoIcon,
-	LayoutGridIcon,
+	LayoutDashboardIcon,
 	LightbulbIcon,
 	ListIcon,
 	PaletteIcon,
@@ -284,10 +284,7 @@ function NoteGrid({
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
 }) {
 	const notes = React.useMemo(
-		() =>
-			items.filter(
-				(item): item is WorkspaceNote => item.type === "note",
-			),
+		() => items.filter((item): item is WorkspaceNote => item.type === "note"),
 		[items],
 	);
 
@@ -464,60 +461,60 @@ function NoteFolderItem({
 									<FolderIcon className="size-3.5" />
 									<span className="min-w-0 flex-1 truncate">{item.title}</span>
 								</CollapsibleTrigger>
-							<div className="flex shrink-0 opacity-0 transition-opacity group-hover/folder:opacity-100">
-								<button
-									type="button"
-									className="flex size-6 items-center justify-center rounded-md text-sidebar-foreground/70 outline-none hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
-									aria-label="Add note"
-									onPointerDown={(event) => event.stopPropagation()}
-									onClick={(event) => {
-										event.stopPropagation();
-										onCreateNote(item.path);
-									}}
-								>
-									<StickyNotePlusIcon className="size-3.5" />
-								</button>
-								{!isInbox && (
+								<div className="flex shrink-0 opacity-0 transition-opacity group-hover/folder:opacity-100">
 									<button
 										type="button"
 										className="flex size-6 items-center justify-center rounded-md text-sidebar-foreground/70 outline-none hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
-										aria-label="Add folder"
+										aria-label="Add note"
 										onPointerDown={(event) => event.stopPropagation()}
 										onClick={(event) => {
 											event.stopPropagation();
-											onCreateFolder(item.path);
+											onCreateNote(item.path);
 										}}
 									>
-										<FolderPlusIcon className="size-3.5" />
+										<StickyNotePlusIcon className="size-3.5" />
 									</button>
-								)}
-							</div>
+									{!isInbox && (
+										<button
+											type="button"
+											className="flex size-6 items-center justify-center rounded-md text-sidebar-foreground/70 outline-none hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0"
+											aria-label="Add folder"
+											onPointerDown={(event) => event.stopPropagation()}
+											onClick={(event) => {
+												event.stopPropagation();
+												onCreateFolder(item.path);
+											}}
+										>
+											<FolderPlusIcon className="size-3.5" />
+										</button>
+									)}
+								</div>
 							</div>
 							{hasChildren ? (
 								<CollapsibleContent>
 									<div className="ml-3.5 border-l border-sidebar-border pl-2">
-								<NoteTree
-										activeNotePath={activeNotePath}
-										expandedFolders={expandedFolders}
-										items={item.children}
-										level={level + 1}
-										onCreateFolder={onCreateFolder}
-										onCreateNote={onCreateNote}
-										onDeleteItem={onDeleteItem}
-										onMoveItem={onMoveItem}
-										onOpenNote={onOpenNote}
-										onRenameItem={onRenameItem}
-										onToggleFolder={onToggleFolder}
-										parentPath={item.path}
-										isInbox={isInbox}
-									/>
+										<NoteTree
+											activeNotePath={activeNotePath}
+											expandedFolders={expandedFolders}
+											items={item.children}
+											level={level + 1}
+											onCreateFolder={onCreateFolder}
+											onCreateNote={onCreateNote}
+											onDeleteItem={onDeleteItem}
+											onMoveItem={onMoveItem}
+											onOpenNote={onOpenNote}
+											onRenameItem={onRenameItem}
+											onToggleFolder={onToggleFolder}
+											parentPath={item.path}
+											isInbox={isInbox}
+										/>
 									</div>
 								</CollapsibleContent>
 							) : null}
 						</Collapsible>
 					</div>
 				</ContextMenuTrigger>
-						<ContextMenuContent className="w-48">
+				<ContextMenuContent className="w-48">
 					<ContextMenuItem onSelect={() => onCreateNote(item.path)}>
 						<StickyNotePlusIcon />
 						Add note
@@ -838,16 +835,14 @@ function SpaceDropHeader({
 							<DropdownMenuSubContent>
 								<DropdownMenuRadioGroup
 									value={viewMode}
-									onValueChange={(v) =>
-										onViewModeChange(v as "list" | "grid")
-									}
+									onValueChange={(v) => onViewModeChange(v as "list" | "grid")}
 								>
 									<DropdownMenuRadioItem value="list">
 										<ListIcon className="text-muted-foreground" />
 										<span>List</span>
 									</DropdownMenuRadioItem>
 									<DropdownMenuRadioItem value="grid">
-										<LayoutGridIcon className="text-muted-foreground" />
+										<LayoutDashboardIcon className="text-muted-foreground" />
 										<span>Card</span>
 									</DropdownMenuRadioItem>
 								</DropdownMenuRadioGroup>
@@ -857,7 +852,12 @@ function SpaceDropHeader({
 						<>
 							<DropdownMenuItem
 								onSelect={() =>
-									onEditSpace(activeSpacePath, spaceTitle, spaceColor ?? "", spaceIcon ?? "")
+									onEditSpace(
+										activeSpacePath,
+										spaceTitle,
+										spaceColor ?? "",
+										spaceIcon ?? "",
+									)
 								}
 							>
 								<PencilIcon className="text-muted-foreground" />
@@ -1066,22 +1066,22 @@ export function AppSidebar({
 			>
 				<DndContext sensors={sensors} onDragEnd={moveDroppedItem}>
 					<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
-					<SpaceDropHeader
-						activeSpacePath={activeSpacePath}
-						spaceTitle={activeSpace?.title ?? "Inbox"}
-						spaceColor={spaceColors[activeSpacePath]}
-						spaceIcon={spaceIcons[activeSpacePath]}
-						onCreateFolder={onCreateFolder}
-						onCreateNote={onCreateNote}
-						onDeleteSpace={onDeleteSpace}
-						onEditSpace={onEditSpace}
-						onSelectSpace={onSelectSpace}
-						spaceColors={spaceColors}
-						spaceIcons={spaceIcons}
-						spaces={spaces}
-						viewMode={viewMode}
-						onViewModeChange={onViewModeChange}
-					/>
+						<SpaceDropHeader
+							activeSpacePath={activeSpacePath}
+							spaceTitle={activeSpace?.title ?? "Inbox"}
+							spaceColor={spaceColors[activeSpacePath]}
+							spaceIcon={spaceIcons[activeSpacePath]}
+							onCreateFolder={onCreateFolder}
+							onCreateNote={onCreateNote}
+							onDeleteSpace={onDeleteSpace}
+							onEditSpace={onEditSpace}
+							onSelectSpace={onSelectSpace}
+							spaceColors={spaceColors}
+							spaceIcons={spaceIcons}
+							spaces={spaces}
+							viewMode={viewMode}
+							onViewModeChange={onViewModeChange}
+						/>
 						<InputGroup className="h-9">
 							<InputGroupAddon>
 								<SearchIcon className="size-4" />
@@ -1096,31 +1096,31 @@ export function AppSidebar({
 					<SidebarContent className="[mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)] [-webkit-mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)]">
 						<SidebarGroup className="px-3 pt-4 pb-8">
 							<SidebarGroupContent>
-							{activeSpace && visibleChildren.length > 0 ? (
-								viewMode === "grid" && activeSpacePath === "Inbox" ? (
-								<NoteGrid
-									items={visibleChildren}
-									activeNotePath={activeNotePath}
-									onDeleteItem={onDeleteItem}
-									onOpenNote={onOpenNote}
-								/>
+								{activeSpace && visibleChildren.length > 0 ? (
+									viewMode === "grid" && activeSpacePath === "Inbox" ? (
+										<NoteGrid
+											items={visibleChildren}
+											activeNotePath={activeNotePath}
+											onDeleteItem={onDeleteItem}
+											onOpenNote={onOpenNote}
+										/>
+									) : (
+										<NoteTree
+											activeNotePath={activeNotePath}
+											expandedFolders={expandedFolders}
+											items={visibleChildren}
+											onCreateFolder={onCreateFolder}
+											onCreateNote={onCreateNote}
+											onDeleteItem={onDeleteItem}
+											onMoveItem={onMoveItem}
+											onOpenNote={onOpenNote}
+											onRenameItem={onRenameItem}
+											onToggleFolder={onToggleFolder}
+											parentPath={activeSpacePath}
+											isInbox={activeSpacePath === "Inbox"}
+										/>
+									)
 								) : (
-									<NoteTree
-										activeNotePath={activeNotePath}
-										expandedFolders={expandedFolders}
-										items={visibleChildren}
-										onCreateFolder={onCreateFolder}
-										onCreateNote={onCreateNote}
-										onDeleteItem={onDeleteItem}
-										onMoveItem={onMoveItem}
-										onOpenNote={onOpenNote}
-										onRenameItem={onRenameItem}
-										onToggleFolder={onToggleFolder}
-										parentPath={activeSpacePath}
-										isInbox={activeSpacePath === "Inbox"}
-									/>
-								)
-							) : (
 									<Empty>
 										<EmptyHeader>
 											<EmptyMedia variant="icon">
@@ -1131,27 +1131,27 @@ export function AppSidebar({
 												Create a note or drop one into this space.
 											</EmptyDescription>
 										</EmptyHeader>
-									<EmptyContent className="flex-row justify-center">
-										{activeSpacePath !== "Inbox" && (
+										<EmptyContent className="flex-row justify-center">
+											{activeSpacePath !== "Inbox" && (
+												<Button
+													type="button"
+													size="sm"
+													variant="outline"
+													onClick={() => onCreateFolder(activeSpacePath)}
+												>
+													<FolderPlusIcon />
+													New folder
+												</Button>
+											)}
 											<Button
 												type="button"
 												size="sm"
-												variant="outline"
-												onClick={() => onCreateFolder(activeSpacePath)}
+												onClick={() => onCreateNote(activeSpacePath)}
 											>
-												<FolderPlusIcon />
-												New folder
+												<StickyNotePlusIcon />
+												New note
 											</Button>
-										)}
-										<Button
-											type="button"
-											size="sm"
-											onClick={() => onCreateNote(activeSpacePath)}
-										>
-											<StickyNotePlusIcon />
-											New note
-										</Button>
-									</EmptyContent>
+										</EmptyContent>
 									</Empty>
 								)}
 							</SidebarGroupContent>
