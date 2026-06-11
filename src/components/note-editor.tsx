@@ -11,8 +11,8 @@ import Underline from "@tiptap/extension-underline";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
-import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
 import StarterKit from "@tiptap/starter-kit";
+import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
 import {
 	AlignCenterIcon,
 	AlignJustifyIcon,
@@ -499,7 +499,9 @@ function FormatMenu({
 	readOnly: boolean;
 }) {
 	const imageInputRef = useRef<HTMLInputElement>(null);
-	const savedTextSelectionRef = useRef<{ from: number; to: number } | null>(null);
+	const savedTextSelectionRef = useRef<{ from: number; to: number } | null>(
+		null,
+	);
 
 	useEffect(() => {
 		const rememberSelection = () => {
@@ -678,7 +680,9 @@ function ColorMenu({
 	const [dropupPosition, setDropupPosition] = useState({ left: 0, top: 0 });
 	const triggerRef = useRef<HTMLButtonElement>(null);
 	const active =
-		mode === "highlight" ? editor.isActive("highlight") : editor.isActive("textStyle");
+		mode === "highlight"
+			? editor.isActive("highlight")
+			: editor.isActive("textStyle");
 
 	const updateDropupPosition = useCallback(() => {
 		const rect = triggerRef.current?.getBoundingClientRect();
@@ -724,7 +728,10 @@ function ColorMenu({
 				return;
 			}
 
-			chain.extendMarkRange("highlight").setHighlight({ color: selectedColor }).run();
+			chain
+				.extendMarkRange("highlight")
+				.setHighlight({ color: selectedColor })
+				.run();
 			return;
 		}
 
@@ -1113,7 +1120,7 @@ function createEmojiSuggestionRenderer() {
 	};
 }
 
-	function createTitleNavigationExtension(
+function createTitleNavigationExtension(
 	titleInputRef: RefObject<HTMLTextAreaElement | null>,
 ) {
 	return Extension.create({

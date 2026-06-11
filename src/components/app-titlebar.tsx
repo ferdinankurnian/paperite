@@ -56,17 +56,25 @@ export function AppTitlebar() {
 		};
 
 		window.addEventListener("paperite:title-change", syncTitle);
-		window.addEventListener("paperite:toggle-zen-mode", toggleZenMode as EventListener);
+		window.addEventListener(
+			"paperite:toggle-zen-mode",
+			toggleZenMode as EventListener,
+		);
 
 		return () => {
 			observer.disconnect();
 			window.removeEventListener("paperite:title-change", syncTitle);
-			window.removeEventListener("paperite:toggle-zen-mode", toggleZenMode as EventListener);
+			window.removeEventListener(
+				"paperite:toggle-zen-mode",
+				toggleZenMode as EventListener,
+			);
 		};
 	}, []);
 
 	return (
-		<header className={`app-region-drag relative z-50 grid h-9 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border/60 text-foreground ${zenMode ? "bg-background" : "bg-sidebar"}`}>
+		<header
+			className={`app-region-drag relative z-50 grid h-9 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border/60 text-foreground ${zenMode ? "bg-background" : "bg-sidebar"}`}
+		>
 			<AppMenu />
 			<div className="pointer-events-none min-w-0 px-4 text-center text-[13px] font-medium text-muted-foreground">
 				<span className="block max-w-[48vw] truncate">{title}</span>

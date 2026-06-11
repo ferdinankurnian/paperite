@@ -1,4 +1,11 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import {
+	lazy,
+	Suspense,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { AppTitlebar } from "@/components/app-titlebar";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -92,7 +99,9 @@ function PopoutNote() {
 			const titleFromContent =
 				typeof content.title === "string" ? content.title : "";
 			setNoteTitle(
-				titleFromContent || stripNoteExtension(fileName(notePath)) || "Untitled",
+				titleFromContent ||
+					stripNoteExtension(fileName(notePath)) ||
+					"Untitled",
 			);
 		});
 	}, [notePath]);

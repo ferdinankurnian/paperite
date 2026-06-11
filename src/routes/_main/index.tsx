@@ -1,20 +1,20 @@
-import { createFileRoute, redirect } from "@tanstack/react-router";
 import {
+	closestCenter,
+	DndContext,
 	type DragEndEvent,
 	type Modifier,
-	DndContext,
-	closestCenter,
 	PointerSensor,
 	useSensor,
 	useSensors,
 } from "@dnd-kit/core";
 import {
+	arrayMove,
+	horizontalListSortingStrategy,
 	SortableContext,
 	useSortable,
-	horizontalListSortingStrategy,
-	arrayMove,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import {
 	AlignLeftIcon,
 	BookOpenIcon,
@@ -215,7 +215,10 @@ function Index() {
 		() => new Set(),
 	);
 
-	const restrictToHorizontalAxis: Modifier = ({ transform, activeNodeRect }) => {
+	const restrictToHorizontalAxis: Modifier = ({
+		transform,
+		activeNodeRect,
+	}) => {
 		const listRect = tabListRef.current?.getBoundingClientRect();
 		if (!listRect || !activeNodeRect) return { ...transform, y: 0 };
 
@@ -235,27 +238,24 @@ function Index() {
 		}),
 	);
 
-	const handleDragEnd = useCallback(
-		(event: DragEndEvent) => {
-			const { active, over } = event;
-			if (!over || active.id === over.id) return;
+	const handleDragEnd = useCallback((event: DragEndEvent) => {
+		const { active, over } = event;
+		if (!over || active.id === over.id) return;
 
-			setAppState((current) => {
-				const oldIndex = current.openTabs.findIndex(
-					(tab) => tab.path === active.id,
-				);
-				const newIndex = current.openTabs.findIndex(
-					(tab) => tab.path === over.id,
-				);
-				if (oldIndex === -1 || newIndex === -1) return current;
-				return {
-					...current,
-					openTabs: arrayMove(current.openTabs, oldIndex, newIndex),
-				};
-			});
-		},
-		[],
-	);
+		setAppState((current) => {
+			const oldIndex = current.openTabs.findIndex(
+				(tab) => tab.path === active.id,
+			);
+			const newIndex = current.openTabs.findIndex(
+				(tab) => tab.path === over.id,
+			);
+			if (oldIndex === -1 || newIndex === -1) return current;
+			return {
+				...current,
+				openTabs: arrayMove(current.openTabs, oldIndex, newIndex),
+			};
+		});
+	}, []);
 
 	const getActiveContent = useCallback(
 		() => activeEditorContentRef.current?.() ?? noteContentRef.current,
@@ -348,7 +348,9 @@ function Index() {
 
 		const activeNotePath = appState.activeNotePath;
 		if (!activeNotePath || !notePaths.has(activeNotePath)) return;
-		if (serializeNoteContentBody(noteContent) !== lastPersistedContent.current) {
+		if (
+			serializeNoteContentBody(noteContent) !== lastPersistedContent.current
+		) {
 			return;
 		}
 
@@ -463,10 +465,16 @@ function Index() {
 			}
 		};
 
-		window.addEventListener("paperite:toggle-zen-mode", handleToggleZenMode as EventListener);
+		window.addEventListener(
+			"paperite:toggle-zen-mode",
+			handleToggleZenMode as EventListener,
+		);
 		window.addEventListener("keydown", handleKeyDown);
 		return () => {
-			window.removeEventListener("paperite:toggle-zen-mode", handleToggleZenMode as EventListener);
+			window.removeEventListener(
+				"paperite:toggle-zen-mode",
+				handleToggleZenMode as EventListener,
+			);
 			window.removeEventListener("keydown", handleKeyDown);
 		};
 	}, []);
@@ -751,7 +759,8 @@ function Index() {
 					) {
 						lastPersistedContent.current = serializedBody;
 						setSaveStatus(
-							serializeNoteContentBody(noteContentRef.current) === serializedBody
+							serializeNoteContentBody(noteContentRef.current) ===
+								serializedBody
 								? "saved"
 								: "saving",
 						);
@@ -1431,24 +1440,22 @@ function Index() {
 								modifiers={[restrictToHorizontalAxis]}
 								onDragEnd={handleDragEnd}
 							>
-							<SortableContext
-								items={appState.openTabs.map((t) => t.path)}
-								strategy={horizontalListSortingStrategy}
-							>
-								{appState.openTabs.map((note) => (
-									<SortableTab
-										key={note.path}
-										note={note}
-										isActive={
-											note.path === appState.activeNotePath
-										}
-										displayTitle={displayNoteTitle}
-										onSelect={() => selectTab(note.path)}
-										onDoubleClick={() => pinTab(note.path)}
-										onClose={() => closeTab(note.path)}
-									/>
-								))}
-							</SortableContext>
+								<SortableContext
+									items={appState.openTabs.map((t) => t.path)}
+									strategy={horizontalListSortingStrategy}
+								>
+									{appState.openTabs.map((note) => (
+										<SortableTab
+											key={note.path}
+											note={note}
+											isActive={note.path === appState.activeNotePath}
+											displayTitle={displayNoteTitle}
+											onSelect={() => selectTab(note.path)}
+											onDoubleClick={() => pinTab(note.path)}
+											onClose={() => closeTab(note.path)}
+										/>
+									))}
+								</SortableContext>
 							</DndContext>
 						</div>
 						<div className="flex shrink-0 items-center gap-2">
@@ -1477,82 +1484,82 @@ function Index() {
 										<MoreVerticalIcon />
 									</Button>
 								</DropdownMenuTrigger>
-							<DropdownMenuContent align="end" className="w-56">
-								<DropdownMenuItem>
-									<InfoIcon />
-									Note Info
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									onSelect={() => {
-										setFloatingPanelMode("format");
-									}}
-								>
-									<AlignLeftIcon />
-									Format Note...
-								</DropdownMenuItem>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									disabled={
-										!appState.activeNotePath ||
-										lockedNotePaths.has(appState.activeNotePath)
-									}
-									onSelect={() => {
-										const activePath = appState.activeNotePath;
-										if (activePath && window.electron) {
-											window.electron.notes
-												.popoutNote(activePath)
-												.then(() => {
-													setLockedNotePaths((prev) => {
-														const next = new Set(prev);
-														next.add(activePath);
-														return next;
-													});
-												});
+								<DropdownMenuContent align="end" className="w-56">
+									<DropdownMenuItem>
+										<InfoIcon />
+										Note Info
+									</DropdownMenuItem>
+									<DropdownMenuItem
+										onSelect={() => {
+											setFloatingPanelMode("format");
+										}}
+									>
+										<AlignLeftIcon />
+										Format Note...
+									</DropdownMenuItem>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										disabled={
+											!appState.activeNotePath ||
+											lockedNotePaths.has(appState.activeNotePath)
 										}
-									}}
-								>
-									<ExternalLinkIcon />
-									{appState.activeNotePath &&
-									lockedNotePaths.has(appState.activeNotePath)
-										? "Already open in window"
-										: "Pop out note"}
-								</DropdownMenuItem>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem>
-									<DownloadIcon />
-									Export as PDF…
-								</DropdownMenuItem>
-								<DropdownMenuItem>
-									<PrinterIcon />
-									Print…
-								</DropdownMenuItem>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									onSelect={() => {
-										setFloatingPanelMode("find");
-									}}
-								>
-									<SearchIcon />
-									Find in note…
-								</DropdownMenuItem>
-								<DropdownMenuItem
-									onSelect={() => {
-										setFloatingPanelMode("replace");
-									}}
-								>
-									<FileSearchIcon />
-									Replace in note…
-								</DropdownMenuItem>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									variant="destructive"
-									onSelect={deleteActiveNote}
-									disabled={!appState.activeNotePath}
-								>
-									<Trash2Icon />
-									Delete note
-								</DropdownMenuItem>
-							</DropdownMenuContent>
+										onSelect={() => {
+											const activePath = appState.activeNotePath;
+											if (activePath && window.electron) {
+												window.electron.notes
+													.popoutNote(activePath)
+													.then(() => {
+														setLockedNotePaths((prev) => {
+															const next = new Set(prev);
+															next.add(activePath);
+															return next;
+														});
+													});
+											}
+										}}
+									>
+										<ExternalLinkIcon />
+										{appState.activeNotePath &&
+										lockedNotePaths.has(appState.activeNotePath)
+											? "Already open in window"
+											: "Pop out note"}
+									</DropdownMenuItem>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem>
+										<DownloadIcon />
+										Export as PDF…
+									</DropdownMenuItem>
+									<DropdownMenuItem>
+										<PrinterIcon />
+										Print…
+									</DropdownMenuItem>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										onSelect={() => {
+											setFloatingPanelMode("find");
+										}}
+									>
+										<SearchIcon />
+										Find in note…
+									</DropdownMenuItem>
+									<DropdownMenuItem
+										onSelect={() => {
+											setFloatingPanelMode("replace");
+										}}
+									>
+										<FileSearchIcon />
+										Replace in note…
+									</DropdownMenuItem>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										variant="destructive"
+										onSelect={deleteActiveNote}
+										disabled={!appState.activeNotePath}
+									>
+										<Trash2Icon />
+										Delete note
+									</DropdownMenuItem>
+								</DropdownMenuContent>
 							</DropdownMenu>
 						</div>
 					</header>
@@ -1711,11 +1718,11 @@ function Index() {
 							Loading note...
 						</div>
 					) : (
-					<div className="flex flex-1 items-center justify-center">
-						<h1 className="font-brand text-5xl text-muted-foreground/50 select-none">
-							Paperite
-						</h1>
-					</div>
+						<div className="flex flex-1 items-center justify-center">
+							<h1 className="font-brand text-5xl text-muted-foreground/50 select-none">
+								Paperite
+							</h1>
+						</div>
 					)}
 				</section>
 			</SidebarInset>
