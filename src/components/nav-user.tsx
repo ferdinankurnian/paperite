@@ -627,8 +627,6 @@ function SyncSettings() {
 			const result = await runner();
 			if (isSyncError(result)) {
 				setMessage(syncErrorMessage(result.error));
-			} else if (action === "toggle") {
-				setMessage("Google Drive sync preference updated.");
 			} else if (action === "connect") {
 				setMessage("Google sign-in opened in your browser.");
 			} else if (action === "sync" && isGoogleDriveSyncResult(result)) {
@@ -663,104 +661,111 @@ function SyncSettings() {
 				</DialogDescription>
 			</DialogHeader>
 			<div className="space-y-4">
-				<section className="rounded-xl bg-muted/45 p-4">
-					<div className="mb-4 flex items-start justify-between gap-3">
+				<section className="rounded-xl border bg-muted/25 p-4">
+					<div className="flex items-center justify-between gap-4">
 						<div className="flex items-center gap-2">
 							<CloudIcon className="size-4 text-muted-foreground" />
 							<div>
-								<h3 className="text-sm font-medium">Google Drive</h3>
+								<div className="flex items-center gap-2">
+									<h3 className="text-sm font-medium">Google Drive</h3>
+									<StatusPill
+										active={googleDrive?.connected === true}
+										label={
+											googleDrive?.connected ? "Connected" : "Disconnected"
+										}
+									/>
+								</div>
 								<p className="text-xs text-muted-foreground">
 									Personal multi-device sync through Drive app data.
 								</p>
 							</div>
 						</div>
-						<Switch
-							checked={googleDriveEnabled}
-							disabled={!syncEngine || busyAction !== null}
-							onCheckedChange={(enabled) =>
-								runAction(
-									"toggle",
-									() =>
-										syncEngine?.setGoogleDriveEnabled(enabled) ??
-										Promise.resolve(null),
-								)
-							}
-							aria-label="Use Google Drive sync"
-						/>
-					</div>
-					<div className="mb-3 flex items-center justify-between rounded-lg bg-background/40 px-3 py-2">
-						<span className="text-sm">Use Google Drive sync</span>
-						<StatusPill
-							active={googleDrive?.connected === true}
-							label={googleDrive?.connected ? "Connected" : "Disconnected"}
-						/>
+						<div className="flex shrink-0 items-center gap-2">
+							{googleDriveEnabled && !googleDrive?.connected ? (
+								<Button
+									type="button"
+									size="sm"
+									disabled={
+										!syncEngine ||
+										googleDrive?.configured === false ||
+										busyAction !== null
+									}
+									onClick={() =>
+										runAction(
+											"connect",
+											() =>
+												syncEngine?.connectGoogleDrive() ??
+												Promise.resolve(null),
+										)
+									}
+								>
+									{busyAction === "connect" ? "Opening..." : "Connect"}
+								</Button>
+							) : null}
+							<Switch
+								checked={googleDriveEnabled}
+								disabled={!syncEngine || busyAction !== null}
+								onCheckedChange={(enabled) =>
+									runAction(
+										"toggle",
+										() =>
+											syncEngine?.setGoogleDriveEnabled(enabled) ??
+											Promise.resolve(null),
+									)
+								}
+								aria-label="Use Google Drive sync"
+							/>
+						</div>
 					</div>
 					{googleDrive?.configured === false ? (
-						<p className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+						<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
 							Missing <code>PAPERITE_GOOGLE_CLIENT_ID</code>.
 						</p>
 					) : null}
-					<div className="flex flex-wrap gap-2">
-						<Button
-							type="button"
-							size="sm"
-							disabled={
-								!syncEngine ||
-								!googleDriveEnabled ||
-								googleDrive?.configured === false ||
-								busyAction !== null
-							}
-							onClick={() =>
-								runAction(
-									"connect",
-									() =>
-										syncEngine?.connectGoogleDrive() ?? Promise.resolve(null),
-								)
-							}
-						>
-							{busyAction === "connect" ? "Opening..." : "Connect"}
-						</Button>
-						<Button
-							type="button"
-							size="sm"
-							variant="outline"
-							disabled={
-								!syncEngine ||
-								!googleDriveEnabled ||
-								!googleDrive?.connected ||
-								busyAction !== null
-							}
-							onClick={() =>
-								runAction(
-									"sync",
-									() => syncEngine?.runGoogleDrive() ?? Promise.resolve(null),
-								)
-							}
-						>
-							{busyAction === "sync" ? "Syncing..." : "Sync now"}
-						</Button>
-						<Button
-							type="button"
-							size="sm"
-							variant="outline"
-							disabled={
-								!syncEngine ||
-								!googleDriveEnabled ||
-								!googleDrive?.connected ||
-								busyAction !== null
-							}
-							onClick={() =>
-								runAction(
-									"disconnect",
-									() =>
-										syncEngine?.disconnectGoogleDrive() ??
-										Promise.resolve(null),
-								)
-							}
-						>
-							Disconnect
-						</Button>
-					</div>
+					{googleDriveEnabled && googleDrive?.connected ? (
+						<div className="mt-3 flex flex-wrap gap-2">
+							<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								disabled={
+									!syncEngine ||
+									!googleDriveEnabled ||
+									!googleDrive?.connected ||
+									busyAction !== null
+								}
+								onClick={() =>
+									runAction(
+										"sync",
+										() => syncEngine?.runGoogleDrive() ?? Promise.resolve(null),
+									)
+								}
+							>
+								{busyAction === "sync" ? "Syncing..." : "Sync now"}
+							</Button>
+							<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								disabled={
+									!syncEngine ||
+									!googleDriveEnabled ||
+									!googleDrive?.connected ||
+									busyAction !== null
+								}
+								onClick={() =>
+									runAction(
+										"disconnect",
+										() =>
+											syncEngine?.disconnectGoogleDrive() ??
+											Promise.resolve(null),
+									)
+								}
+							>
+								Disconnect
+							</Button>
+						</div>
+					) : null}
 				</section>
 				<section className="rounded-xl bg-muted/45 p-4">
 					<div className="flex items-start justify-between gap-3">
