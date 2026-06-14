@@ -12,6 +12,7 @@ import {
 	SunIcon,
 	UserRoundIcon,
 } from "lucide-react";
+import driveSvg from "/drive.svg";
 import {
 	type KeyboardEvent,
 	useCallback,
@@ -627,8 +628,6 @@ function SyncSettings() {
 			const result = await runner();
 			if (isSyncError(result)) {
 				setMessage(syncErrorMessage(result.error));
-			} else if (action === "connect") {
-				setMessage("Google sign-in opened in your browser.");
 			} else if (action === "sync" && isGoogleDriveSyncResult(result)) {
 				setMessage(
 					`Sync complete. Uploaded ${result.uploaded}, downloaded ${result.downloaded}.`,
@@ -637,7 +636,7 @@ function SyncSettings() {
 				setMessage("Google Drive disconnected on this device.");
 			} else if (action === "create-shared-space") {
 				setSharedSpaceName("");
-				setMessage("Shared space created in Convex.");
+				setMessage("Shared space created in Cloud.");
 			}
 
 			await refreshStatus();
@@ -664,16 +663,10 @@ function SyncSettings() {
 				<section className="rounded-xl border bg-muted/25 p-4">
 					<div className="flex items-center justify-between gap-4">
 						<div className="flex items-center gap-2">
-							<CloudIcon className="size-4 text-muted-foreground" />
+							<img src={driveSvg} alt="" className="size-4" />
 							<div>
 								<div className="flex items-center gap-2">
 									<h3 className="text-sm font-medium">Google Drive</h3>
-									<StatusPill
-										active={googleDrive?.connected === true}
-										label={
-											googleDrive?.connected ? "Connected" : "Disconnected"
-										}
-									/>
 								</div>
 								<p className="text-xs text-muted-foreground">
 									Personal multi-device sync through Drive app data.
@@ -681,7 +674,21 @@ function SyncSettings() {
 							</div>
 						</div>
 						<div className="flex shrink-0 items-center gap-2">
-							{googleDriveEnabled && !googleDrive?.connected ? (
+							{googleDrive?.connected ? (
+								<Switch
+									checked={googleDriveEnabled}
+									disabled={!syncEngine || busyAction !== null}
+									onCheckedChange={(enabled) =>
+										runAction(
+											"toggle",
+											() =>
+												syncEngine?.setGoogleDriveEnabled(enabled) ??
+												Promise.resolve(null),
+										)
+									}
+									aria-label="Use Google Drive sync"
+								/>
+							) : (
 								<Button
 									type="button"
 									size="sm"
@@ -699,22 +706,9 @@ function SyncSettings() {
 										)
 									}
 								>
-									{busyAction === "connect" ? "Opening..." : "Connect"}
+									{busyAction === "connect" ? "Opening browser" : "Connect"}
 								</Button>
-							) : null}
-							<Switch
-								checked={googleDriveEnabled}
-								disabled={!syncEngine || busyAction !== null}
-								onCheckedChange={(enabled) =>
-									runAction(
-										"toggle",
-										() =>
-											syncEngine?.setGoogleDriveEnabled(enabled) ??
-											Promise.resolve(null),
-									)
-								}
-								aria-label="Use Google Drive sync"
-							/>
+							)}
 						</div>
 					</div>
 					{googleDrive?.configured === false ? (
@@ -722,17 +716,14 @@ function SyncSettings() {
 							Missing <code>PAPERITE_GOOGLE_CLIENT_ID</code>.
 						</p>
 					) : null}
-					{googleDriveEnabled && googleDrive?.connected ? (
+					{googleDrive?.connected ? (
 						<div className="mt-3 flex flex-wrap gap-2">
 							<Button
 								type="button"
 								size="sm"
 								variant="outline"
 								disabled={
-									!syncEngine ||
-									!googleDriveEnabled ||
-									!googleDrive?.connected ||
-									busyAction !== null
+									!syncEngine || !googleDriveEnabled || busyAction !== null
 								}
 								onClick={() =>
 									runAction(
@@ -747,12 +738,7 @@ function SyncSettings() {
 								type="button"
 								size="sm"
 								variant="outline"
-								disabled={
-									!syncEngine ||
-									!googleDriveEnabled ||
-									!googleDrive?.connected ||
-									busyAction !== null
-								}
+								disabled={!syncEngine || busyAction !== null}
 								onClick={() =>
 									runAction(
 										"disconnect",
@@ -772,7 +758,7 @@ function SyncSettings() {
 						<div className="flex items-center gap-2">
 							<CloudIcon className="size-4 text-muted-foreground" />
 							<div>
-								<h3 className="text-sm font-medium">Convex</h3>
+								<h3 className="text-sm font-medium">Cloud</h3>
 								<p className="text-xs text-muted-foreground">
 									Shared spaces backend for collaboration.
 								</p>
@@ -808,7 +794,7 @@ function SyncSettings() {
 						</Button>
 					</div>
 					<p className="mt-2 text-xs text-muted-foreground">
-						This creates the Convex shared space record. Shared note routing UI
+						This creates the Cloud shared space record. Shared note routing UI
 						comes next.
 					</p>
 				</section>
