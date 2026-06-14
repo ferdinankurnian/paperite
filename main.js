@@ -365,6 +365,38 @@ const appendLocalYNoteUpdate = async (notePath, update) => {
 	return { ok: true, noteId, updatedAt: now };
 };
 
+const writeDerivedNoteContent = async (notePath, content) => {
+	const normalizedPath = currentNotePath(notePath);
+	const normalizedContent = normalizeNoteContent(content);
+
+	if (!normalizedContent.id || !normalizedContent.title) {
+		try {
+			const existingContent = await readNoteContent(normalizedPath, true);
+			if (!normalizedContent.id && existingContent.id) {
+				normalizedContent.id = existingContent.id;
+			}
+			if (!normalizedContent.title && existingContent.title) {
+				normalizedContent.title = existingContent.title;
+			}
+		} catch {
+			// Keep the derived payload as-is when the manifest is missing.
+		}
+	}
+
+	if (!normalizedContent.id) normalizedContent.id = crypto.randomUUID();
+
+	await ensureNoteDirectory(normalizedPath);
+	await writeRevisionSnapshot(normalizedPath, normalizedContent);
+	await writeFileAtomic(
+		resolveNoteContentPath(normalizedPath),
+		serializeNoteContent(normalizedContent),
+	);
+	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+	await getIndexedNote(normalizedPath, stats);
+
+	return { ok: true };
+};
+
 const revisionKey = (notePath) => Buffer.from(notePath).toString("base64url");
 
 const writeRevisionSnapshot = async (notePath, nextContent) => {
@@ -1286,6 +1318,15 @@ ipcMain.handle("notes:write-y-update", async (_event, notePath, update) => {
 	await migrateLegacyNotes();
 	return appendLocalYNoteUpdate(notePath, update);
 });
+
+ipcMain.handle(
+	"notes:write-derived-note",
+	async (_event, notePath, content) => {
+		await ensureWorkspace();
+		await migrateLegacyNotes();
+		return writeDerivedNoteContent(notePath, content);
+	},
+);
 
 ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	await ensureWorkspace();

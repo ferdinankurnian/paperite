@@ -105,8 +105,6 @@ const defaultPageFormat: PageFormat = {
 	paragraphSpacing: "default",
 };
 
-const ENABLE_YJS_EDITOR = false;
-
 type SortableTabProps = {
 	note: OpenNoteTab;
 	isActive: boolean;
@@ -236,6 +234,7 @@ function Index() {
 	const notePersistedCache = useRef(new Map<string, NoteContent>());
 	const noteWriteQueue = useRef(new Map<string, Promise<void>>());
 	const noteAutosaveTimers = useRef(new Map<string, number>());
+	const yjsDerivedAutosaveTimers = useRef(new Map<string, number>());
 	const pendingSwitchBenchmark = useRef<{
 		direction: 1 | -1;
 		notePath: string;
@@ -329,6 +328,13 @@ function Index() {
 			window.clearTimeout(timer);
 			noteAutosaveTimers.current.delete(notePath);
 		}
+
+		for (const [notePath, timer] of yjsDerivedAutosaveTimers.current) {
+			if (!isSameOrChildPath(pathToClear, notePath)) continue;
+
+			window.clearTimeout(timer);
+			yjsDerivedAutosaveTimers.current.delete(notePath);
+		}
 	}, []);
 
 	const scheduleNoteAutosave = useCallback(
@@ -387,6 +393,46 @@ function Index() {
 			noteAutosaveTimers.current.set(notePath, timer);
 		},
 		[clearNoteAutosaveTimer, enqueueNoteWrite],
+	);
+
+	const scheduleYjsDerivedAutosave = useCallback(
+		(notePath: string, content: NoteContent) => {
+			const existingTimer = yjsDerivedAutosaveTimers.current.get(notePath);
+			if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+
+			if (activeNotePathRef.current === notePath) setSaveStatus("saving");
+
+			const timer = window.setTimeout(() => {
+				yjsDerivedAutosaveTimers.current.delete(notePath);
+
+				notesApi
+					?.writeDerivedNote(notePath, content)
+					.then(() => {
+						noteContentCache.current.set(notePath, content);
+						notePersistedCache.current.set(notePath, content);
+
+						if (activeNotePathRef.current === notePath) {
+							lastPersistedContent.current = serializeNoteContentBody(content);
+							setSaveStatus("saved");
+						}
+
+						setWorkspace((current) =>
+							current
+								? updateWorkspaceNote(current, notePath, {
+										preview: noteContentPreview(content),
+										updatedAt: Date.now(),
+									})
+								: current,
+						);
+					})
+					.catch(() => {
+						if (activeNotePathRef.current === notePath) setSaveStatus("error");
+					});
+			}, 700);
+
+			yjsDerivedAutosaveTimers.current.set(notePath, timer);
+		},
+		[notesApi],
 	);
 
 	const moveNoteRuntimeState = useCallback(
@@ -456,7 +502,7 @@ function Index() {
 	}, [appState.activeNotePath, noteContent]);
 
 	useEffect(() => {
-		if (!ENABLE_YJS_EDITOR || !appState.activeNotePath) {
+		if (!appState.activeNotePath) {
 			setLoadedYNote((current) => {
 				current?.note.destroy();
 				return null;
@@ -754,7 +800,11 @@ function Index() {
 			for (const timer of noteAutosaveTimers.current.values()) {
 				window.clearTimeout(timer);
 			}
+			for (const timer of yjsDerivedAutosaveTimers.current.values()) {
+				window.clearTimeout(timer);
+			}
 			noteAutosaveTimers.current.clear();
+			yjsDerivedAutosaveTimers.current.clear();
 		},
 		[],
 	);
@@ -1402,18 +1452,22 @@ function Index() {
 			noteContentRef.current = nextContent;
 			noteContentCache.current.set(sourceNotePath, nextContent);
 			setNoteContent(nextContent);
+
+			if (loadedYNote?.path === sourceNotePath) {
+				scheduleYjsDerivedAutosave(sourceNotePath, nextContent);
+				return;
+			}
+
 			scheduleNoteAutosave(sourceNotePath, nextContent);
 		},
-		[scheduleNoteAutosave],
+		[loadedYNote?.path, scheduleNoteAutosave, scheduleYjsDerivedAutosave],
 	);
 
 	const activeNoteReadOnly = appState.activeNotePath
 		? appState.readOnlyNotes[appState.activeNotePath] === true
 		: false;
 	const activeYDoc =
-		ENABLE_YJS_EDITOR && loadedYNote?.path === appState.activeNotePath
-			? loadedYNote.note.doc
-			: null;
+		loadedYNote?.path === appState.activeNotePath ? loadedYNote.note.doc : null;
 
 	const toggleReadOnly = () => {
 		if (!appState.activeNotePath) return;
@@ -1876,7 +1930,8 @@ function Index() {
 					}}
 				>
 					{appState.activeNotePath &&
-					loadedNotePath === appState.activeNotePath ? (
+					loadedNotePath === appState.activeNotePath &&
+					activeYDoc ? (
 						<NoteEditor
 							key={appState.activeNotePath}
 							content={noteContent}

@@ -47,6 +47,10 @@ interface Window {
 				path: string,
 				update: Uint8Array,
 			) => Promise<{ ok: true; noteId: string; updatedAt: number }>;
+			writeDerivedNote: (
+				path: string,
+				content: NoteContent,
+			) => Promise<{ ok: true }>;
 			writeNote: (path: string, content: NoteContent) => Promise<{ ok: true }>;
 			createNote: (
 				parentPath: string,
