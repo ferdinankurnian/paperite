@@ -434,6 +434,8 @@ const writeDerivedNoteContent = async (notePath, content) => {
 const googleDriveClientId = () =>
 	process.env.PAPERITE_GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID;
 
+const googleDriveClientSecret = () => process.env.PAPERITE_GOOGLE_CLIENT_SECRET;
+
 const base64Url = (buffer) =>
 	Buffer.from(buffer)
 		.toString("base64")
@@ -622,13 +624,17 @@ const completeGoogleDriveConnection = async (callbackUrl) => {
 		throw new Error("invalid google oauth state");
 	googleOauthSessions.delete(state);
 
-	const token = await exchangeGoogleToken({
+	const tokenRequest = {
 		client_id: clientId,
 		code,
 		code_verifier: session.verifier,
 		grant_type: "authorization_code",
 		redirect_uri: session.redirectUri,
-	});
+	};
+	const clientSecret = googleDriveClientSecret();
+	if (clientSecret) tokenRequest.client_secret = clientSecret;
+
+	const token = await exchangeGoogleToken(tokenRequest);
 
 	await writeGoogleDriveToken(token);
 	mainWindow?.webContents.send("sync:changed");
@@ -649,11 +655,15 @@ const getGoogleDriveAccessToken = async () => {
 	}
 	if (!token.refresh_token) throw new Error("google refresh token is missing");
 
-	const refreshed = await exchangeGoogleToken({
+	const refreshRequest = {
 		client_id: clientId,
 		grant_type: "refresh_token",
 		refresh_token: token.refresh_token,
-	});
+	};
+	const clientSecret = googleDriveClientSecret();
+	if (clientSecret) refreshRequest.client_secret = clientSecret;
+
+	const refreshed = await exchangeGoogleToken(refreshRequest);
 	const nextToken = {
 		...token,
 		...refreshed,
