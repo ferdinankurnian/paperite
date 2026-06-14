@@ -1,5 +1,6 @@
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
+const http = require("node:http");
 const nodeCrypto = require("node:crypto");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
@@ -56,7 +57,6 @@ const tombstonesPath = () =>
 	path.join(workspaceRoot(), ".paperite", "tombstones.jsonl");
 
 const googleDriveScope = "https://www.googleapis.com/auth/drive.appdata";
-const googleDriveRedirectUri = "paperite://sync/google-drive/callback";
 const googleOauthSessions = new Map();
 
 const normalizeRelativePath = (relativePath = "") => {
@@ -535,11 +535,55 @@ const startGoogleDriveConnection = async () => {
 	const state = base64Url(nodeCrypto.randomBytes(24));
 	const verifier = createPkceVerifier();
 	const challenge = createPkceChallenge(verifier);
-	googleOauthSessions.set(state, { verifier, createdAt: Date.now() });
+	const server = http.createServer((request, response) => {
+		const requestUrl = new URL(
+			request.url ?? "/",
+			`http://${request.headers.host}`,
+		);
+
+		if (requestUrl.pathname !== "/callback") {
+			response.writeHead(404);
+			response.end("Not found");
+			return;
+		}
+
+		completeGoogleDriveConnection(requestUrl.toString())
+			.then(() => {
+				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+				response.end(
+					"<h1>Paperite connected to Google Drive</h1><p>You can close this tab.</p>",
+				);
+			})
+			.catch((error) => {
+				response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
+				response.end(
+					`<h1>Paperite Google Drive connection failed</h1><p>${error instanceof Error ? error.message : "Unknown error"}</p>`,
+				);
+			})
+			.finally(() => server.close());
+	});
+
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+
+	const address = server.address();
+	if (!address || typeof address === "string") {
+		server.close();
+		throw new Error("could not start google oauth callback server");
+	}
+
+	const redirectUri = `http://127.0.0.1:${address.port}/callback`;
+	googleOauthSessions.set(state, {
+		verifier,
+		redirectUri,
+		createdAt: Date.now(),
+	});
 
 	const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
 	url.searchParams.set("client_id", clientId);
-	url.searchParams.set("redirect_uri", googleDriveRedirectUri);
+	url.searchParams.set("redirect_uri", redirectUri);
 	url.searchParams.set("response_type", "code");
 	url.searchParams.set("scope", googleDriveScope);
 	url.searchParams.set("access_type", "offline");
@@ -570,7 +614,7 @@ const completeGoogleDriveConnection = async (callbackUrl) => {
 		code,
 		code_verifier: session.verifier,
 		grant_type: "authorization_code",
-		redirect_uri: googleDriveRedirectUri,
+		redirect_uri: session.redirectUri,
 	});
 
 	await writeGoogleDriveToken(token);
@@ -1741,22 +1785,10 @@ registerProtocolClient();
 const isAuthCallbackUrl = (url) =>
 	url.startsWith("paperite://auth/") || url.startsWith("paperite://callback");
 
-const isGoogleDriveCallbackUrl = (url) =>
-	url.startsWith(googleDriveRedirectUri);
-
 const getProtocolCallbackArg = (argv) =>
-	argv.find((url) => isAuthCallbackUrl(url) || isGoogleDriveCallbackUrl(url));
+	argv.find((url) => isAuthCallbackUrl(url));
 
 const handleProtocolCallback = (url) => {
-	if (isGoogleDriveCallbackUrl(url)) {
-		completeGoogleDriveConnection(url).catch((error) => {
-			mainWindow?.webContents.send("sync:changed", {
-				error: error instanceof Error ? error.message : "google_drive_error",
-			});
-		});
-		return;
-	}
-
 	if (isAuthCallbackUrl(url)) sendAuthCallback(url);
 };
 
@@ -2103,7 +2135,7 @@ if (!gotLock) {
 // mac
 app.on("open-url", (event, url) => {
 	event.preventDefault();
-	if (isAuthCallbackUrl(url) || isGoogleDriveCallbackUrl(url)) {
+	if (isAuthCallbackUrl(url)) {
 		handleProtocolCallback(url);
 	}
 });
