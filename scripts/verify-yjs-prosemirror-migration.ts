@@ -29,7 +29,7 @@ const noteJson = {
 };
 
 const schema = getSchema([
-	StarterKit.configure({ underline: false }),
+	StarterKit.configure({ underline: false, undoRedo: false }),
 	Underline,
 	TextStyle.configure({ mergeNestedSpanStyles: true }),
 	TextAlign.configure({ types: ["heading", "paragraph"] }),

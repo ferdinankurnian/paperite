@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld("electron", {
 		readYNote: (path) => ipcRenderer.invoke("notes:read-y-note", path),
 		writeYUpdate: (path, update) =>
 			ipcRenderer.invoke("notes:write-y-update", path, update),
+		writeDerivedNote: (path, content) =>
+			ipcRenderer.invoke("notes:write-derived-note", path, content),
 		writeNote: (path, content) =>
 			ipcRenderer.invoke("notes:write-note", path, content),
 		createNote: (parentPath, title) =>

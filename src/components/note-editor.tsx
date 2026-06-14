@@ -171,7 +171,7 @@ const collaborationField = "prosemirror";
 
 function createBaseExtensions() {
 	return [
-		StarterKit.configure({ underline: false }),
+		StarterKit.configure({ underline: false, undoRedo: false }),
 		Underline,
 		TextStyle.configure({
 			mergeNestedSpanStyles: true,
@@ -369,6 +369,11 @@ export function NoteEditor({
 
 	useEffect(() => {
 		if (!editor) return;
+		if (yDoc) {
+			if (notePath) requestAnimationFrame(() => onContentRendered?.(notePath));
+			return;
+		}
+
 		const currentSerialized = serializeNoteContent(
 			editor.getJSON() as NoteContent,
 		);
@@ -384,7 +389,7 @@ export function NoteEditor({
 		}
 
 		if (notePath) requestAnimationFrame(() => onContentRendered?.(notePath));
-	}, [editorContent, editor, notePath, onContentRendered]);
+	}, [editorContent, editor, notePath, onContentRendered, yDoc]);
 
 	useLayoutEffect(() => {
 		if (!editor || !notePath) {
