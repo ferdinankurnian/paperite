@@ -42,6 +42,11 @@ interface Window {
 			getWorkspace: () => Promise<WorkspaceSnapshot>;
 			search: (query: string) => Promise<NoteSearchResult[]>;
 			readNote: (path: string) => Promise<NoteContent>;
+			readYNote: (path: string) => Promise<YNoteState>;
+			writeYUpdate: (
+				path: string,
+				update: Uint8Array,
+			) => Promise<{ ok: true; noteId: string; updatedAt: number }>;
 			writeNote: (path: string, content: NoteContent) => Promise<{ ok: true }>;
 			createNote: (
 				parentPath: string,
@@ -75,6 +80,12 @@ type NoteContent = {
 	}>;
 	text?: string;
 	[key: string]: unknown;
+};
+
+type YNoteState = {
+	noteId: string;
+	format: "yjs-v1";
+	snapshot: Uint8Array;
 };
 
 type WorkspaceNote = {
@@ -119,6 +130,8 @@ type OpenNoteTab = {
 	preview: boolean;
 };
 
+type SidebarSortOrder = "newest" | "oldest" | "a-z" | "z-a" | "custom";
+
 type PaperiteAppState = {
 	openTabs: OpenNoteTab[];
 	activeNotePath: string | null;
@@ -126,6 +139,9 @@ type PaperiteAppState = {
 	expandedFolders: string[];
 	spaceColors: Record<string, string>;
 	spaceIcons: Record<string, string>;
+	spaceOrder: string[];
+	spaceSortOrders: Record<string, SidebarSortOrder>;
+	customItemOrders: Record<string, string[]>;
 	readOnlyNotes: Record<string, boolean>;
 	sidebarOpen: boolean;
 	inboxViewMode: "list" | "grid";

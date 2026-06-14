@@ -1,4 +1,9 @@
-import { Extension, type Editor as TiptapEditor } from "@tiptap/core";
+import {
+	Extension,
+	getSchema,
+	type Editor as TiptapEditor,
+} from "@tiptap/core";
+import Collaboration from "@tiptap/extension-collaboration";
 import Color from "@tiptap/extension-color";
 import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
@@ -13,6 +18,7 @@ import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
+import { prosemirrorJSONToYDoc } from "@tiptap/y-tiptap";
 import {
 	AlignCenterIcon,
 	AlignJustifyIcon,
@@ -35,6 +41,7 @@ import {
 	type ChangeEvent,
 	type ComponentType,
 	type MouseEvent,
+	type ReactNode,
 	type RefObject,
 	useCallback,
 	useEffect,
@@ -43,6 +50,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import * as Y from "yjs";
 import {
 	Select,
 	SelectContent,
@@ -50,6 +58,11 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@/components/ui/select";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { normalizeNoteContent, serializeNoteContent } from "@/lib/note-content";
 import { cn } from "@/lib/utils";
 
@@ -60,10 +73,14 @@ type NoteEditorProps = {
 	pageFormat?: PageFormat;
 	readOnly: boolean;
 	searchQuery: string;
+	yDoc?: Y.Doc | null;
 	zenMode?: boolean;
 	onChange: (content: NoteContent, notePath: string | null) => void;
 	onContentRendered?: (notePath: string) => void;
-	onContentSnapshot?: (getContent: (() => NoteContent) | null) => void;
+	onContentSnapshot?: (
+		notePath: string | null,
+		getContent: (() => NoteContent) | null,
+	) => void;
 	onRename: (title: string) => void;
 	onTitleChange: (title: string) => void;
 };
@@ -150,6 +167,51 @@ const defaultPageFormat: PageFormat = {
 	paragraphSpacing: "default",
 };
 
+const collaborationField = "prosemirror";
+
+function createBaseExtensions() {
+	return [
+		StarterKit.configure({ underline: false }),
+		Underline,
+		TextStyle.configure({
+			mergeNestedSpanStyles: true,
+		}),
+		Color,
+		Highlight.configure({ multicolor: true }),
+		Image.configure({
+			allowBase64: true,
+			HTMLAttributes: {
+				class: "paperite-editor-image",
+			},
+			resize: {
+				enabled: true,
+				directions: ["left", "right", "bottom-left", "bottom-right"],
+				minWidth: 120,
+				minHeight: 80,
+				alwaysPreserveAspectRatio: true,
+			},
+		}),
+		Link.configure({
+			autolink: true,
+			defaultProtocol: "https",
+			enableClickSelection: true,
+			linkOnPaste: true,
+			openOnClick: false,
+			HTMLAttributes: {
+				rel: "noopener noreferrer",
+				target: null,
+			},
+		}),
+		TextAlign.configure({
+			types: ["heading", "paragraph"],
+		}),
+		TaskList,
+		TaskItem.configure({
+			nested: true,
+		}),
+	];
+}
+
 const alignCommands = [
 	{
 		command: "align-left",
@@ -200,6 +262,7 @@ export function NoteEditor({
 	pageFormat = defaultPageFormat,
 	readOnly,
 	searchQuery,
+	yDoc,
 	zenMode,
 	onChange,
 	onContentRendered,
@@ -236,56 +299,38 @@ export function NoteEditor({
 		}
 	}, []);
 
+	const baseExtensions = useMemo(() => createBaseExtensions(), []);
+
+	useMemo(() => {
+		if (!yDoc) return;
+		if (yDoc.getXmlFragment(collaborationField).length > 0) return;
+
+		const schema = getSchema(baseExtensions);
+		const importedDoc = prosemirrorJSONToYDoc(schema, editorContent);
+		Y.applyUpdate(yDoc, Y.encodeStateAsUpdate(importedDoc));
+	}, [baseExtensions, editorContent, yDoc]);
+
 	const extensions = useMemo(
 		() => [
-			StarterKit.configure({ underline: false }),
-			Underline,
-			TextStyle.configure({
-				mergeNestedSpanStyles: true,
-			}),
-			Color,
-			Highlight.configure({ multicolor: true }),
-			Image.configure({
-				allowBase64: true,
-				HTMLAttributes: {
-					class: "paperite-editor-image",
-				},
-				resize: {
-					enabled: true,
-					directions: ["left", "right", "bottom-left", "bottom-right"],
-					minWidth: 120,
-					minHeight: 80,
-					alwaysPreserveAspectRatio: true,
-				},
-			}),
-			Link.configure({
-				autolink: true,
-				defaultProtocol: "https",
-				enableClickSelection: true,
-				linkOnPaste: true,
-				openOnClick: false,
-				HTMLAttributes: {
-					rel: "noopener noreferrer",
-					target: null,
-				},
-			}),
-			TextAlign.configure({
-				types: ["heading", "paragraph"],
-			}),
-			TaskList,
-			TaskItem.configure({
-				nested: true,
-			}),
+			...baseExtensions,
+			...(yDoc
+				? [
+						Collaboration.configure({
+							document: yDoc,
+							field: collaborationField,
+						}),
+					]
+				: []),
 			createTitleNavigationExtension(titleInputRef),
 			createSearchHighlightExtension(searchQueryRef),
 			createEmojiSuggestionExtension(),
 		],
-		[],
+		[baseExtensions, yDoc],
 	);
 
 	const editor = useEditor({
 		extensions,
-		content: initialContentRef.current,
+		content: yDoc ? undefined : initialContentRef.current,
 		editable: !readOnly,
 		editorProps: {
 			attributes: {
@@ -343,14 +388,14 @@ export function NoteEditor({
 
 	useLayoutEffect(() => {
 		if (!editor || !notePath) {
-			onContentSnapshot?.(null);
+			onContentSnapshot?.(null, null);
 			return;
 		}
 
 		const getContent = () => editor.getJSON() as NoteContent;
-		onContentSnapshot?.(getContent);
+		onContentSnapshot?.(notePath, getContent);
 
-		return () => onContentSnapshot?.(null);
+		return () => onContentSnapshot?.(notePath, null);
 	}, [editor, notePath, onContentSnapshot]);
 
 	useEffect(() => {
@@ -482,6 +527,7 @@ export function NoteEditor({
 						<EditorContent editor={editor} className="min-h-full flex-1" />
 					</div>
 				</div>
+				<div className="pointer-events-none absolute right-0 bottom-0 left-0 z-20 h-24 bg-gradient-to-t from-background via-background/80 to-transparent" />
 				{editor ? <FormatMenu editor={editor} readOnly={readOnly} /> : null}
 			</div>
 			{linkHover ? (
@@ -602,17 +648,18 @@ function FormatMenu({
 					editor={editor}
 					disabled={readOnly}
 				/>
-				<button
-					type="button"
-					aria-label="Upload image"
-					title="Upload image"
-					disabled={readOnly}
-					className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-					onMouseDown={(event) => event.preventDefault()}
-					onClick={() => imageInputRef.current?.click()}
-				>
-					<ImagePlusIcon className="size-4" />
-				</button>
+				<ToolbarTooltip label="Upload image">
+					<button
+						type="button"
+						aria-label="Upload image"
+						disabled={readOnly}
+						className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+						onMouseDown={(event) => event.preventDefault()}
+						onClick={() => imageInputRef.current?.click()}
+					>
+						<ImagePlusIcon className="size-4" />
+					</button>
+				</ToolbarTooltip>
 				<input
 					ref={imageInputRef}
 					type="file"
@@ -758,46 +805,48 @@ function ColorMenu({
 
 	return (
 		<div className="relative flex shrink-0 overflow-visible rounded-md">
-			<button
-				type="button"
-				aria-label={label}
-				title={label}
-				data-active={active}
-				disabled={disabled}
-				className="flex size-8 items-center justify-center rounded-l-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[active=true]:bg-muted data-[active=true]:text-foreground"
-				onMouseDown={(event) => event.preventDefault()}
-				onClick={applySelectedColor}
-			>
-				{Icon ? (
-					<Icon className="size-4" />
-				) : (
-					<span
-						className="flex size-4 flex-col items-center justify-center font-semibold text-[13px] leading-none text-foreground"
-						aria-hidden="true"
-					>
-						A
+			<ToolbarTooltip label={label}>
+				<button
+					type="button"
+					aria-label={label}
+					data-active={active}
+					disabled={disabled}
+					className="flex size-8 items-center justify-center rounded-l-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[active=true]:bg-muted data-[active=true]:text-foreground"
+					onMouseDown={(event) => event.preventDefault()}
+					onClick={applySelectedColor}
+				>
+					{Icon ? (
+						<Icon className="size-4" />
+					) : (
 						<span
-							className="mt-0.5 h-0.5 w-3 rounded-full"
-							style={{ backgroundColor: selectedColor }}
-						/>
-					</span>
-				)}
-			</button>
-			<button
-				ref={triggerRef}
-				type="button"
-				aria-label={`${label} options`}
-				title={`${label} options`}
-				disabled={disabled}
-				className="flex h-8 w-4 items-center justify-center rounded-r-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-				onMouseDown={(event) => event.preventDefault()}
-				onClick={() => {
-					updateDropupPosition();
-					setOpen((current) => !current);
-				}}
-			>
-				<ChevronUpIcon className="size-3" />
-			</button>
+							className="flex size-4 flex-col items-center justify-center font-semibold text-[13px] leading-none text-foreground"
+							aria-hidden="true"
+						>
+							A
+							<span
+								className="mt-0.5 h-0.5 w-3 rounded-full"
+								style={{ backgroundColor: selectedColor }}
+							/>
+						</span>
+					)}
+				</button>
+			</ToolbarTooltip>
+			<ToolbarTooltip label={`${label} options`}>
+				<button
+					ref={triggerRef}
+					type="button"
+					aria-label={`${label} options`}
+					disabled={disabled}
+					className="flex h-8 w-4 items-center justify-center rounded-r-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+					onMouseDown={(event) => event.preventDefault()}
+					onClick={() => {
+						updateDropupPosition();
+						setOpen((current) => !current);
+					}}
+				>
+					<ChevronUpIcon className="size-3" />
+				</button>
+			</ToolbarTooltip>
 			{open ? (
 				<div
 					className="fixed z-50 w-40 -translate-y-full rounded-lg bg-popover p-2 shadow-lg ring-1 ring-foreground/10"
@@ -898,18 +947,36 @@ function FormatButton({
 	const active = isFormatActive(editor, command);
 
 	return (
-		<button
-			type="button"
-			aria-label={label}
-			title={label}
-			data-active={active}
-			disabled={disabled}
-			className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[active=true]:bg-muted data-[active=true]:text-foreground"
-			onMouseDown={(event) => event.preventDefault()}
-			onClick={() => runFormatCommand(editor, command)}
-		>
-			<Icon className="size-4" />
-		</button>
+		<ToolbarTooltip label={label}>
+			<button
+				type="button"
+				aria-label={label}
+				data-active={active}
+				disabled={disabled}
+				className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[active=true]:bg-muted data-[active=true]:text-foreground"
+				onMouseDown={(event) => event.preventDefault()}
+				onClick={() => runFormatCommand(editor, command)}
+			>
+				<Icon className="size-4" />
+			</button>
+		</ToolbarTooltip>
+	);
+}
+
+function ToolbarTooltip({
+	children,
+	label,
+}: {
+	children: ReactNode;
+	label: string;
+}) {
+	return (
+		<Tooltip>
+			<TooltipTrigger asChild>{children}</TooltipTrigger>
+			<TooltipContent side="top" sideOffset={8}>
+				{label}
+			</TooltipContent>
+		</Tooltip>
 	);
 }
 
@@ -998,6 +1065,7 @@ function LinkHoverCard({
 }) {
 	return (
 		<div
+			role="tooltip"
 			className="paperite-link-hover-card fixed z-50 w-64 -translate-x-1/2 -translate-y-[calc(100%+0.5rem)] rounded-lg bg-popover p-2.5 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10"
 			style={{ left: hover.left, top: hover.top }}
 			onMouseLeave={onClose}
@@ -1190,9 +1258,4 @@ function buildSearchDecorations(
 
 function editableTitle(title: string) {
 	return title === "Untitled" ? "" : title;
-}
-
-function notePathTitle(notePath: string) {
-	const filename = notePath.split("/").at(-1) ?? notePath;
-	return filename.replace(/\.(?:json|md)$/i, "");
 }

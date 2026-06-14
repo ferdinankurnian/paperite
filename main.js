@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const Y = require("yjs");
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 let mainWindow; // hoist ke luar
@@ -11,12 +12,16 @@ let pendingAuthCallbackUrl;
 let workspaceWatchTimer;
 const workspaceWatchers = new Map();
 let indexDb;
+let legacyMigrationPromise;
+const legacyPathMigrations = new Map();
 
 const workspaceRoot = () => path.join(app.getPath("documents"), "Paperite");
 const statePath = () => path.join(workspaceRoot(), ".paperite", "state.json");
 const indexPath = () => path.join(workspaceRoot(), ".paperite", "index.sqlite");
 const revisionsRoot = () =>
 	path.join(workspaceRoot(), ".paperite", "revisions");
+const syncRoot = () => path.join(workspaceRoot(), ".paperite", "sync");
+const syncNotesRoot = () => path.join(syncRoot(), "notes");
 const tombstonesPath = () =>
 	path.join(workspaceRoot(), ".paperite", "tombstones.jsonl");
 
@@ -45,13 +50,18 @@ const ensureWorkspace = async () => {
 	await fs.mkdir(path.join(workspaceRoot(), "Inbox"), { recursive: true });
 	await fs.mkdir(path.dirname(statePath()), { recursive: true });
 	await fs.mkdir(revisionsRoot(), { recursive: true });
+	await fs.mkdir(syncNotesRoot(), { recursive: true });
 };
 
 const writeFileAtomic = async (targetPath, content) => {
 	const temporaryPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
 
 	try {
-		await fs.writeFile(temporaryPath, content, "utf8");
+		await fs.writeFile(
+			temporaryPath,
+			content,
+			typeof content === "string" ? "utf8" : undefined,
+		);
 		await fs.rename(temporaryPath, targetPath);
 	} catch (error) {
 		await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -60,7 +70,24 @@ const writeFileAtomic = async (targetPath, content) => {
 };
 
 const noteFileExtension = ".json";
-const isNoteFilePath = (itemPath) => /\.json$/i.test(itemPath);
+const noteManifestFilename = "note.json";
+const noteAssetsDirectoryName = "assets";
+const toPosixRelativePath = (relativePath = "") =>
+	normalizeRelativePath(relativePath).replaceAll(path.sep, "/");
+const isNoteManifestPath = (itemPath) =>
+	path.posix.basename(itemPath) === noteManifestFilename;
+const noteContentPath = (notePath) =>
+	path.posix.join(toPosixRelativePath(notePath), noteManifestFilename);
+const resolveNoteContentPath = (notePath) =>
+	resolveWorkspacePath(noteContentPath(notePath));
+const noteAssetsPath = (notePath) =>
+	path.posix.join(toPosixRelativePath(notePath), noteAssetsDirectoryName);
+const currentNotePath = (notePath) => {
+	const normalized = toPosixRelativePath(notePath);
+	return legacyPathMigrations.get(normalized) ?? normalized;
+};
+const isNoteFilePath = (itemPath) =>
+	/\.json$/i.test(itemPath) && !isNoteManifestPath(itemPath);
 const isLegacyMarkdownPath = (itemPath) => /\.md$/i.test(itemPath);
 const isMigratableNotePath = (itemPath) =>
 	isNoteFilePath(itemPath) || isLegacyMarkdownPath(itemPath);
@@ -74,13 +101,30 @@ const createEmptyNoteContent = (title) => ({
 });
 
 const isUuidFilename = (notePath) =>
-	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.json$/i.test(
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:\.json)?$/i.test(
 		path.posix.basename(notePath),
 	);
 
 const readNoteTitle = (content) => {
 	const normalized = normalizeNoteContent(content);
 	return typeof normalized.title === "string" ? normalized.title : "";
+};
+
+const isNoteDirectory = async (notePath) => {
+	try {
+		const stats = await fs.stat(resolveNoteContentPath(notePath));
+		return stats.isFile();
+	} catch (error) {
+		if (error?.code === "ENOENT") return false;
+		throw error;
+	}
+};
+
+const ensureNoteDirectory = async (notePath) => {
+	await fs.mkdir(resolveWorkspacePath(notePath), { recursive: true });
+	await fs.mkdir(resolveWorkspacePath(noteAssetsPath(notePath)), {
+		recursive: true,
+	});
 };
 
 const isPlainObject = (value) =>
@@ -137,12 +181,18 @@ const toNotePreviewFromContent = (content) =>
 		.find(Boolean) ?? "";
 
 const readNoteContent = async (notePath, ensureId) => {
-	const rawContent = await fs.readFile(resolveWorkspacePath(notePath), "utf8");
+	const normalizedPath = currentNotePath(notePath);
+	const rawContent = await fs.readFile(
+		isMigratableNotePath(normalizedPath)
+			? resolveWorkspacePath(normalizedPath)
+			: resolveNoteContentPath(normalizedPath),
+		"utf8",
+	);
 	const trimmedContent = rawContent.trim();
 
 	if (!trimmedContent) return createEmptyNoteContent();
 
-	if (isLegacyMarkdownPath(notePath)) {
+	if (isLegacyMarkdownPath(normalizedPath)) {
 		const content = textToNoteContent(rawContent);
 		if (ensureId && !content.id) content.id = crypto.randomUUID();
 		return content;
@@ -159,16 +209,177 @@ const readNoteContent = async (notePath, ensureId) => {
 	}
 };
 
+const syncNoteId = (notePath, content) => {
+	const normalized = normalizeNoteContent(content);
+	return typeof normalized.id === "string" && normalized.id
+		? normalized.id
+		: revisionKey(currentNotePath(notePath));
+};
+
+const syncNoteDirectory = (noteId) => path.join(syncNotesRoot(), noteId);
+const syncNoteSnapshotPath = (noteId) =>
+	path.join(syncNoteDirectory(noteId), "snapshot.bin");
+const syncNoteStateVectorPath = (noteId) =>
+	path.join(syncNoteDirectory(noteId), "state-vector.bin");
+const syncNoteManifestPath = (noteId) =>
+	path.join(syncNoteDirectory(noteId), "manifest.json");
+const syncNoteUpdatesDirectory = (noteId) =>
+	path.join(syncNoteDirectory(noteId), "updates");
+
+const writeYNoteContent = (doc, content) => {
+	const normalized = normalizeNoteContent(content);
+	const { id, title, ...body } = normalized;
+	const metadata = doc.getMap("metadata");
+	const noteContent = doc.getMap("content");
+
+	doc.transact(() => {
+		if (typeof id === "string") metadata.set("id", id);
+		if (typeof title === "string") metadata.set("title", title);
+		metadata.set("updatedAt", Date.now());
+		noteContent.set("body", body);
+	});
+};
+
+const encodeYNoteFromContent = (content) => {
+	const doc = new Y.Doc();
+	writeYNoteContent(doc, content);
+
+	return {
+		state: Buffer.from(Y.encodeStateAsUpdate(doc)),
+		stateVector: Buffer.from(Y.encodeStateVector(doc)),
+	};
+};
+
+const writeLocalYNoteSnapshot = async (notePath, content) => {
+	const normalizedContent = normalizeNoteContent(content);
+	if (!normalizedContent.id) normalizedContent.id = crypto.randomUUID();
+
+	const noteId = syncNoteId(notePath, normalizedContent);
+	const noteDirectory = syncNoteDirectory(noteId);
+	const updatesDirectory = syncNoteUpdatesDirectory(noteId);
+	const encoded = encodeYNoteFromContent(normalizedContent);
+	const now = Date.now();
+
+	await fs.mkdir(updatesDirectory, { recursive: true });
+	await writeFileAtomic(syncNoteSnapshotPath(noteId), encoded.state);
+	await writeFileAtomic(syncNoteStateVectorPath(noteId), encoded.stateVector);
+	await writeFileAtomic(
+		path.join(updatesDirectory, `${now}-${process.pid}.bin`),
+		encoded.state,
+	);
+	await writeFileAtomic(
+		syncNoteManifestPath(noteId),
+		JSON.stringify(
+			{
+				format: "yjs-v1",
+				noteId,
+				path: currentNotePath(notePath),
+				updatedAt: now,
+				snapshot: path.relative(noteDirectory, syncNoteSnapshotPath(noteId)),
+				stateVector: path.relative(
+					noteDirectory,
+					syncNoteStateVectorPath(noteId),
+				),
+			},
+			null,
+			2,
+		),
+	);
+
+	return { noteId, updatedAt: now };
+};
+
+const ensureLocalYNoteSnapshot = async (notePath, content) => {
+	const noteId = syncNoteId(notePath, content);
+
+	try {
+		await fs.access(syncNoteSnapshotPath(noteId));
+		return;
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+
+	await writeLocalYNoteSnapshot(notePath, content);
+};
+
+const readLocalYNoteState = async (notePath) => {
+	const normalizedPath = currentNotePath(notePath);
+	const content = await readNoteContent(normalizedPath, true);
+	await ensureLocalYNoteSnapshot(normalizedPath, content);
+
+	const noteId = syncNoteId(normalizedPath, content);
+	const snapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
+
+	return {
+		noteId,
+		format: "yjs-v1",
+		snapshot: new Uint8Array(snapshot),
+	};
+};
+
+const appendLocalYNoteUpdate = async (notePath, update) => {
+	const normalizedPath = currentNotePath(notePath);
+	const content = await readNoteContent(normalizedPath, true);
+	await ensureLocalYNoteSnapshot(normalizedPath, content);
+
+	const noteId = syncNoteId(normalizedPath, content);
+	const noteDirectory = syncNoteDirectory(noteId);
+	const updatesDirectory = syncNoteUpdatesDirectory(noteId);
+	const updateBuffer = Buffer.from(update);
+	const now = Date.now();
+	const doc = new Y.Doc();
+	const existingSnapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
+
+	Y.applyUpdate(doc, existingSnapshot);
+	Y.applyUpdate(doc, updateBuffer);
+
+	const snapshot = Buffer.from(Y.encodeStateAsUpdate(doc));
+	const stateVector = Buffer.from(Y.encodeStateVector(doc));
+
+	await fs.mkdir(updatesDirectory, { recursive: true });
+	await writeFileAtomic(
+		path.join(updatesDirectory, `${now}-${process.pid}.bin`),
+		updateBuffer,
+	);
+	await writeFileAtomic(syncNoteSnapshotPath(noteId), snapshot);
+	await writeFileAtomic(syncNoteStateVectorPath(noteId), stateVector);
+	await writeFileAtomic(
+		syncNoteManifestPath(noteId),
+		JSON.stringify(
+			{
+				format: "yjs-v1",
+				noteId,
+				path: normalizedPath,
+				updatedAt: now,
+				snapshot: path.relative(noteDirectory, syncNoteSnapshotPath(noteId)),
+				stateVector: path.relative(
+					noteDirectory,
+					syncNoteStateVectorPath(noteId),
+				),
+			},
+			null,
+			2,
+		),
+	);
+
+	return { ok: true, noteId, updatedAt: now };
+};
+
 const revisionKey = (notePath) => Buffer.from(notePath).toString("base64url");
 
 const writeRevisionSnapshot = async (notePath, nextContent) => {
+	const normalizedPath = currentNotePath(notePath);
+
 	try {
-		const currentContent = await readNoteContent(notePath);
+		const currentContent = await readNoteContent(normalizedPath);
 		const currentSerialized = serializeNoteContent(currentContent);
 		const nextSerialized = serializeNoteContent(nextContent);
 		if (currentSerialized === nextSerialized) return;
 
-		const revisionDirectory = path.join(revisionsRoot(), revisionKey(notePath));
+		const revisionDirectory = path.join(
+			revisionsRoot(),
+			revisionKey(normalizedPath),
+		);
 		await fs.mkdir(revisionDirectory, { recursive: true });
 		await writeFileAtomic(
 			path.join(revisionDirectory, `${Date.now()}${noteFileExtension}`),
@@ -181,16 +392,18 @@ const writeRevisionSnapshot = async (notePath, nextContent) => {
 };
 
 const collectDeletedNotes = async (itemPath) => {
-	const absolutePath = resolveWorkspacePath(itemPath);
+	const normalizedPath = currentNotePath(itemPath);
+	const absolutePath = resolveWorkspacePath(normalizedPath);
 
 	try {
 		const stats = await fs.stat(absolutePath);
 
 		if (stats.isFile()) {
-			return isMigratableNotePath(itemPath) ? [itemPath] : [];
+			return isMigratableNotePath(normalizedPath) ? [normalizedPath] : [];
 		}
 
 		if (!stats.isDirectory()) return [];
+		if (await isNoteDirectory(normalizedPath)) return [normalizedPath];
 
 		const entries = await fs.readdir(absolutePath, { withFileTypes: true });
 		const deletedNotes = [];
@@ -199,7 +412,9 @@ const collectDeletedNotes = async (itemPath) => {
 			if (entry.name.startsWith(".")) continue;
 
 			deletedNotes.push(
-				...(await collectDeletedNotes(path.posix.join(itemPath, entry.name))),
+				...(await collectDeletedNotes(
+					path.posix.join(normalizedPath, entry.name),
+				)),
 			);
 		}
 
@@ -387,12 +602,13 @@ const getIndexDb = async () => {
 };
 
 const getIndexedNote = async (notePath, stats) => {
+	const normalizedPath = currentNotePath(notePath);
 	const db = await getIndexDb();
 	const existing = db
 		.prepare(
 			"SELECT id, title, preview, mtime_ms AS mtimeMs, size FROM notes WHERE path = ?",
 		)
-		.get(notePath);
+		.get(normalizedPath);
 
 	if (
 		existing?.id &&
@@ -406,11 +622,11 @@ const getIndexedNote = async (notePath, stats) => {
 		};
 	}
 
-	const content = await readNoteContent(notePath);
+	const content = await readNoteContent(normalizedPath);
 	const plainText = noteContentText(content);
-	const id = existing?.id || createAvailableNoteId(db, notePath);
+	const id = existing?.id || createAvailableNoteId(db, normalizedPath);
 	const title =
-		readNoteTitle(content) || toNoteTitle(path.posix.basename(notePath));
+		readNoteTitle(content) || toNoteTitle(path.posix.basename(normalizedPath));
 	const preview = toNotePreviewFromContent(content);
 	const metadata = extractNoteMetadata(content);
 
@@ -428,14 +644,14 @@ const getIndexedNote = async (notePath, stats) => {
 			sync_version = excluded.sync_version
 	`).run(
 		id,
-		notePath,
+		normalizedPath,
 		title,
 		preview,
 		stats.mtimeMs,
 		stats.size,
 		Date.now(),
-		notePath,
-		notePath,
+		normalizedPath,
+		normalizedPath,
 	);
 	db.prepare("DELETE FROM note_headings WHERE note_id = ?").run(id);
 	db.prepare("DELETE FROM note_tags WHERE note_id = ?").run(id);
@@ -471,10 +687,10 @@ const getIndexedNote = async (notePath, stats) => {
 		insertBacklink.run(id, backlink);
 	}
 
-	db.prepare("DELETE FROM note_fts WHERE path = ?").run(notePath);
+	db.prepare("DELETE FROM note_fts WHERE path = ?").run(normalizedPath);
 	db.prepare(
 		"INSERT INTO note_fts (path, title, content) VALUES (?, ?, ?)",
-	).run(notePath, title, plainText);
+	).run(normalizedPath, title, plainText);
 
 	return {
 		title,
@@ -486,7 +702,7 @@ const getIndexedNote = async (notePath, stats) => {
 const deleteIndexedPath = async (itemPath) => {
 	if (!indexDb) return;
 
-	const normalized = normalizeRelativePath(itemPath).replaceAll(path.sep, "/");
+	const normalized = currentNotePath(itemPath);
 	const rows = indexDb.prepare("SELECT id, path FROM notes").all();
 
 	for (const row of rows) {
@@ -503,6 +719,8 @@ const deleteIndexedPath = async (itemPath) => {
 
 const moveIndexedPath = async (fromPath, toPath) => {
 	if (!indexDb) return;
+	const normalizedFromPath = currentNotePath(fromPath);
+	const normalizedToPath = toPosixRelativePath(toPath);
 
 	const rows = indexDb
 		.prepare(
@@ -511,21 +729,18 @@ const moveIndexedPath = async (fromPath, toPath) => {
 		.all();
 
 	for (const row of rows) {
-		if (!isDescendantPath(fromPath, row.path)) continue;
+		if (!isDescendantPath(normalizedFromPath, row.path)) continue;
 
 		const nextPath =
-			row.path === fromPath
-				? toPath
-				: `${toPath}/${row.path.slice(fromPath.length + 1)}`;
+			row.path === normalizedFromPath
+				? normalizedToPath
+				: `${normalizedToPath}/${row.path.slice(normalizedFromPath.length + 1)}`;
 		let nextTitle;
-		if (isUuidFilename(nextPath)) {
-			try {
-				const content = await readNoteContent(nextPath);
-				nextTitle = readNoteTitle(content) || "Untitled";
-			} catch {
-				nextTitle = "Untitled";
-			}
-		} else {
+		try {
+			const content = await readNoteContent(nextPath);
+			nextTitle =
+				readNoteTitle(content) || toNoteTitle(path.posix.basename(nextPath));
+		} catch {
 			nextTitle = toNoteTitle(path.posix.basename(nextPath));
 		}
 
@@ -569,7 +784,77 @@ const pruneIndex = async (knownNotePaths) => {
 	}
 };
 
-const migrateMarkdownNotes = async (relativePath = "") => {
+const migrateLegacyNoteFile = async (itemPath) => {
+	const normalizedPath = toPosixRelativePath(itemPath);
+	const parentDirectory = path.posix.dirname(normalizedPath);
+	const parentPath = parentDirectory === "." ? "" : parentDirectory;
+	const title = toNoteTitle(path.posix.basename(normalizedPath)) || "Untitled";
+	const notePath = await uniquePath(parentPath, title);
+	let content;
+
+	if (isLegacyMarkdownPath(normalizedPath)) {
+		const markdown = await fs.readFile(
+			resolveWorkspacePath(normalizedPath),
+			"utf8",
+		);
+		content = textToNoteContent(markdown);
+	} else {
+		content = await readNoteContent(normalizedPath, true);
+	}
+
+	const normalizedContent = normalizeNoteContent(content);
+	if (!normalizedContent.id) normalizedContent.id = crypto.randomUUID();
+	if (!readNoteTitle(normalizedContent)) normalizedContent.title = title;
+
+	await ensureNoteDirectory(notePath);
+	await writeFileAtomic(
+		resolveNoteContentPath(notePath),
+		serializeNoteContent(normalizedContent),
+	);
+	await writeLocalYNoteSnapshot(notePath, normalizedContent);
+	await fs.rm(resolveWorkspacePath(normalizedPath), { force: true });
+	await moveIndexedPath(normalizedPath, notePath);
+
+	return notePath;
+};
+
+const migrateAppStateNotePaths = async (migrations) => {
+	if (migrations.size === 0) return;
+
+	let state;
+	try {
+		state = JSON.parse(await fs.readFile(statePath(), "utf8"));
+	} catch {
+		return;
+	}
+
+	const migratePath = (value) =>
+		typeof value === "string" ? (migrations.get(value) ?? value) : value;
+	const migrateDecorations = (record) => {
+		if (!record || typeof record !== "object" || Array.isArray(record))
+			return record;
+
+		return Object.fromEntries(
+			Object.entries(record).map(([key, value]) => [migratePath(key), value]),
+		);
+	};
+
+	const nextState = {
+		...state,
+		activeNotePath: migratePath(state.activeNotePath),
+		openTabs: Array.isArray(state.openTabs)
+			? state.openTabs.map((tab) => ({
+					...tab,
+					path: migratePath(tab.path),
+				}))
+			: state.openTabs,
+		readOnlyNotes: migrateDecorations(state.readOnlyNotes),
+	};
+
+	await writeFileAtomic(statePath(), JSON.stringify(nextState, null, 2));
+};
+
+const migrateLegacyNotesInDirectory = async (relativePath = "", migrations) => {
 	const absolutePath = resolveWorkspacePath(relativePath);
 	const entries = await fs.readdir(absolutePath, { withFileTypes: true });
 
@@ -577,78 +862,97 @@ const migrateMarkdownNotes = async (relativePath = "") => {
 		if (entry.name.startsWith(".")) continue;
 
 		const itemPath = path.posix.join(
-			relativePath.replaceAll(path.sep, "/"),
+			toPosixRelativePath(relativePath),
 			entry.name,
 		);
 
 		if (entry.isDirectory()) {
-			await migrateMarkdownNotes(itemPath);
+			if (await isNoteDirectory(itemPath)) continue;
+
+			await migrateLegacyNotesInDirectory(itemPath, migrations);
 			continue;
 		}
 
-		if (!entry.isFile() || !isLegacyMarkdownPath(entry.name)) continue;
+		if (!entry.isFile() || !isMigratableNotePath(entry.name)) continue;
 
-		const markdown = await fs.readFile(resolveWorkspacePath(itemPath), "utf8");
-		const title = toNoteTitle(entry.name);
-		const filename = `${crypto.randomUUID()}${noteFileExtension}`;
-		const nextPath = path.posix.join(relativePath, filename);
-		const content = textToNoteContent(markdown);
-		content.title = title;
-
-		await writeFileAtomic(
-			resolveWorkspacePath(nextPath),
-			serializeNoteContent(content),
-		);
-		await fs.rm(resolveWorkspacePath(itemPath), { force: true });
+		const notePath = await migrateLegacyNoteFile(itemPath);
+		migrations.set(itemPath, notePath);
+		legacyPathMigrations.set(itemPath, notePath);
 	}
+};
+
+const migrateLegacyNotes = async () => {
+	if (legacyMigrationPromise) return legacyMigrationPromise;
+
+	legacyMigrationPromise = (async () => {
+		const migrations = new Map();
+		await migrateLegacyNotesInDirectory("", migrations);
+		await migrateAppStateNotePaths(migrations);
+		return migrations;
+	})().finally(() => {
+		legacyMigrationPromise = undefined;
+	});
+
+	return legacyMigrationPromise;
 };
 
 const scanDirectory = async (relativePath = "", knownNotePaths = new Set()) => {
 	const absolutePath = resolveWorkspacePath(relativePath);
 	const entries = await fs.readdir(absolutePath, { withFileTypes: true });
 	const visibleEntries = entries.filter((entry) => !entry.name.startsWith("."));
+	const folders = [];
+	const notes = [];
 
-	const folders = await Promise.all(
-		visibleEntries
-			.filter((entry) => entry.isDirectory())
-			.sort((first, second) => first.name.localeCompare(second.name))
-			.map(async (entry) => {
-				const childPath = path.posix.join(
-					relativePath.replaceAll(path.sep, "/"),
-					entry.name,
-				);
-				return {
-					type: "folder",
-					title: entry.name,
-					path: childPath,
-					children: await scanDirectory(childPath, knownNotePaths),
-				};
-			}),
-	);
+	for (const entry of visibleEntries
+		.filter((entry) => entry.isDirectory())
+		.sort((first, second) => first.name.localeCompare(second.name))) {
+		const childPath = path.posix.join(
+			toPosixRelativePath(relativePath),
+			entry.name,
+		);
 
-	const notes = await Promise.all(
-		visibleEntries
-			.filter((entry) => entry.isFile() && isNoteFilePath(entry.name))
-			.sort((first, second) => first.name.localeCompare(second.name))
-			.map(async (entry) => {
-				const notePath = path.posix.join(
-					relativePath.replaceAll(path.sep, "/"),
-					entry.name,
-				);
+		if (await isNoteDirectory(childPath)) {
+			const stats = await fs.stat(resolveNoteContentPath(childPath));
+			knownNotePaths.add(childPath);
+			const indexedNote = await getIndexedNote(childPath, stats);
 
-				const stats = await fs.stat(resolveWorkspacePath(notePath));
-				knownNotePaths.add(notePath);
-				const indexedNote = await getIndexedNote(notePath, stats);
+			notes.push({
+				type: "note",
+				title: indexedNote.title,
+				path: childPath,
+				preview: indexedNote.preview,
+				updatedAt: indexedNote.updatedAt,
+			});
+			continue;
+		}
 
-				return {
-					type: "note",
-					title: indexedNote.title,
-					path: notePath,
-					preview: indexedNote.preview,
-					updatedAt: indexedNote.updatedAt,
-				};
-			}),
-	);
+		folders.push({
+			type: "folder",
+			title: entry.name,
+			path: childPath,
+			children: await scanDirectory(childPath, knownNotePaths),
+		});
+	}
+
+	for (const entry of visibleEntries
+		.filter((entry) => entry.isFile() && isMigratableNotePath(entry.name))
+		.sort((first, second) => first.name.localeCompare(second.name))) {
+		const notePath = path.posix.join(
+			toPosixRelativePath(relativePath),
+			entry.name,
+		);
+		const stats = await fs.stat(resolveWorkspacePath(notePath));
+		knownNotePaths.add(notePath);
+		const indexedNote = await getIndexedNote(notePath, stats);
+
+		notes.push({
+			type: "note",
+			title: indexedNote.title,
+			path: notePath,
+			preview: indexedNote.preview,
+			updatedAt: indexedNote.updatedAt,
+		});
+	}
 	notes.sort((first, second) => second.updatedAt - first.updatedAt);
 
 	return [...folders, ...notes];
@@ -657,7 +961,7 @@ const scanDirectory = async (relativePath = "", knownNotePaths = new Set()) => {
 const listWorkspace = async () => {
 	const start = performance.now();
 	await ensureWorkspace();
-	await migrateMarkdownNotes();
+	await migrateLegacyNotes();
 	const knownNotePaths = new Set();
 
 	const rootEntries = await fs.readdir(workspaceRoot(), {
@@ -693,6 +997,7 @@ const listWorkspace = async () => {
 const searchNotes = async (query) => {
 	const start = performance.now();
 	await ensureWorkspace();
+	await migrateLegacyNotes();
 	const trimmed = typeof query === "string" ? query.trim() : "";
 
 	if (!trimmed) return [];
@@ -736,9 +1041,14 @@ const scanWorkspaceDirectories = async (relativePath = "") => {
 		if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
 
 		const childPath = path.posix.join(
-			relativePath.replaceAll(path.sep, "/"),
+			toPosixRelativePath(relativePath),
 			entry.name,
 		);
+		if (await isNoteDirectory(childPath)) {
+			directories.push(childPath);
+			continue;
+		}
+
 		directories.push(...(await scanWorkspaceDirectories(childPath)));
 	}
 
@@ -770,6 +1080,25 @@ const uniquePath = async (parentPath, filename) => {
 			return path.posix.join(parentPath, candidate);
 		}
 	}
+};
+
+const writeNoteTitle = async (notePath, title) => {
+	const normalizedPath = currentNotePath(notePath);
+	const normalizedContent = normalizeNoteContent(
+		await readNoteContent(normalizedPath, true),
+	);
+
+	if (!normalizedContent.id) normalizedContent.id = crypto.randomUUID();
+	normalizedContent.title = title;
+
+	await writeRevisionSnapshot(normalizedPath, normalizedContent);
+	await writeFileAtomic(
+		resolveNoteContentPath(normalizedPath),
+		serializeNoteContent(normalizedContent),
+	);
+	await writeLocalYNoteSnapshot(normalizedPath, normalizedContent);
+	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+	await getIndexedNote(normalizedPath, stats);
 };
 
 const isAppUrl = (url) => {
@@ -878,9 +1207,21 @@ const windowActions = {
 	selectAll: (window) => window?.webContents.selectAll(),
 };
 
-app.setAsDefaultProtocolClient("paperite");
+const registerProtocolClient = () => {
+	if (process.defaultApp) {
+		app.setAsDefaultProtocolClient("paperite", process.execPath, [
+			app.getAppPath(),
+		]);
+		return;
+	}
 
-const isAuthCallbackUrl = (url) => url.startsWith("paperite://auth/");
+	app.setAsDefaultProtocolClient("paperite");
+};
+
+registerProtocolClient();
+
+const isAuthCallbackUrl = (url) =>
+	url.startsWith("paperite://auth/") || url.startsWith("paperite://callback");
 
 const getAuthCallbackArg = (argv) => argv.find(isAuthCallbackUrl);
 
@@ -927,18 +1268,42 @@ ipcMain.handle("notes:search", async (_event, query) => searchNotes(query));
 
 ipcMain.handle("notes:read-note", async (_event, notePath) => {
 	await ensureWorkspace();
-	return readNoteContent(notePath, true);
+	await migrateLegacyNotes();
+	const normalizedPath = currentNotePath(notePath);
+	const content = await readNoteContent(normalizedPath, true);
+	await ensureLocalYNoteSnapshot(normalizedPath, content);
+	return content;
+});
+
+ipcMain.handle("notes:read-y-note", async (_event, notePath) => {
+	await ensureWorkspace();
+	await migrateLegacyNotes();
+	return readLocalYNoteState(notePath);
+});
+
+ipcMain.handle("notes:write-y-update", async (_event, notePath, update) => {
+	await ensureWorkspace();
+	await migrateLegacyNotes();
+	return appendLocalYNoteUpdate(notePath, update);
 });
 
 ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	await ensureWorkspace();
+	await migrateLegacyNotes();
+	const normalizedPath = currentNotePath(notePath);
 	const normalizedContent = normalizeNoteContent(content);
+	let existingContent;
 
-	// preserve existing id from disk if the incoming content doesn't have one
-	if (!normalizedContent.id) {
+	// Preserve persisted metadata stripped by the editor body payload.
+	if (!normalizedContent.id || !normalizedContent.title) {
 		try {
-			const existing = await readNoteContent(notePath, true);
-			if (existing.id) normalizedContent.id = existing.id;
+			existingContent = await readNoteContent(normalizedPath, true);
+			if (!normalizedContent.id && existingContent.id) {
+				normalizedContent.id = existingContent.id;
+			}
+			if (!normalizedContent.title && existingContent.title) {
+				normalizedContent.title = existingContent.title;
+			}
 		} catch {
 			// new note or missing file — id already set by createEmptyNoteContent
 		}
@@ -949,33 +1314,39 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	}
 
 	// sync title from index for UUID-named files
-	if (isUuidFilename(notePath) && !normalizedContent.title && indexDb) {
+	if (isUuidFilename(normalizedPath) && !normalizedContent.title && indexDb) {
 		const row = indexDb
 			.prepare("SELECT title FROM notes WHERE path = ?")
-			.get(notePath);
+			.get(normalizedPath);
 		if (row?.title) normalizedContent.title = row.title;
 	}
 
-	await writeRevisionSnapshot(notePath, normalizedContent);
+	await ensureNoteDirectory(normalizedPath);
+	await writeRevisionSnapshot(normalizedPath, normalizedContent);
 	await writeFileAtomic(
-		resolveWorkspacePath(notePath),
+		resolveNoteContentPath(normalizedPath),
 		serializeNoteContent(normalizedContent),
 	);
-	const stats = await fs.stat(resolveWorkspacePath(notePath));
-	await getIndexedNote(notePath, stats);
+	await writeLocalYNoteSnapshot(normalizedPath, normalizedContent);
+	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+	await getIndexedNote(normalizedPath, stats);
 	return { ok: true };
 });
 
 ipcMain.handle("notes:create-note", async (_event, parentPath, title) => {
 	await ensureWorkspace();
 	const noteTitle = title?.trim() || "Untitled";
-	const filename = `${crypto.randomUUID()}${noteFileExtension}`;
-	const notePath = path.posix.join(parentPath, filename);
-	await fs.writeFile(
-		resolveWorkspacePath(notePath),
-		serializeNoteContent(createEmptyNoteContent(noteTitle)),
-		"utf8",
+	const notePath = path.posix.join(
+		toPosixRelativePath(parentPath),
+		crypto.randomUUID(),
 	);
+	await ensureNoteDirectory(notePath);
+	const content = createEmptyNoteContent(noteTitle);
+	await writeFileAtomic(
+		resolveNoteContentPath(notePath),
+		serializeNoteContent(content),
+	);
+	await writeLocalYNoteSnapshot(notePath, content);
 	return { path: notePath, title: noteTitle };
 });
 
@@ -997,18 +1368,12 @@ ipcMain.handle("notes:create-space", async (_event, title) => {
 
 ipcMain.handle("notes:rename-item", async (_event, itemPath, nextName) => {
 	await ensureWorkspace();
-	const current = normalizeRelativePath(itemPath);
+	await migrateLegacyNotes();
+	const current = currentNotePath(itemPath);
 
-	if (isMigratableNotePath(current) && isUuidFilename(current)) {
+	if (await isNoteDirectory(current)) {
 		const nextTitle = nextName?.trim() || "Untitled";
-		if (indexDb) {
-			indexDb
-				.prepare("UPDATE notes SET title = ? WHERE path = ?")
-				.run(nextTitle, current);
-			indexDb
-				.prepare("UPDATE note_fts SET title = ? WHERE path = ?")
-				.run(nextTitle, current);
-		}
+		await writeNoteTitle(current, nextTitle);
 		return { path: current };
 	}
 
@@ -1034,11 +1399,9 @@ ipcMain.handle("notes:rename-item", async (_event, itemPath, nextName) => {
 
 ipcMain.handle("notes:move-item", async (_event, itemPath, nextParentPath) => {
 	await ensureWorkspace();
-	const current = normalizeRelativePath(itemPath).replaceAll(path.sep, "/");
-	const nextParent = normalizeRelativePath(nextParentPath).replaceAll(
-		path.sep,
-		"/",
-	);
+	await migrateLegacyNotes();
+	const current = currentNotePath(itemPath);
+	const nextParent = toPosixRelativePath(nextParentPath);
 	const basename = path.posix.basename(current);
 
 	if (isDescendantPath(current, nextParent)) {
@@ -1062,15 +1425,18 @@ ipcMain.handle("notes:move-item", async (_event, itemPath, nextParentPath) => {
 
 ipcMain.handle("notes:delete-item", async (_event, itemPath) => {
 	await ensureWorkspace();
-	const deletedNotes = await collectDeletedNotes(itemPath);
+	await migrateLegacyNotes();
+	const current = currentNotePath(itemPath);
+	const deletedNotes = await collectDeletedNotes(current);
 	await appendTombstones(deletedNotes);
-	await fs.rm(resolveWorkspacePath(itemPath), { recursive: true, force: true });
-	await deleteIndexedPath(itemPath);
+	await fs.rm(resolveWorkspacePath(current), { recursive: true, force: true });
+	await deleteIndexedPath(current);
 	return { ok: true };
 });
 
 ipcMain.handle("notes:read-app-state", async () => {
 	await ensureWorkspace();
+	await migrateLegacyNotes();
 	try {
 		return JSON.parse(await fs.readFile(statePath(), "utf8"));
 	} catch {
@@ -1085,8 +1451,12 @@ ipcMain.handle("notes:write-app-state", async (_event, state) => {
 });
 
 ipcMain.handle("notes:popout-note", async (_event, notePath) => {
-	if (popoutWindows.has(notePath)) {
-		const existing = popoutWindows.get(notePath);
+	await ensureWorkspace();
+	await migrateLegacyNotes();
+	const normalizedPath = currentNotePath(notePath);
+
+	if (popoutWindows.has(normalizedPath)) {
+		const existing = popoutWindows.get(normalizedPath);
 		if (!existing.isDestroyed()) {
 			existing.focus();
 			return { ok: true };
@@ -1106,11 +1476,11 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 		},
 	});
 
-	popoutWindows.set(notePath, popout);
+	popoutWindows.set(normalizedPath, popout);
 
 	popout.on("closed", () => {
-		popoutWindows.delete(notePath);
-		mainWindow?.webContents.send("popout:closed", notePath);
+		popoutWindows.delete(normalizedPath);
+		mainWindow?.webContents.send("popout:closed", normalizedPath);
 	});
 
 	popout.webContents.on("will-navigate", (event, url) => {
@@ -1119,7 +1489,7 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 		shell.openExternal(url);
 	});
 
-	const encodedPath = encodeURIComponent(notePath);
+	const encodedPath = encodeURIComponent(normalizedPath);
 
 	if (devServerUrl) {
 		await popout.loadURL(
