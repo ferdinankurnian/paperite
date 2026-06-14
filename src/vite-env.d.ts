@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
 	readonly VITE_CLERK_AUTH_CALLBACK_URL?: string;
+	readonly VITE_CONVEX_URL?: string;
 }
 
 interface Window {
@@ -12,8 +13,22 @@ interface Window {
 		onNotePathChanged: (
 			callback: (data: { from: string; to: string }) => void,
 		) => () => void;
+		onSyncChanged: (
+			callback: (data?: { error?: string }) => void,
+		) => () => void;
 		auth: {
 			getPendingCallback: () => Promise<string | null>;
+		};
+		sync: {
+			getStatus: () => Promise<SyncStatus>;
+			connectGoogleDrive: () => Promise<
+				{ ok: true } | { ok: false; error: string }
+			>;
+			runGoogleDrive: () => Promise<
+				| { ok: true; uploaded: number; downloaded: number }
+				| { ok: false; error: string }
+			>;
+			disconnectGoogleDrive: () => Promise<{ ok: true }>;
 		};
 		openExternal: (url: string) => Promise<void>;
 		app: {
@@ -90,6 +105,17 @@ type YNoteState = {
 	noteId: string;
 	format: "yjs-v1";
 	snapshot: Uint8Array;
+};
+
+type SyncStatus = {
+	googleDrive: {
+		configured: boolean;
+		connected: boolean;
+		expiresAt: number | null;
+	};
+	convex: {
+		configured: boolean;
+	};
 };
 
 type WorkspaceNote = {

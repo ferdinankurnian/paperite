@@ -1,5 +1,6 @@
 const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
+const nodeCrypto = require("node:crypto");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
@@ -22,8 +23,14 @@ const revisionsRoot = () =>
 	path.join(workspaceRoot(), ".paperite", "revisions");
 const syncRoot = () => path.join(workspaceRoot(), ".paperite", "sync");
 const syncNotesRoot = () => path.join(syncRoot(), "notes");
+const googleDriveTokenPath = () =>
+	path.join(syncRoot(), "google-drive-token.json");
 const tombstonesPath = () =>
 	path.join(workspaceRoot(), ".paperite", "tombstones.jsonl");
+
+const googleDriveScope = "https://www.googleapis.com/auth/drive.appdata";
+const googleDriveRedirectUri = "paperite://sync/google-drive/callback";
+const googleOauthSessions = new Map();
 
 const normalizeRelativePath = (relativePath = "") => {
 	const normalized = path
@@ -395,6 +402,420 @@ const writeDerivedNoteContent = async (notePath, content) => {
 	await getIndexedNote(normalizedPath, stats);
 
 	return { ok: true };
+};
+
+const googleDriveClientId = () =>
+	process.env.PAPERITE_GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID;
+
+const base64Url = (buffer) =>
+	Buffer.from(buffer)
+		.toString("base64")
+		.replaceAll("+", "-")
+		.replaceAll("/", "_")
+		.replace(/=+$/g, "");
+
+const createPkceVerifier = () => base64Url(nodeCrypto.randomBytes(32));
+
+const createPkceChallenge = (verifier) =>
+	base64Url(nodeCrypto.createHash("sha256").update(verifier).digest());
+
+const readGoogleDriveToken = async () => {
+	try {
+		return JSON.parse(await fs.readFile(googleDriveTokenPath(), "utf8"));
+	} catch (error) {
+		if (error?.code === "ENOENT") return null;
+		throw error;
+	}
+};
+
+const writeGoogleDriveToken = async (token) => {
+	await fs.mkdir(path.dirname(googleDriveTokenPath()), { recursive: true });
+	await writeFileAtomic(googleDriveTokenPath(), JSON.stringify(token, null, 2));
+};
+
+const getGoogleDriveStatus = async () => {
+	const token = await readGoogleDriveToken();
+	return {
+		configured: Boolean(googleDriveClientId()),
+		connected: Boolean(token?.refresh_token || token?.access_token),
+		expiresAt: token?.expires_at ?? null,
+	};
+};
+
+const exchangeGoogleToken = async (body) => {
+	const response = await fetch("https://oauth2.googleapis.com/token", {
+		method: "POST",
+		headers: { "content-type": "application/x-www-form-urlencoded" },
+		body: new URLSearchParams(body),
+	});
+
+	if (!response.ok) {
+		throw new Error(`google token request failed: ${response.status}`);
+	}
+
+	const token = await response.json();
+	return {
+		...token,
+		expires_at: token.expires_in
+			? Date.now() + token.expires_in * 1000
+			: undefined,
+	};
+};
+
+const startGoogleDriveConnection = async () => {
+	const clientId = googleDriveClientId();
+	if (!clientId) {
+		return { ok: false, error: "missing_google_client_id" };
+	}
+
+	const state = base64Url(nodeCrypto.randomBytes(24));
+	const verifier = createPkceVerifier();
+	const challenge = createPkceChallenge(verifier);
+	googleOauthSessions.set(state, { verifier, createdAt: Date.now() });
+
+	const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+	url.searchParams.set("client_id", clientId);
+	url.searchParams.set("redirect_uri", googleDriveRedirectUri);
+	url.searchParams.set("response_type", "code");
+	url.searchParams.set("scope", googleDriveScope);
+	url.searchParams.set("access_type", "offline");
+	url.searchParams.set("prompt", "consent");
+	url.searchParams.set("code_challenge", challenge);
+	url.searchParams.set("code_challenge_method", "S256");
+	url.searchParams.set("state", state);
+
+	await shell.openExternal(url.toString());
+	return { ok: true };
+};
+
+const completeGoogleDriveConnection = async (callbackUrl) => {
+	const clientId = googleDriveClientId();
+	if (!clientId) throw new Error("missing google client id");
+
+	const url = new URL(callbackUrl);
+	const code = url.searchParams.get("code");
+	const state = url.searchParams.get("state");
+	const session = state ? googleOauthSessions.get(state) : null;
+
+	if (!code || !state || !session)
+		throw new Error("invalid google oauth state");
+	googleOauthSessions.delete(state);
+
+	const token = await exchangeGoogleToken({
+		client_id: clientId,
+		code,
+		code_verifier: session.verifier,
+		grant_type: "authorization_code",
+		redirect_uri: googleDriveRedirectUri,
+	});
+
+	await writeGoogleDriveToken(token);
+	mainWindow?.webContents.send("sync:changed");
+};
+
+const getGoogleDriveAccessToken = async () => {
+	const clientId = googleDriveClientId();
+	if (!clientId) throw new Error("missing google client id");
+
+	const token = await readGoogleDriveToken();
+	if (!token) throw new Error("google drive is not connected");
+	if (
+		token.access_token &&
+		token.expires_at &&
+		token.expires_at > Date.now() + 60_000
+	) {
+		return token.access_token;
+	}
+	if (!token.refresh_token) throw new Error("google refresh token is missing");
+
+	const refreshed = await exchangeGoogleToken({
+		client_id: clientId,
+		grant_type: "refresh_token",
+		refresh_token: token.refresh_token,
+	});
+	const nextToken = {
+		...token,
+		...refreshed,
+		refresh_token: refreshed.refresh_token ?? token.refresh_token,
+	};
+	await writeGoogleDriveToken(nextToken);
+	return nextToken.access_token;
+};
+
+const googleDriveRequest = async (url, options = {}) => {
+	const accessToken = await getGoogleDriveAccessToken();
+	const response = await fetch(url, {
+		...options,
+		headers: {
+			...(options.headers ?? {}),
+			authorization: `Bearer ${accessToken}`,
+		},
+	});
+
+	if (!response.ok) {
+		throw new Error(`google drive request failed: ${response.status}`);
+	}
+
+	return response;
+};
+
+const listGoogleDriveFiles = async (noteId) => {
+	const query = [
+		"trashed = false",
+		"'appDataFolder' in parents",
+		`appProperties has { key='noteId' and value='${noteId.replaceAll("'", "\\'")}' }`,
+	].join(" and ");
+	const url = new URL("https://www.googleapis.com/drive/v3/files");
+	url.searchParams.set("spaces", "appDataFolder");
+	url.searchParams.set("fields", "files(id,name,appProperties,modifiedTime)");
+	url.searchParams.set("q", query);
+
+	const response = await googleDriveRequest(url.toString());
+	return (await response.json()).files ?? [];
+};
+
+const listAllGoogleDriveSyncFiles = async () => {
+	const query = [
+		"trashed = false",
+		"'appDataFolder' in parents",
+		"appProperties has { key='provider' and value='paperite' }",
+	].join(" and ");
+	const url = new URL("https://www.googleapis.com/drive/v3/files");
+	url.searchParams.set("spaces", "appDataFolder");
+	url.searchParams.set("fields", "files(id,name,appProperties,modifiedTime)");
+	url.searchParams.set("q", query);
+
+	const response = await googleDriveRequest(url.toString());
+	return (await response.json()).files ?? [];
+};
+
+const groupGoogleDriveFilesByNote = (files) => {
+	const groups = new Map();
+
+	for (const file of files) {
+		const noteId = file.appProperties?.noteId;
+		if (!noteId) continue;
+
+		groups.set(noteId, [...(groups.get(noteId) ?? []), file]);
+	}
+
+	return groups;
+};
+
+const uploadGoogleDriveFile = async ({ name, appProperties, content }) => {
+	const files = await listGoogleDriveFiles(appProperties.noteId);
+	const existing = files.find((file) => file.name === name);
+	if (existing) return existing;
+
+	const boundary = `paperite-${nodeCrypto.randomUUID()}`;
+	const metadata = {
+		name,
+		parents: ["appDataFolder"],
+		appProperties,
+	};
+	const body = Buffer.concat([
+		Buffer.from(
+			`--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\ncontent-type: application/octet-stream\r\n\r\n`,
+		),
+		Buffer.from(content),
+		Buffer.from(`\r\n--${boundary}--`),
+	]);
+
+	const response = await googleDriveRequest(
+		"https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,appProperties,modifiedTime",
+		{
+			method: "POST",
+			headers: { "content-type": `multipart/related; boundary=${boundary}` },
+			body,
+		},
+	);
+	return response.json();
+};
+
+const downloadGoogleDriveFile = async (fileId) => {
+	const response = await googleDriveRequest(
+		`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
+	);
+	return Buffer.from(await response.arrayBuffer());
+};
+
+const listLocalSyncNotes = async () => {
+	await ensureWorkspace();
+	const entries = await fs.readdir(syncNotesRoot(), { withFileTypes: true });
+	const notes = [];
+
+	for (const entry of entries) {
+		if (!entry.isDirectory()) continue;
+		try {
+			const manifest = JSON.parse(
+				await fs.readFile(syncNoteManifestPath(entry.name), "utf8"),
+			);
+			notes.push({ noteId: entry.name, manifest });
+		} catch {
+			// Ignore partial local sync directories.
+		}
+	}
+
+	return notes;
+};
+
+const applyRemoteYjsFile = async ({
+	noteId,
+	notePath,
+	updateName,
+	content,
+}) => {
+	await ensureNoteDirectory(notePath);
+
+	try {
+		await fs.access(resolveNoteContentPath(notePath));
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+		const content = createEmptyNoteContent(path.posix.basename(notePath));
+		content.id = noteId;
+		await writeFileAtomic(
+			resolveNoteContentPath(notePath),
+			serializeNoteContent(content),
+		);
+	}
+
+	const syncDirectory = syncNoteDirectory(noteId);
+	const updatesDirectory = syncNoteUpdatesDirectory(noteId);
+	await fs.mkdir(updatesDirectory, { recursive: true });
+
+	const doc = new Y.Doc();
+	try {
+		Y.applyUpdate(doc, await fs.readFile(syncNoteSnapshotPath(noteId)));
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	Y.applyUpdate(doc, content);
+
+	await writeFileAtomic(path.join(updatesDirectory, updateName), content);
+	await writeFileAtomic(
+		syncNoteSnapshotPath(noteId),
+		Buffer.from(Y.encodeStateAsUpdate(doc)),
+	);
+	await writeFileAtomic(
+		syncNoteStateVectorPath(noteId),
+		Buffer.from(Y.encodeStateVector(doc)),
+	);
+	await writeFileAtomic(
+		syncNoteManifestPath(noteId),
+		JSON.stringify(
+			{
+				format: "yjs-v1",
+				noteId,
+				path: notePath,
+				updatedAt: Date.now(),
+				snapshot: path.relative(syncDirectory, syncNoteSnapshotPath(noteId)),
+				stateVector: path.relative(
+					syncDirectory,
+					syncNoteStateVectorPath(noteId),
+				),
+			},
+			null,
+			2,
+		),
+	);
+};
+
+const syncGoogleDrive = async () => {
+	const status = await getGoogleDriveStatus();
+	if (!status.configured)
+		return { ok: false, error: "missing_google_client_id" };
+	if (!status.connected)
+		return { ok: false, error: "google_drive_not_connected" };
+
+	const localNotes = await listLocalSyncNotes();
+	const localNoteIds = new Set(localNotes.map((note) => note.noteId));
+	const remoteFilesByNote = groupGoogleDriveFilesByNote(
+		await listAllGoogleDriveSyncFiles(),
+	);
+	let uploaded = 0;
+	let downloaded = 0;
+
+	for (const { noteId, manifest } of localNotes) {
+		const remoteFiles = remoteFilesByNote.get(noteId) ?? [];
+		const remoteNames = new Set(remoteFiles.map((file) => file.name));
+		const baseProperties = { provider: "paperite", noteId };
+
+		const snapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
+		if (!remoteNames.has("snapshot.bin")) {
+			await uploadGoogleDriveFile({
+				name: "snapshot.bin",
+				appProperties: {
+					...baseProperties,
+					kind: "snapshot",
+					path: manifest.path,
+				},
+				content: snapshot,
+			});
+			uploaded += 1;
+		}
+
+		const updatesDirectory = syncNoteUpdatesDirectory(noteId);
+		const updateEntries = await fs
+			.readdir(updatesDirectory, { withFileTypes: true })
+			.catch(() => []);
+		for (const entry of updateEntries) {
+			if (!entry.isFile() || remoteNames.has(entry.name)) continue;
+			await uploadGoogleDriveFile({
+				name: entry.name,
+				appProperties: {
+					...baseProperties,
+					kind: "update",
+					path: manifest.path,
+				},
+				content: await fs.readFile(path.join(updatesDirectory, entry.name)),
+			});
+			uploaded += 1;
+		}
+
+		for (const file of remoteFiles.filter(
+			(remote) => remote.appProperties?.kind === "update",
+		)) {
+			const localPath = path.join(updatesDirectory, file.name);
+			try {
+				await fs.access(localPath);
+				continue;
+			} catch (error) {
+				if (error?.code !== "ENOENT") throw error;
+			}
+
+			await applyRemoteYjsFile({
+				noteId,
+				notePath: manifest.path,
+				updateName: file.name,
+				content: await downloadGoogleDriveFile(file.id),
+			});
+			downloaded += 1;
+		}
+	}
+
+	for (const [noteId, remoteFiles] of remoteFilesByNote) {
+		if (localNoteIds.has(noteId)) continue;
+
+		const notePath =
+			remoteFiles.find((file) => file.appProperties?.path)?.appProperties
+				?.path ?? path.posix.join("Inbox", noteId);
+		const orderedFiles = [
+			...remoteFiles.filter((file) => file.appProperties?.kind === "snapshot"),
+			...remoteFiles.filter((file) => file.appProperties?.kind === "update"),
+		];
+
+		for (const file of orderedFiles) {
+			await applyRemoteYjsFile({
+				noteId,
+				notePath,
+				updateName: file.name === "snapshot.bin" ? `${file.id}.bin` : file.name,
+				content: await downloadGoogleDriveFile(file.id),
+			});
+			downloaded += 1;
+		}
+	}
+
+	return { ok: true, uploaded, downloaded };
 };
 
 const revisionKey = (notePath) => Buffer.from(notePath).toString("base64url");
@@ -1255,7 +1676,24 @@ registerProtocolClient();
 const isAuthCallbackUrl = (url) =>
 	url.startsWith("paperite://auth/") || url.startsWith("paperite://callback");
 
-const getAuthCallbackArg = (argv) => argv.find(isAuthCallbackUrl);
+const isGoogleDriveCallbackUrl = (url) =>
+	url.startsWith(googleDriveRedirectUri);
+
+const getProtocolCallbackArg = (argv) =>
+	argv.find((url) => isAuthCallbackUrl(url) || isGoogleDriveCallbackUrl(url));
+
+const handleProtocolCallback = (url) => {
+	if (isGoogleDriveCallbackUrl(url)) {
+		completeGoogleDriveConnection(url).catch((error) => {
+			mainWindow?.webContents.send("sync:changed", {
+				error: error instanceof Error ? error.message : "google_drive_error",
+			});
+		});
+		return;
+	}
+
+	if (isAuthCallbackUrl(url)) sendAuthCallback(url);
+};
 
 const sendAuthCallback = (url) => {
 	pendingAuthCallbackUrl = url;
@@ -1271,6 +1709,29 @@ ipcMain.handle("auth:get-pending-callback", () => {
 	const url = pendingAuthCallbackUrl ?? null;
 	pendingAuthCallbackUrl = undefined;
 	return url;
+});
+
+ipcMain.handle("sync:get-status", async () => ({
+	googleDrive: await getGoogleDriveStatus(),
+	convex: {
+		configured: Boolean(process.env.VITE_CONVEX_URL),
+	},
+}));
+
+ipcMain.handle("sync:connect-google-drive", async () => {
+	await ensureWorkspace();
+	return startGoogleDriveConnection();
+});
+
+ipcMain.handle("sync:run-google-drive", async () => {
+	await ensureWorkspace();
+	return syncGoogleDrive();
+});
+
+ipcMain.handle("sync:disconnect-google-drive", async () => {
+	await fs.rm(googleDriveTokenPath(), { force: true });
+	mainWindow?.webContents.send("sync:changed");
+	return { ok: true };
 });
 
 ipcMain.handle("app:set-title", (event, title) => {
@@ -1548,8 +2009,8 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 app.whenReady().then(() => {
 	refreshWorkspaceWatchers().catch(() => undefined);
 	createWindow();
-	const startupAuthCallback = getAuthCallbackArg(process.argv);
-	if (startupAuthCallback) sendAuthCallback(startupAuthCallback);
+	const startupAuthCallback = getProtocolCallbackArg(process.argv);
+	if (startupAuthCallback) handleProtocolCallback(startupAuthCallback);
 	app.on("activate", () => {
 		if (BrowserWindow.getAllWindows().length === 0) createWindow();
 	});
@@ -1561,15 +2022,17 @@ if (!gotLock) {
 	app.quit();
 } else {
 	app.on("second-instance", (_event, argv) => {
-		const url = getAuthCallbackArg(argv);
-		if (url) sendAuthCallback(url);
+		const url = getProtocolCallbackArg(argv);
+		if (url) handleProtocolCallback(url);
 	});
 }
 
 // mac
 app.on("open-url", (event, url) => {
 	event.preventDefault();
-	if (isAuthCallbackUrl(url)) sendAuthCallback(url);
+	if (isAuthCallbackUrl(url) || isGoogleDriveCallbackUrl(url)) {
+		handleProtocolCallback(url);
+	}
 });
 
 app.on("window-all-closed", () => {
