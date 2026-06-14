@@ -8,27 +8,34 @@ const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const Y = require("yjs");
 
 const loadLocalEnv = () => {
-	const envPath = path.join(__dirname, ".env");
+	const loadEnvFile = (fileName, override = false) => {
+		const envPath = path.join(__dirname, fileName);
 
-	try {
-		const env = fsSync.readFileSync(envPath, "utf8");
+		try {
+			const env = fsSync.readFileSync(envPath, "utf8");
 
-		for (const line of env.split(/\r?\n/)) {
-			const trimmed = line.trim();
-			if (!trimmed || trimmed.startsWith("#")) continue;
+			for (const line of env.split(/\r?\n/)) {
+				const trimmed = line.trim();
+				if (!trimmed || trimmed.startsWith("#")) continue;
 
-			const separatorIndex = trimmed.indexOf("=");
-			if (separatorIndex === -1) continue;
+				const separatorIndex = trimmed.indexOf("=");
+				if (separatorIndex === -1) continue;
 
-			const key = trimmed.slice(0, separatorIndex).trim();
-			const rawValue = trimmed.slice(separatorIndex + 1).trim();
-			const value = rawValue.replace(/^(['"])(.*)\1$/, "$2");
+				const key = trimmed.slice(0, separatorIndex).trim();
+				const rawValue = trimmed.slice(separatorIndex + 1).trim();
+				const value = rawValue.replace(/^(['"])(.*)\1$/, "$2");
 
-			if (key && process.env[key] === undefined) process.env[key] = value;
+				if (key && (override || process.env[key] === undefined)) {
+					process.env[key] = value;
+				}
+			}
+		} catch (error) {
+			if (error?.code !== "ENOENT") throw error;
 		}
-	} catch (error) {
-		if (error?.code !== "ENOENT") throw error;
-	}
+	};
+
+	loadEnvFile(".env");
+	loadEnvFile(".env.local", true);
 };
 
 loadLocalEnv();
