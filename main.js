@@ -514,7 +514,17 @@ const exchangeGoogleToken = async (body) => {
 	});
 
 	if (!response.ok) {
-		throw new Error(`google token request failed: ${response.status}`);
+		let details = "";
+		try {
+			const errorBody = await response.json();
+			details = errorBody.error_description || errorBody.error || "";
+		} catch {
+			details = await response.text().catch(() => "");
+		}
+
+		throw new Error(
+			`google token request failed: ${response.status}${details ? ` (${details})` : ""}`,
+		);
 	}
 
 	const token = await response.json();
@@ -555,6 +565,9 @@ const startGoogleDriveConnection = async () => {
 				);
 			})
 			.catch((error) => {
+				mainWindow?.webContents.send("sync:changed", {
+					error: error instanceof Error ? error.message : "Unknown error",
+				});
 				response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
 				response.end(
 					`<h1>Paperite Google Drive connection failed</h1><p>${error instanceof Error ? error.message : "Unknown error"}</p>`,
