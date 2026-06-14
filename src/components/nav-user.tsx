@@ -594,6 +594,7 @@ function SyncSettings() {
 	const [busyAction, setBusyAction] = useState<
 		"toggle" | "connect" | "sync" | "disconnect" | "create-shared-space" | null
 	>(null);
+	const [connectPending, setConnectPending] = useState(false);
 	const [message, setMessage] = useState<string | null>(null);
 	const [sharedSpaceName, setSharedSpaceName] = useState("");
 	const syncEngine = getSyncEngine();
@@ -607,10 +608,17 @@ function SyncSettings() {
 		refreshStatus().catch(() => setMessage("Could not read sync status."));
 
 		return onSyncChanged((data) => {
-			if (data?.error) setMessage(data.error);
+			if (data?.error) {
+				setConnectPending(false);
+				setMessage(data.error);
+			}
 			refreshStatus().catch(() => setMessage("Could not read sync status."));
 		});
 	}, [refreshStatus]);
+
+	useEffect(() => {
+		if (status?.googleDrive.connected) setConnectPending(false);
+	}, [status?.googleDrive.connected]);
 
 	const runAction = async (
 		action:
@@ -622,11 +630,13 @@ function SyncSettings() {
 		runner: () => Promise<unknown>,
 	) => {
 		setBusyAction(action);
+		if (action === "connect") setConnectPending(true);
 		setMessage(null);
 
 		try {
 			const result = await runner();
 			if (isSyncError(result)) {
+				if (action === "connect") setConnectPending(false);
 				setMessage(syncErrorMessage(result.error));
 			} else if (action === "sync" && isGoogleDriveSyncResult(result)) {
 				setMessage(
@@ -641,6 +651,7 @@ function SyncSettings() {
 
 			await refreshStatus();
 		} catch {
+			if (action === "connect") setConnectPending(false);
 			setMessage("Sync action failed.");
 		} finally {
 			setBusyAction(null);
@@ -650,6 +661,7 @@ function SyncSettings() {
 	const googleDrive = status?.googleDrive;
 	const convex = status?.convex;
 	const googleDriveEnabled = googleDrive?.enabled === true;
+	const googleDriveConnecting = busyAction === "connect" || connectPending;
 
 	return (
 		<>
@@ -695,7 +707,8 @@ function SyncSettings() {
 									disabled={
 										!syncEngine ||
 										googleDrive?.configured === false ||
-										busyAction !== null
+										busyAction !== null ||
+										connectPending
 									}
 									onClick={() =>
 										runAction(
@@ -706,7 +719,7 @@ function SyncSettings() {
 										)
 									}
 								>
-									{busyAction === "connect" ? "Opening browser" : "Connect"}
+									{googleDriveConnecting ? "Opening browser.." : "Connect"}
 								</Button>
 							)}
 						</div>
