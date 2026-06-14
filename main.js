@@ -6,6 +6,32 @@ const { DatabaseSync } = require("node:sqlite");
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const Y = require("yjs");
 
+const loadLocalEnv = () => {
+	const envPath = path.join(__dirname, ".env");
+
+	try {
+		const env = fsSync.readFileSync(envPath, "utf8");
+
+		for (const line of env.split(/\r?\n/)) {
+			const trimmed = line.trim();
+			if (!trimmed || trimmed.startsWith("#")) continue;
+
+			const separatorIndex = trimmed.indexOf("=");
+			if (separatorIndex === -1) continue;
+
+			const key = trimmed.slice(0, separatorIndex).trim();
+			const rawValue = trimmed.slice(separatorIndex + 1).trim();
+			const value = rawValue.replace(/^(['"])(.*)\1$/, "$2");
+
+			if (key && process.env[key] === undefined) process.env[key] = value;
+		}
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+};
+
+loadLocalEnv();
+
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 let mainWindow; // hoist ke luar
 const popoutWindows = new Map(); // key: notePath, value: BrowserWindow
