@@ -646,7 +646,7 @@ function SyncSettings() {
 				setMessage("Google Drive disconnected on this device.");
 			} else if (action === "create-shared-space") {
 				setSharedSpaceName("");
-				setMessage("Shared space created in Cloud.");
+				setMessage("Shared space created.");
 			}
 
 			await refreshStatus();
@@ -719,7 +719,7 @@ function SyncSettings() {
 										)
 									}
 								>
-									{googleDriveConnecting ? "Opening browser.." : "Connect"}
+									{googleDriveConnecting ? "Opening browser..." : "Connect"}
 								</Button>
 							)}
 						</div>
@@ -771,9 +771,9 @@ function SyncSettings() {
 						<div className="flex items-center gap-2">
 							<CloudIcon className="size-4 text-muted-foreground" />
 							<div>
-								<h3 className="text-sm font-medium">Cloud</h3>
+								<h3 className="text-sm font-medium">Integrations</h3>
 								<p className="text-xs text-muted-foreground">
-									Shared spaces backend for collaboration.
+									Connect services like GitHub, ChatGPT, Claude, and Cloudflare.
 								</p>
 							</div>
 						</div>
@@ -807,8 +807,8 @@ function SyncSettings() {
 						</Button>
 					</div>
 					<p className="mt-2 text-xs text-muted-foreground">
-						This creates the Cloud shared space record. Shared note routing UI
-						comes next.
+						Creates a shared space for collaboration. More integrations are
+						coming.
 					</p>
 				</section>
 				{message ? (
