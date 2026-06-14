@@ -1,34 +1,23 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
+import {
+	type MutationCtx,
+	mutation,
+	type QueryCtx,
+	query,
+} from "./_generated/server";
 
 const freeSharedSpaceLimit = 2;
 
-type AuthContext = {
-	auth: { getUserIdentity: () => Promise<{ subject: string } | null> };
-};
+type ServerCtx = QueryCtx | MutationCtx;
 
-type IndexBuilder = {
-	eq: (field: string, value: unknown) => IndexBuilder;
-};
-
-type SpaceMemberContext = AuthContext & {
-	db: {
-		query: (table: "sharedSpaceMembers") => {
-			withIndex: (
-				name: "by_space_user",
-				callback: (q: IndexBuilder) => IndexBuilder,
-			) => { unique: () => Promise<unknown> };
-		};
-	};
-};
-
-async function requireUserId(ctx: AuthContext) {
+async function requireUserId(ctx: ServerCtx) {
 	const identity = await ctx.auth.getUserIdentity();
 	if (!identity) throw new ConvexError("not_authenticated");
 	return identity.subject;
 }
 
-async function requireSpaceMember(ctx: SpaceMemberContext, spaceId: unknown) {
+async function requireSpaceMember(ctx: ServerCtx, spaceId: Id<"sharedSpaces">) {
 	const userId = await requireUserId(ctx);
 	const member = await ctx.db
 		.query("sharedSpaceMembers")
