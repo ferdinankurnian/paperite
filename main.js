@@ -7,6 +7,14 @@ const { DatabaseSync } = require("node:sqlite");
 const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const Y = require("yjs");
 
+let keytar;
+
+try {
+	keytar = require("keytar");
+} catch {
+	keytar = null;
+}
+
 const loadLocalEnv = () => {
 	const loadEnvFile = (fileName, override = false) => {
 		const envPath = path.join(__dirname, fileName);
@@ -65,6 +73,8 @@ const tombstonesPath = () =>
 
 const googleDriveScope = "https://www.googleapis.com/auth/drive.appdata";
 const googleOauthSessions = new Map();
+const keychainService = "dev.iydheko.paperite";
+const googleDriveTokenAccount = "google-drive-token";
 
 const normalizeRelativePath = (relativePath = "") => {
 	const normalized = path
@@ -456,8 +466,27 @@ const createPkceChallenge = (verifier) =>
 	base64Url(nodeCrypto.createHash("sha256").update(verifier).digest());
 
 const readGoogleDriveToken = async () => {
+	if (keytar) {
+		const keychainToken = await keytar.getPassword(
+			keychainService,
+			googleDriveTokenAccount,
+		);
+		if (keychainToken) return JSON.parse(keychainToken);
+	}
+
 	try {
-		return JSON.parse(await fs.readFile(googleDriveTokenPath(), "utf8"));
+		const legacyToken = JSON.parse(
+			await fs.readFile(googleDriveTokenPath(), "utf8"),
+		);
+		if (!keytar) return legacyToken;
+
+		await keytar.setPassword(
+			keychainService,
+			googleDriveTokenAccount,
+			JSON.stringify(legacyToken),
+		);
+		await fs.rm(googleDriveTokenPath(), { force: true });
+		return legacyToken;
 	} catch (error) {
 		if (error?.code === "ENOENT") return null;
 		throw error;
@@ -500,8 +529,25 @@ const writeSyncPreferences = async (preferences) => {
 };
 
 const writeGoogleDriveToken = async (token) => {
-	await fs.mkdir(path.dirname(googleDriveTokenPath()), { recursive: true });
-	await writeFileAtomic(googleDriveTokenPath(), JSON.stringify(token, null, 2));
+	if (!keytar) {
+		throw new Error(
+			"OS keychain is unavailable for Google Drive token storage",
+		);
+	}
+
+	await keytar.setPassword(
+		keychainService,
+		googleDriveTokenAccount,
+		JSON.stringify(token),
+	);
+	await fs.rm(googleDriveTokenPath(), { force: true });
+};
+
+const deleteGoogleDriveToken = async () => {
+	if (keytar) {
+		await keytar.deletePassword(keychainService, googleDriveTokenAccount);
+	}
+	await fs.rm(googleDriveTokenPath(), { force: true });
 };
 
 const getGoogleDriveStatus = async () => {
@@ -1864,7 +1910,7 @@ ipcMain.handle("sync:run-google-drive", async () => {
 });
 
 ipcMain.handle("sync:disconnect-google-drive", async () => {
-	await fs.rm(googleDriveTokenPath(), { force: true });
+	await deleteGoogleDriveToken();
 	mainWindow?.webContents.send("sync:changed");
 	return { ok: true };
 });
