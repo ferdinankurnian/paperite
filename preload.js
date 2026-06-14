@@ -21,8 +21,20 @@ contextBridge.exposeInMainWorld("electron", {
 		ipcRenderer.on("note:path-changed", listener);
 		return () => ipcRenderer.removeListener("note:path-changed", listener);
 	},
+	onSyncChanged: (cb) => {
+		const listener = (_, data) => cb(data);
+		ipcRenderer.on("sync:changed", listener);
+		return () => ipcRenderer.removeListener("sync:changed", listener);
+	},
 	auth: {
 		getPendingCallback: () => ipcRenderer.invoke("auth:get-pending-callback"),
+	},
+	sync: {
+		getStatus: () => ipcRenderer.invoke("sync:get-status"),
+		connectGoogleDrive: () => ipcRenderer.invoke("sync:connect-google-drive"),
+		runGoogleDrive: () => ipcRenderer.invoke("sync:run-google-drive"),
+		disconnectGoogleDrive: () =>
+			ipcRenderer.invoke("sync:disconnect-google-drive"),
 	},
 	openExternal: (url) => ipcRenderer.invoke("open-external", url),
 	app: {

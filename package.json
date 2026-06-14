@@ -37,7 +37,8 @@
 		"preview": "vite preview",
 		"format": "biome format --write .",
 		"verify:yjs": "bun scripts/verify-yjs-sync.cjs",
-		"verify:yjs:migration": "bun scripts/verify-yjs-prosemirror-migration.ts"
+		"verify:yjs:migration": "bun scripts/verify-yjs-prosemirror-migration.ts",
+		"convex:dev": "convex dev"
 	},
 	"dependencies": {
 		"@clerk/clerk-js": "^6.11.3",
@@ -64,6 +65,7 @@
 		"@tiptap/suggestion": "^3.26.0",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
+		"convex": "^1.41.0",
 		"lucide-react": "^1.16.0",
 		"radix-ui": "^1.4.3",
 		"react": "^19.2.6",
