@@ -36,6 +36,9 @@ contextBridge.exposeInMainWorld("electron", {
 		getWorkspace: () => ipcRenderer.invoke("notes:get-workspace"),
 		search: (query) => ipcRenderer.invoke("notes:search", query),
 		readNote: (path) => ipcRenderer.invoke("notes:read-note", path),
+		readYNote: (path) => ipcRenderer.invoke("notes:read-y-note", path),
+		writeYUpdate: (path, update) =>
+			ipcRenderer.invoke("notes:write-y-update", path, update),
 		writeNote: (path, content) =>
 			ipcRenderer.invoke("notes:write-note", path, content),
 		createNote: (parentPath, title) =>
