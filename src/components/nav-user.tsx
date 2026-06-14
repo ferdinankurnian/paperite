@@ -55,12 +55,14 @@ import {
 	SidebarMenuItem,
 	useSidebar,
 } from "@/components/ui/sidebar";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
 	type CommandDefinition,
 	type CommandId,
 	commands,
 } from "@/lib/commands";
+import { createSharedSpace } from "@/lib/convex";
 import {
 	findShortcutConflict,
 	formatShortcut,
@@ -589,9 +591,10 @@ function KeyboardSettings({
 function SyncSettings() {
 	const [status, setStatus] = useState<SyncStatus | null>(null);
 	const [busyAction, setBusyAction] = useState<
-		"connect" | "sync" | "disconnect" | null
+		"toggle" | "connect" | "sync" | "disconnect" | "create-shared-space" | null
 	>(null);
 	const [message, setMessage] = useState<string | null>(null);
+	const [sharedSpaceName, setSharedSpaceName] = useState("");
 	const syncEngine = getSyncEngine();
 
 	const refreshStatus = useCallback(async () => {
@@ -609,7 +612,12 @@ function SyncSettings() {
 	}, [refreshStatus]);
 
 	const runAction = async (
-		action: "connect" | "sync" | "disconnect",
+		action:
+			| "toggle"
+			| "connect"
+			| "sync"
+			| "disconnect"
+			| "create-shared-space",
 		runner: () => Promise<unknown>,
 	) => {
 		setBusyAction(action);
@@ -619,6 +627,8 @@ function SyncSettings() {
 			const result = await runner();
 			if (isSyncError(result)) {
 				setMessage(syncErrorMessage(result.error));
+			} else if (action === "toggle") {
+				setMessage("Google Drive sync preference updated.");
 			} else if (action === "connect") {
 				setMessage("Google sign-in opened in your browser.");
 			} else if (action === "sync" && isGoogleDriveSyncResult(result)) {
@@ -627,6 +637,9 @@ function SyncSettings() {
 				);
 			} else if (action === "disconnect") {
 				setMessage("Google Drive disconnected on this device.");
+			} else if (action === "create-shared-space") {
+				setSharedSpaceName("");
+				setMessage("Shared space created in Convex.");
 			}
 
 			await refreshStatus();
@@ -639,6 +652,7 @@ function SyncSettings() {
 
 	const googleDrive = status?.googleDrive;
 	const convex = status?.convex;
+	const googleDriveEnabled = googleDrive?.enabled === true;
 
 	return (
 		<>
@@ -660,6 +674,22 @@ function SyncSettings() {
 								</p>
 							</div>
 						</div>
+						<Switch
+							checked={googleDriveEnabled}
+							disabled={!syncEngine || busyAction !== null}
+							onCheckedChange={(enabled) =>
+								runAction(
+									"toggle",
+									() =>
+										syncEngine?.setGoogleDriveEnabled(enabled) ??
+										Promise.resolve(null),
+								)
+							}
+							aria-label="Use Google Drive sync"
+						/>
+					</div>
+					<div className="mb-3 flex items-center justify-between rounded-lg bg-background/40 px-3 py-2">
+						<span className="text-sm">Use Google Drive sync</span>
 						<StatusPill
 							active={googleDrive?.connected === true}
 							label={googleDrive?.connected ? "Connected" : "Disconnected"}
@@ -676,6 +706,7 @@ function SyncSettings() {
 							size="sm"
 							disabled={
 								!syncEngine ||
+								!googleDriveEnabled ||
 								googleDrive?.configured === false ||
 								busyAction !== null
 							}
@@ -694,7 +725,10 @@ function SyncSettings() {
 							size="sm"
 							variant="outline"
 							disabled={
-								!syncEngine || !googleDrive?.connected || busyAction !== null
+								!syncEngine ||
+								!googleDriveEnabled ||
+								!googleDrive?.connected ||
+								busyAction !== null
 							}
 							onClick={() =>
 								runAction(
@@ -710,7 +744,10 @@ function SyncSettings() {
 							size="sm"
 							variant="outline"
 							disabled={
-								!syncEngine || !googleDrive?.connected || busyAction !== null
+								!syncEngine ||
+								!googleDriveEnabled ||
+								!googleDrive?.connected ||
+								busyAction !== null
 							}
 							onClick={() =>
 								runAction(
@@ -741,6 +778,34 @@ function SyncSettings() {
 							label={convex?.configured ? "Configured" : "Missing URL"}
 						/>
 					</div>
+					<div className="mt-4 flex gap-2">
+						<Input
+							value={sharedSpaceName}
+							onChange={(event) => setSharedSpaceName(event.target.value)}
+							placeholder="Shared space name"
+							disabled={!convex?.configured || busyAction !== null}
+						/>
+						<Button
+							type="button"
+							size="sm"
+							disabled={
+								!convex?.configured ||
+								!sharedSpaceName.trim() ||
+								busyAction !== null
+							}
+							onClick={() =>
+								runAction("create-shared-space", () =>
+									createSharedSpace(sharedSpaceName.trim()),
+								)
+							}
+						>
+							{busyAction === "create-shared-space" ? "Creating..." : "Create"}
+						</Button>
+					</div>
+					<p className="mt-2 text-xs text-muted-foreground">
+						This creates the Convex shared space record. Shared note routing UI
+						comes next.
+					</p>
 				</section>
 				{message ? (
 					<p className="rounded-xl bg-muted/45 p-3 text-sm text-muted-foreground">
@@ -795,6 +860,9 @@ function syncErrorMessage(error: string) {
 	}
 	if (error === "google_drive_not_connected") {
 		return "Google Drive is not connected yet.";
+	}
+	if (error === "google_drive_disabled") {
+		return "Turn on Google Drive sync first.";
 	}
 
 	return error;

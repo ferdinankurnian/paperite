@@ -25,6 +25,7 @@ const syncRoot = () => path.join(workspaceRoot(), ".paperite", "sync");
 const syncNotesRoot = () => path.join(syncRoot(), "notes");
 const googleDriveTokenPath = () =>
 	path.join(syncRoot(), "google-drive-token.json");
+const syncPreferencesPath = () => path.join(syncRoot(), "preferences.json");
 const tombstonesPath = () =>
 	path.join(workspaceRoot(), ".paperite", "tombstones.jsonl");
 
@@ -428,6 +429,41 @@ const readGoogleDriveToken = async () => {
 	}
 };
 
+const defaultSyncPreferences = {
+	googleDriveEnabled: false,
+};
+
+const readSyncPreferences = async () => {
+	try {
+		const preferences = JSON.parse(
+			await fs.readFile(syncPreferencesPath(), "utf8"),
+		);
+		return {
+			...defaultSyncPreferences,
+			...(isPlainObject(preferences) ? preferences : {}),
+			googleDriveEnabled: preferences?.googleDriveEnabled === true,
+		};
+	} catch (error) {
+		if (error?.code === "ENOENT") return defaultSyncPreferences;
+		throw error;
+	}
+};
+
+const writeSyncPreferences = async (preferences) => {
+	const nextPreferences = {
+		...defaultSyncPreferences,
+		...preferences,
+		googleDriveEnabled: preferences?.googleDriveEnabled === true,
+	};
+	await fs.mkdir(path.dirname(syncPreferencesPath()), { recursive: true });
+	await writeFileAtomic(
+		syncPreferencesPath(),
+		JSON.stringify(nextPreferences, null, 2),
+	);
+	mainWindow?.webContents.send("sync:changed");
+	return nextPreferences;
+};
+
 const writeGoogleDriveToken = async (token) => {
 	await fs.mkdir(path.dirname(googleDriveTokenPath()), { recursive: true });
 	await writeFileAtomic(googleDriveTokenPath(), JSON.stringify(token, null, 2));
@@ -435,9 +471,11 @@ const writeGoogleDriveToken = async (token) => {
 
 const getGoogleDriveStatus = async () => {
 	const token = await readGoogleDriveToken();
+	const preferences = await readSyncPreferences();
 	return {
 		configured: Boolean(googleDriveClientId()),
 		connected: Boolean(token?.refresh_token || token?.access_token),
+		enabled: preferences.googleDriveEnabled,
 		expiresAt: token?.expires_at ?? null,
 	};
 };
@@ -722,6 +760,7 @@ const applyRemoteYjsFile = async ({
 
 const syncGoogleDrive = async () => {
 	const status = await getGoogleDriveStatus();
+	if (!status.enabled) return { ok: false, error: "google_drive_disabled" };
 	if (!status.configured)
 		return { ok: false, error: "missing_google_client_id" };
 	if (!status.connected)
@@ -1717,6 +1756,14 @@ ipcMain.handle("sync:get-status", async () => ({
 		configured: Boolean(process.env.VITE_CONVEX_URL),
 	},
 }));
+
+ipcMain.handle("sync:set-google-drive-enabled", async (_event, enabled) => {
+	await ensureWorkspace();
+	const preferences = await writeSyncPreferences({
+		googleDriveEnabled: enabled === true,
+	});
+	return { ok: true, googleDriveEnabled: preferences.googleDriveEnabled };
+});
 
 ipcMain.handle("sync:connect-google-drive", async () => {
 	await ensureWorkspace();

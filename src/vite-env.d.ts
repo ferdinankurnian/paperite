@@ -21,6 +21,9 @@ interface Window {
 		};
 		sync: {
 			getStatus: () => Promise<SyncStatus>;
+			setGoogleDriveEnabled: (
+				enabled: boolean,
+			) => Promise<{ ok: true; googleDriveEnabled: boolean }>;
 			connectGoogleDrive: () => Promise<
 				{ ok: true } | { ok: false; error: string }
 			>;
@@ -111,6 +114,7 @@ type SyncStatus = {
 	googleDrive: {
 		configured: boolean;
 		connected: boolean;
+		enabled: boolean;
 		expiresAt: number | null;
 	};
 	convex: {

@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld("electron", {
 	},
 	sync: {
 		getStatus: () => ipcRenderer.invoke("sync:get-status"),
+		setGoogleDriveEnabled: (enabled) =>
+			ipcRenderer.invoke("sync:set-google-drive-enabled", enabled),
 		connectGoogleDrive: () => ipcRenderer.invoke("sync:connect-google-drive"),
 		runGoogleDrive: () => ipcRenderer.invoke("sync:run-google-drive"),
 		disconnectGoogleDrive: () =>
