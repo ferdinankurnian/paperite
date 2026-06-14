@@ -16,18 +16,21 @@ Google Drive must never be the merge authority. Paperite applies Yjs updates loc
 
 ### Google Drive Setup
 
-Paperite uses OAuth PKCE with the Drive `appDataFolder` scope.
+Paperite uses OAuth PKCE with the Drive `appDataFolder` scope and a loopback localhost callback.
 
 Required environment variable for desktop sync:
 
 ```txt
 PAPERITE_GOOGLE_CLIENT_ID=your-google-oauth-client-id
+PAPERITE_GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
 ```
 
-The OAuth client must allow this redirect URI:
+Use a Google OAuth **Desktop app** client. Google still exposes a client secret for desktop clients; it is not private in an installed app, but Google's token endpoint can require it.
+
+The OAuth callback uses a random localhost port:
 
 ```txt
-paperite://sync/google-drive/callback
+http://127.0.0.1:{randomPort}/callback
 ```
 
 The app exposes these Electron sync actions:
