@@ -12,7 +12,6 @@ import {
 	SunIcon,
 	UserRoundIcon,
 } from "lucide-react";
-import driveSvg from "/drive.svg";
 import {
 	type KeyboardEvent,
 	useCallback,
@@ -71,6 +70,7 @@ import {
 } from "@/lib/shortcuts";
 import { getSyncEngine, onSyncChanged } from "@/lib/sync-engine";
 import { cn } from "@/lib/utils";
+import driveSvg from "/drive.svg";
 
 const themes = [
 	{ icon: SunIcon, label: "Light", value: "light" },
@@ -595,7 +595,10 @@ function SyncSettings() {
 		"toggle" | "connect" | "sync" | "disconnect" | "create-shared-space" | null
 	>(null);
 	const [connectPending, setConnectPending] = useState(false);
-	const [message, setMessage] = useState<string | null>(null);
+	const [googleDriveMessage, setGoogleDriveMessage] = useState<string | null>(
+		null,
+	);
+	const [cloudMessage, setCloudMessage] = useState<string | null>(null);
 	const [sharedSpaceName, setSharedSpaceName] = useState("");
 	const syncEngine = getSyncEngine();
 
@@ -605,14 +608,18 @@ function SyncSettings() {
 	}, [syncEngine]);
 
 	useEffect(() => {
-		refreshStatus().catch(() => setMessage("Could not read sync status."));
+		refreshStatus().catch(() =>
+			setGoogleDriveMessage("Could not read sync status."),
+		);
 
 		return onSyncChanged((data) => {
 			if (data?.error) {
 				setConnectPending(false);
-				setMessage(data.error);
+				setGoogleDriveMessage(data.error);
 			}
-			refreshStatus().catch(() => setMessage("Could not read sync status."));
+			refreshStatus().catch(() =>
+				setGoogleDriveMessage("Could not read sync status."),
+			);
 		});
 	}, [refreshStatus]);
 
@@ -631,28 +638,42 @@ function SyncSettings() {
 	) => {
 		setBusyAction(action);
 		if (action === "connect") setConnectPending(true);
-		setMessage(null);
+		if (action === "create-shared-space") {
+			setCloudMessage(null);
+		} else {
+			setGoogleDriveMessage(null);
+		}
 
 		try {
 			const result = await runner();
 			if (isSyncError(result)) {
 				if (action === "connect") setConnectPending(false);
-				setMessage(syncErrorMessage(result.error));
+				if (action === "create-shared-space") {
+					setCloudMessage(syncErrorMessage(result.error));
+				} else {
+					setGoogleDriveMessage(syncErrorMessage(result.error));
+				}
 			} else if (action === "sync" && isGoogleDriveSyncResult(result)) {
-				setMessage(
+				setGoogleDriveMessage(
 					`Sync complete. Uploaded ${result.uploaded}, downloaded ${result.downloaded}.`,
 				);
 			} else if (action === "disconnect") {
-				setMessage("Google Drive disconnected on this device.");
+				setGoogleDriveMessage("Google Drive disconnected on this device.");
 			} else if (action === "create-shared-space") {
 				setSharedSpaceName("");
-				setMessage("Shared space created.");
+				setCloudMessage("Shared space created in Cloud.");
 			}
 
 			await refreshStatus();
-		} catch {
+		} catch (error) {
 			if (action === "connect") setConnectPending(false);
-			setMessage("Sync action failed.");
+			const errorMessage =
+				error instanceof Error ? error.message : "Sync action failed.";
+			if (action === "create-shared-space") {
+				setCloudMessage(errorMessage);
+			} else {
+				setGoogleDriveMessage(errorMessage);
+			}
 		} finally {
 			setBusyAction(null);
 		}
@@ -719,7 +740,7 @@ function SyncSettings() {
 										)
 									}
 								>
-									{googleDriveConnecting ? "Opening browser..." : "Connect"}
+									{googleDriveConnecting ? "Opening browser.." : "Connect"}
 								</Button>
 							)}
 						</div>
@@ -765,15 +786,20 @@ function SyncSettings() {
 							</Button>
 						</div>
 					) : null}
+					{googleDriveMessage ? (
+						<p className="mt-3 text-xs text-muted-foreground">
+							{googleDriveMessage}
+						</p>
+					) : null}
 				</section>
 				<section className="rounded-xl bg-muted/45 p-4">
 					<div className="flex items-start justify-between gap-3">
 						<div className="flex items-center gap-2">
 							<CloudIcon className="size-4 text-muted-foreground" />
 							<div>
-								<h3 className="text-sm font-medium">Integrations</h3>
+								<h3 className="text-sm font-medium">Cloud</h3>
 								<p className="text-xs text-muted-foreground">
-									Connect services like GitHub, ChatGPT, Claude, and Cloudflare.
+									Shared spaces backend for collaboration.
 								</p>
 							</div>
 						</div>
@@ -807,15 +833,13 @@ function SyncSettings() {
 						</Button>
 					</div>
 					<p className="mt-2 text-xs text-muted-foreground">
-						Creates a shared space for collaboration. More integrations are
-						coming.
+						This creates the Cloud shared space record. Shared note routing UI
+						comes next.
 					</p>
+					{cloudMessage ? (
+						<p className="mt-2 text-xs text-muted-foreground">{cloudMessage}</p>
+					) : null}
 				</section>
-				{message ? (
-					<p className="rounded-xl bg-muted/45 p-3 text-sm text-muted-foreground">
-						{message}
-					</p>
-				) : null}
 			</div>
 		</>
 	);
