@@ -116,6 +116,9 @@ type SyncStatus = {
 		connected: boolean;
 		enabled: boolean;
 		expiresAt: number | null;
+		syncing: boolean;
+		lastSyncedAt: number | null;
+		lastError: string | null;
 	};
 	convex: {
 		configured: boolean;
