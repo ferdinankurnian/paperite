@@ -7,6 +7,7 @@ export type CommandId =
 	| "note.setup"
 	| "note.find"
 	| "note.replace"
+	| "note.saveAndSync"
 	| "tab.next"
 	| "tab.previous"
 	| "tab.close"
@@ -64,6 +65,13 @@ export const commands = [
 		label: "Replace in note",
 		category: "Notes",
 		defaultShortcut: "Mod+Alt+F",
+		editable: true,
+	},
+	{
+		id: "note.saveAndSync",
+		label: "Save and sync",
+		category: "Notes",
+		defaultShortcut: "Mod+S",
 		editable: true,
 	},
 	{

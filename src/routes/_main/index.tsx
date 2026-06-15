@@ -68,6 +68,7 @@ import {
 } from "@/lib/note-content";
 import { getNotesEngine } from "@/lib/notes-engine";
 import { isShortcutEditableInput, shortcutMatchesEvent } from "@/lib/shortcuts";
+import { getSyncEngine } from "@/lib/sync-engine";
 import { type LoadedYNote, loadYNote } from "@/lib/y-note-store";
 
 export const Route = createFileRoute("/_main/")({
@@ -448,6 +449,60 @@ function Index() {
 		},
 		[notesApi],
 	);
+
+	const flushSaveAndSync = useCallback(async () => {
+		const notePath = activeNotePathRef.current;
+		if (!notePath) return;
+
+		const latestContent = noteContentCache.current.get(notePath);
+		const latestBody = latestContent
+			? serializeNoteContentBody(latestContent)
+			: null;
+		const persistedContent = notePersistedCache.current.get(notePath);
+		const persistedBody = persistedContent
+			? serializeNoteContentBody(persistedContent)
+			: null;
+
+		if (latestBody && latestBody !== persistedBody && latestContent) {
+			setSaveStatus("saving");
+			clearNoteAutosaveTimer(notePath);
+			clearAutosavesForPath(notePath);
+
+			try {
+				if (loadedYNote?.path === notePath) {
+					await notesApi?.writeDerivedNote(notePath, latestContent);
+				} else {
+					await enqueueNoteWrite(notePath, latestContent);
+				}
+				notePersistedCache.current.set(notePath, latestContent);
+				lastPersistedContent.current = latestBody;
+				setSaveStatus("saved");
+
+				setWorkspace((current) =>
+					current
+						? updateWorkspaceNote(current, notePath, {
+								preview: noteContentPreview(latestContent),
+								updatedAt: Date.now(),
+							})
+						: current,
+				);
+			} catch {
+				setSaveStatus("error");
+				return;
+			}
+		}
+
+		const syncEngine = getSyncEngine();
+		if (syncEngine) {
+			syncEngine.runGoogleDrive().catch(() => undefined);
+		}
+	}, [
+		clearAutosavesForPath,
+		clearNoteAutosaveTimer,
+		enqueueNoteWrite,
+		loadedYNote?.path,
+		notesApi,
+	]);
 
 	const moveNoteRuntimeState = useCallback(
 		(fromPath: string, toPath: string) => {
@@ -1500,6 +1555,12 @@ function Index() {
 			if (event.repeat) return;
 			if (isShortcutEditableInput(event.target)) return;
 
+			if (shortcutMatchesEvent(getShortcut("note.saveAndSync"), event)) {
+				event.preventDefault();
+				flushSaveAndSync();
+				return;
+			}
+
 			if (shortcutMatchesEvent(getShortcut("note.create"), event)) {
 				event.preventDefault();
 				createNote(currentSpacePath);
@@ -1568,6 +1629,7 @@ function Index() {
 		createFolder,
 		createNote,
 		currentSpacePath,
+		flushSaveAndSync,
 		getShortcut,
 		switchTab,
 	]);
