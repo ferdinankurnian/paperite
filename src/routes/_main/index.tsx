@@ -404,22 +404,36 @@ function Index() {
 
 			const timer = window.setTimeout(() => {
 				yjsDerivedAutosaveTimers.current.delete(notePath);
+				const latestContent = noteContentCache.current.get(notePath) ?? content;
+				const latestBody = serializeNoteContentBody(latestContent);
+				const persistedContent = notePersistedCache.current.get(notePath);
+				const persistedBody = persistedContent
+					? serializeNoteContentBody(persistedContent)
+					: "";
+
+				if (latestBody === persistedBody) {
+					if (activeNotePathRef.current === notePath) {
+						lastPersistedContent.current = latestBody;
+						setSaveStatus("saved");
+					}
+					return;
+				}
 
 				notesApi
-					?.writeDerivedNote(notePath, content)
+					?.writeDerivedNote(notePath, latestContent)
 					.then(() => {
-						noteContentCache.current.set(notePath, content);
-						notePersistedCache.current.set(notePath, content);
+						noteContentCache.current.set(notePath, latestContent);
+						notePersistedCache.current.set(notePath, latestContent);
 
 						if (activeNotePathRef.current === notePath) {
-							lastPersistedContent.current = serializeNoteContentBody(content);
+							lastPersistedContent.current = latestBody;
 							setSaveStatus("saved");
 						}
 
 						setWorkspace((current) =>
 							current
 								? updateWorkspaceNote(current, notePath, {
-										preview: noteContentPreview(content),
+										preview: noteContentPreview(latestContent),
 										updatedAt: Date.now(),
 									})
 								: current,
@@ -2437,10 +2451,7 @@ function updateWorkspaceItems(
 
 	if (!changed) return items;
 
-	return nextItems.sort((first, second) => {
-		if (first.type === "folder" || second.type === "folder") return 0;
-		return second.updatedAt - first.updatedAt;
-	});
+	return nextItems;
 }
 
 function applyNoteDecorations(
