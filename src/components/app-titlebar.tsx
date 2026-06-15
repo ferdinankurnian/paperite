@@ -410,6 +410,9 @@ function SyncIndicator() {
 				minute: "2-digit",
 			})
 		: "Not yet";
+	const friendlyError = googleDrive.lastError
+		? friendlySyncError(googleDrive.lastError)
+		: null;
 
 	return (
 		<HoverCard openDelay={150} closeDelay={80}>
@@ -430,20 +433,38 @@ function SyncIndicator() {
 					/>
 				</button>
 			</HoverCardTrigger>
-			<HoverCardContent side="bottom" align="end" className="w-56 text-xs">
+			<HoverCardContent side="bottom" align="end" className="w-64 text-xs">
 				<div className="space-y-1.5">
 					<div className="flex items-center justify-between gap-3">
 						<span className="font-medium text-foreground">Google Drive</span>
 						<span className="text-muted-foreground">{label}</span>
 					</div>
 					<p className="text-muted-foreground">Last synced: {lastSynced}</p>
-					{googleDrive.lastError ? (
-						<p className="text-destructive">{googleDrive.lastError}</p>
+					{friendlyError ? (
+						<p className="text-destructive">{friendlyError}</p>
 					) : null}
 				</div>
 			</HoverCardContent>
 		</HoverCard>
 	);
+}
+
+function friendlySyncError(error: string) {
+	if (
+		error.includes("Properties and app properties are limited to 124 bytes")
+	) {
+		return "Sync metadata is too large. Shorten the note path or sync again after the Drive metadata fix.";
+	}
+
+	if (error.includes("Google Drive API has not been used")) {
+		return "Google Drive API is disabled for this project. Enable it in Google Cloud, then sync again.";
+	}
+
+	if (error.includes("insufficient") || error.includes("permission")) {
+		return "Google Drive needs permission again. Disconnect, reconnect, then sync.";
+	}
+
+	return "Google Drive sync failed. Try syncing again.";
 }
 
 function WindowControl({

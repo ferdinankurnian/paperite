@@ -770,6 +770,15 @@ const googleDriveRequest = async (url, options = {}) => {
 	return response;
 };
 
+const googleDriveAppPropertiesForNote = (manifest, extraProperties) => ({
+	provider: "paperite",
+	noteId: manifest.noteId,
+	...extraProperties,
+	...(Buffer.byteLength(`path${manifest.path}`, "utf8") <= 124
+		? { path: manifest.path }
+		: {}),
+});
+
 const listGoogleDriveFiles = async (noteId) => {
 	const query = [
 		"trashed = false",
@@ -950,17 +959,13 @@ const syncGoogleDrive = async () => {
 	for (const { noteId, manifest } of localNotes) {
 		const remoteFiles = remoteFilesByNote.get(noteId) ?? [];
 		const remoteNames = new Set(remoteFiles.map((file) => file.name));
-		const baseProperties = { provider: "paperite", noteId };
-
 		const snapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
 		if (!remoteNames.has("snapshot.bin")) {
 			await uploadGoogleDriveFile({
 				name: "snapshot.bin",
-				appProperties: {
-					...baseProperties,
+				appProperties: googleDriveAppPropertiesForNote(manifest, {
 					kind: "snapshot",
-					path: manifest.path,
-				},
+				}),
 				content: snapshot,
 			});
 			uploaded += 1;
@@ -974,11 +979,9 @@ const syncGoogleDrive = async () => {
 			if (!entry.isFile() || remoteNames.has(entry.name)) continue;
 			await uploadGoogleDriveFile({
 				name: entry.name,
-				appProperties: {
-					...baseProperties,
+				appProperties: googleDriveAppPropertiesForNote(manifest, {
 					kind: "update",
-					path: manifest.path,
-				},
+				}),
 				content: await fs.readFile(path.join(updatesDirectory, entry.name)),
 			});
 			uploaded += 1;
