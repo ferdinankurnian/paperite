@@ -107,11 +107,12 @@ function PopoutNote() {
 	}, [notePath]);
 
 	useEffect(() => {
-		if (!window.electron) return;
+		const electron = window.electron;
+		if (!electron) return;
 
-		const cleanup = window.electron.onNotePathChanged((data) => {
+		const cleanup = electron.onNotePathChanged((data) => {
 			setCurrentNotePath(data.to);
-			window.electron.notes.readNote(data.to).then((content) => {
+			electron.notes.readNote(data.to).then((content) => {
 				const titleFromContent =
 					typeof content.title === "string" ? content.title : "";
 				setNoteTitle(
@@ -160,7 +161,10 @@ function PopoutNote() {
 					activePath,
 					title,
 				);
-				const nextTitle = stripNoteExtension(fileName(renamed.path));
+				const nextTitle =
+					renamed.path === activePath
+						? title
+						: stripNoteExtension(fileName(renamed.path));
 				setCurrentNotePath(renamed.path);
 				setNoteTitle(nextTitle);
 

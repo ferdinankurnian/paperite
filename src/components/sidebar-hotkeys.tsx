@@ -5,29 +5,16 @@ export function SidebarHotkeys() {
 	const { toggleSidebar } = useSidebar();
 
 	useEffect(() => {
-		const handleAltKeyDown = (event: KeyboardEvent) => {
-			if (event.key.toLowerCase() !== "b" || !event.altKey) return;
-			if (event.ctrlKey || event.metaKey || event.shiftKey) return;
-
-			event.preventDefault();
+		const handleToggleSidebar = () => {
 			toggleSidebar();
 		};
 
-		const stopBoldShortcutFromTogglingSidebar = (event: KeyboardEvent) => {
-			if (event.key.toLowerCase() !== "b") return;
-			if (!event.ctrlKey && !event.metaKey) return;
-
-			event.stopPropagation();
-		};
-
-		document.addEventListener("keydown", stopBoldShortcutFromTogglingSidebar);
-		window.addEventListener("keydown", handleAltKeyDown);
+		window.addEventListener("paperite:toggle-sidebar", handleToggleSidebar);
 		return () => {
-			document.removeEventListener(
-				"keydown",
-				stopBoldShortcutFromTogglingSidebar,
+			window.removeEventListener(
+				"paperite:toggle-sidebar",
+				handleToggleSidebar,
 			);
-			window.removeEventListener("keydown", handleAltKeyDown);
 		};
 	}, [toggleSidebar]);
 

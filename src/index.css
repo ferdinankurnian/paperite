@@ -243,7 +243,7 @@
 	}
 
 	.paperite-tiptap-spacing-compact .paperite-prosemirror p {
-		margin-bottom: 0.35rem;
+		margin-bottom: 0;
 	}
 
 	.paperite-tiptap-leading-compact .paperite-prosemirror {
