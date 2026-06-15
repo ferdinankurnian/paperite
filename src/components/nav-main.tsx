@@ -1,20 +1,35 @@
+import { useDroppable } from "@dnd-kit/core";
+import {
+	SortableContext,
+	useSortable,
+	verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
 	BookOpenIcon,
+	BookmarkIcon,
 	BrainIcon,
 	BriefcaseBusinessIcon,
+	CameraIcon,
 	CloudIcon,
 	CodeIcon,
+	CompassIcon,
 	FolderIcon,
 	GemIcon,
 	HeartIcon,
 	LightbulbIcon,
 	MoreHorizontalIcon,
+	MusicIcon,
 	PencilIcon,
+	PinIcon,
 	PlusIcon,
 	SparklesIcon,
+	StarIcon,
+	UsersIcon,
 	Trash2Icon,
 	UploadIcon,
 	XIcon,
+	ZapIcon,
 } from "lucide-react";
 import { type ChangeEvent, type DragEvent, useRef, useState } from "react";
 import {
@@ -149,150 +164,221 @@ export function NavMain({
 	return (
 		<>
 			{inbox ? (
-				<SidebarGroup>
-					<SidebarMenu>
-						<SidebarMenuItem>
-							<SidebarMenuButton
-								tooltip={inbox.title}
-								isActive={activeSpacePath === inbox.path}
-								onClick={() => onSelectSpace(inbox.path)}
-							>
-								{inbox.icon}
-								<span>{inbox.title}</span>
-							</SidebarMenuButton>
-						</SidebarMenuItem>
-					</SidebarMenu>
-				</SidebarGroup>
+				<SpaceDropMenuItem
+					space={inbox}
+					isActive={activeSpacePath === inbox.path}
+					onSelect={() => onSelectSpace(inbox.path)}
+				/>
 			) : null}
 			<div className="h-px bg-border mx-[10px]"></div>
-			<SidebarGroup>
-				<SidebarMenu className="gap-1">
-					{otherSpaces.map((space) => (
-						<SidebarMenuItem key={space.title}>
-							<ContextMenu>
-								<ContextMenuTrigger asChild>
-									<SidebarMenuButton
-										tooltip={space.title}
-										isActive={activeSpacePath === space.path}
-										onClick={() => onSelectSpace(space.path)}
+			<SortableContext
+				items={otherSpaces.map((space) => space.path)}
+				strategy={verticalListSortingStrategy}
+			>
+				<SidebarGroup>
+					<SidebarMenu className="gap-1">
+						{otherSpaces.map((space) => (
+							<SortableSpaceItem key={space.path} id={space.path}>
+								<SidebarMenuItem>
+									<ContextMenu>
+										<ContextMenuTrigger asChild>
+											<SidebarMenuButton
+												tooltip={space.title}
+												isActive={activeSpacePath === space.path}
+												onClick={() => onSelectSpace(space.path)}
+											>
+												{space.icon}
+												<span>{space.title}</span>
+											</SidebarMenuButton>
+										</ContextMenuTrigger>
+										<ContextMenuContent className="w-44">
+											<ContextMenuItem onSelect={() => openEdit(space)}>
+												<PencilIcon className="text-muted-foreground" />
+												<span>Rename Space</span>
+											</ContextMenuItem>
+											<ContextMenuSeparator />
+											<ContextMenuItem
+												variant="destructive"
+												onSelect={() => setDeleteSpacePath(space.path)}
+											>
+												<Trash2Icon />
+												<span>Delete Space</span>
+											</ContextMenuItem>
+										</ContextMenuContent>
+									</ContextMenu>
+									<Popover
+										open={editSpacePath === space.path}
+										onOpenChange={(open) => {
+											if (open) return;
+											if (Date.now() - editOpenedAt.current < 250) return;
+											setEditSpacePath(null);
+										}}
 									>
-										{space.icon}
-										<span>{space.title}</span>
-									</SidebarMenuButton>
-								</ContextMenuTrigger>
-								<ContextMenuContent className="w-44">
-									<ContextMenuItem onSelect={() => openEdit(space)}>
-										<PencilIcon className="text-muted-foreground" />
-										<span>Rename Space</span>
-									</ContextMenuItem>
-									<ContextMenuSeparator />
-									<ContextMenuItem
-										variant="destructive"
-										onSelect={() => setDeleteSpacePath(space.path)}
-									>
-										<Trash2Icon />
-										<span>Delete Space</span>
-									</ContextMenuItem>
-								</ContextMenuContent>
-							</ContextMenu>
-							<Popover
-								open={editSpacePath === space.path}
-								onOpenChange={(open) => {
-									if (open) return;
-									if (Date.now() - editOpenedAt.current < 250) return;
-									setEditSpacePath(null);
-								}}
-							>
-								<DropdownMenu>
-									<DropdownMenuTrigger asChild>
-										<PopoverAnchor asChild>
-											<SidebarMenuAction showOnHover>
-												<MoreHorizontalIcon />
-												<span className="sr-only">More</span>
-											</SidebarMenuAction>
-										</PopoverAnchor>
-									</DropdownMenuTrigger>
-									<DropdownMenuContent
-										className="w-44 rounded-lg"
-										side="right"
-										align="start"
-									>
-										<DropdownMenuItem
-											onSelect={() => {
-												openEdit(space);
+										<DropdownMenu>
+											<DropdownMenuTrigger asChild>
+												<PopoverAnchor asChild>
+													<SidebarMenuAction showOnHover>
+														<MoreHorizontalIcon />
+														<span className="sr-only">More</span>
+													</SidebarMenuAction>
+												</PopoverAnchor>
+											</DropdownMenuTrigger>
+											<DropdownMenuContent
+												className="w-44 rounded-lg"
+												side="right"
+												align="start"
+											>
+												<DropdownMenuItem
+													onSelect={() => {
+														openEdit(space);
+													}}
+												>
+													<PencilIcon className="text-muted-foreground" />
+													<span>Edit Space</span>
+												</DropdownMenuItem>
+												<DropdownMenuSeparator />
+												<DropdownMenuItem
+													variant="destructive"
+													onSelect={() => setDeleteSpacePath(space.path)}
+												>
+													<Trash2Icon />
+													<span>Delete Space</span>
+												</DropdownMenuItem>
+											</DropdownMenuContent>
+										</DropdownMenu>
+										<PopoverContent
+											side="right"
+											align="start"
+											className="w-56"
+											onEscapeKeyDown={() => setEditSpacePath(null)}
+											onInteractOutside={(event) => {
+												if (Date.now() - editOpenedAt.current < 250) {
+													event.preventDefault();
+												}
 											}}
 										>
-											<PencilIcon className="text-muted-foreground" />
-											<span>Edit Space</span>
-										</DropdownMenuItem>
-										<DropdownMenuSeparator />
-										<DropdownMenuItem
-											variant="destructive"
-											onSelect={() => setDeleteSpacePath(space.path)}
-										>
-											<Trash2Icon />
-											<span>Delete Space</span>
-										</DropdownMenuItem>
-									</DropdownMenuContent>
-								</DropdownMenu>
-								<PopoverContent
-									side="right"
-									align="start"
-									className="w-56"
-									onEscapeKeyDown={() => setEditSpacePath(null)}
-									onInteractOutside={(event) => {
-										if (Date.now() - editOpenedAt.current < 250) {
-											event.preventDefault();
-										}
-									}}
-								>
+											<Input
+												autoFocus
+												value={editSpaceName}
+												placeholder="Space name..."
+												onChange={(event) =>
+													setEditSpaceName(event.target.value)
+												}
+												onKeyDown={(event) => {
+													if (event.key === "Enter") editSpace();
+													if (event.key === "Escape") setEditSpacePath(null);
+												}}
+											/>
+											<SpaceIconPicker
+												inputRef={editIconInputRef}
+												value={editSpaceIcon}
+												onUpload={(file) => uploadIcon(file, setEditSpaceIcon)}
+												onChooseUpload={() => editIconInputRef.current?.click()}
+												onSelect={setEditSpaceIcon}
+											/>
+											<div className="space-y-2">
+												<div className="text-xs text-muted-foreground">
+													Color
+												</div>
+												<div className="grid grid-cols-7 gap-2">
+													{spaceColors.map((color) => (
+														<button
+															type="button"
+															key={color}
+															aria-label={`Use ${color}`}
+															data-active={editSpaceColor === color}
+															className="size-5 rounded-full ring-offset-2 ring-offset-popover data-[active=true]:ring-2 data-[active=true]:ring-ring"
+															style={{ backgroundColor: color }}
+															onClick={() => setEditSpaceColor(color)}
+														/>
+													))}
+												</div>
+											</div>
+											<div className="grid grid-cols-2 gap-2">
+												<Button
+													type="button"
+													size="sm"
+													className="w-full"
+													disabled={!editSpaceName.trim()}
+													onClick={editSpace}
+												>
+													Save
+												</Button>
+												<Button
+													type="button"
+													size="sm"
+													className="w-full"
+													variant="ghost"
+													onClick={() => setEditSpacePath(null)}
+												>
+													Cancel
+												</Button>
+											</div>
+										</PopoverContent>
+									</Popover>
+								</SidebarMenuItem>
+							</SortableSpaceItem>
+						))}
+						<SidebarMenuItem>
+							<Popover open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+								<PopoverTrigger asChild>
+									<SidebarMenuButton
+										tooltip="Add Space"
+										className="text-sidebar-foreground/70"
+									>
+										<PlusIcon className="text-sidebar-foreground/70" />
+										<span>Add Space</span>
+									</SidebarMenuButton>
+								</PopoverTrigger>
+								<PopoverContent side="right" align="start" className="w-56">
 									<Input
 										autoFocus
-										value={editSpaceName}
+										value={spaceName}
 										placeholder="Space name..."
-										onChange={(event) => setEditSpaceName(event.target.value)}
+										onChange={(event) => setSpaceName(event.target.value)}
 										onKeyDown={(event) => {
-											if (event.key === "Enter") editSpace();
-											if (event.key === "Escape") setEditSpacePath(null);
+											if (event.key === "Enter") createSpace();
 										}}
 									/>
 									<SpaceIconPicker
-										inputRef={editIconInputRef}
-										value={editSpaceIcon}
-										onUpload={(file) => uploadIcon(file, setEditSpaceIcon)}
-										onChooseUpload={() => editIconInputRef.current?.click()}
-										onSelect={setEditSpaceIcon}
+										inputRef={createIconInputRef}
+										value={spaceIcon}
+										onUpload={(file) => uploadIcon(file, setSpaceIcon)}
+										onChooseUpload={() => createIconInputRef.current?.click()}
+										onSelect={setSpaceIcon}
 									/>
 									<div className="space-y-2">
 										<div className="text-xs text-muted-foreground">Color</div>
-										<div className="flex flex-wrap gap-2">
+										<div className="grid grid-cols-7 gap-2">
 											{spaceColors.map((color) => (
 												<button
 													type="button"
 													key={color}
 													aria-label={`Use ${color}`}
-													data-active={editSpaceColor === color}
+													data-active={spaceColor === color}
 													className="size-5 rounded-full ring-offset-2 ring-offset-popover data-[active=true]:ring-2 data-[active=true]:ring-ring"
 													style={{ backgroundColor: color }}
-													onClick={() => setEditSpaceColor(color)}
+													onClick={() => setSpaceColor(color)}
 												/>
 											))}
 										</div>
 									</div>
-									<div className="flex items-center gap-2">
+									<div className="grid grid-cols-2 gap-2">
 										<Button
 											type="button"
 											size="sm"
-											disabled={!editSpaceName.trim()}
-											onClick={editSpace}
+											className="w-full"
+											disabled={!canCreate}
+											onClick={createSpace}
 										>
-											Save
+											Create
 										</Button>
 										<Button
 											type="button"
 											size="sm"
+											className="w-full"
 											variant="ghost"
-											onClick={() => setEditSpacePath(null)}
+											onClick={() => setIsCreateOpen(false)}
 										>
 											Cancel
 										</Button>
@@ -300,74 +386,9 @@ export function NavMain({
 								</PopoverContent>
 							</Popover>
 						</SidebarMenuItem>
-					))}
-					<SidebarMenuItem>
-						<Popover open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-							<PopoverTrigger asChild>
-								<SidebarMenuButton
-									tooltip="Add Space"
-									className="text-sidebar-foreground/70"
-								>
-									<PlusIcon className="text-sidebar-foreground/70" />
-									<span>Add Space</span>
-								</SidebarMenuButton>
-							</PopoverTrigger>
-							<PopoverContent side="right" align="start" className="w-56">
-								<Input
-									autoFocus
-									value={spaceName}
-									placeholder="Space name..."
-									onChange={(event) => setSpaceName(event.target.value)}
-									onKeyDown={(event) => {
-										if (event.key === "Enter") createSpace();
-									}}
-								/>
-								<SpaceIconPicker
-									inputRef={createIconInputRef}
-									value={spaceIcon}
-									onUpload={(file) => uploadIcon(file, setSpaceIcon)}
-									onChooseUpload={() => createIconInputRef.current?.click()}
-									onSelect={setSpaceIcon}
-								/>
-								<div className="space-y-2">
-									<div className="text-xs text-muted-foreground">Color</div>
-									<div className="flex flex-wrap gap-2">
-										{spaceColors.map((color) => (
-											<button
-												type="button"
-												key={color}
-												aria-label={`Use ${color}`}
-												data-active={spaceColor === color}
-												className="size-5 rounded-full ring-offset-2 ring-offset-popover data-[active=true]:ring-2 data-[active=true]:ring-ring"
-												style={{ backgroundColor: color }}
-												onClick={() => setSpaceColor(color)}
-											/>
-										))}
-									</div>
-								</div>
-								<div className="flex items-center gap-2">
-									<Button
-										type="button"
-										size="sm"
-										disabled={!canCreate}
-										onClick={createSpace}
-									>
-										Create
-									</Button>
-									<Button
-										type="button"
-										size="sm"
-										variant="ghost"
-										onClick={() => setIsCreateOpen(false)}
-									>
-										Cancel
-									</Button>
-								</div>
-							</PopoverContent>
-						</Popover>
-					</SidebarMenuItem>
-				</SidebarMenu>
-			</SidebarGroup>
+					</SidebarMenu>
+				</SidebarGroup>
+			</SortableContext>
 			<AlertDialog
 				open={deleteSpacePath !== null}
 				onOpenChange={(open) => {
@@ -494,6 +515,85 @@ function SpaceIconPicker({
 	);
 }
 
+function SortableSpaceItem({
+	children,
+	id,
+}: {
+	children: React.ReactNode;
+	id: string;
+}) {
+	const {
+		attributes,
+		listeners,
+		setNodeRef: setSortableRef,
+		transform,
+		transition,
+		isDragging,
+	} = useSortable({ id });
+	const { isOver, setNodeRef: setDroppableRef } = useDroppable({
+		id: spaceDropTargetId(id),
+	});
+	const setNodeRef = (node: HTMLDivElement | null) => {
+		setSortableRef(node);
+		setDroppableRef(node);
+	};
+
+	return (
+		<div
+			ref={setNodeRef}
+			style={{
+				transform: CSS.Transform.toString(transform),
+				transition,
+			}}
+			className="touch-none rounded-md data-[dragging=true]:opacity-70 data-[over=true]:bg-sidebar-accent/70"
+			data-dragging={isDragging}
+			data-over={isOver}
+			{...attributes}
+			{...listeners}
+		>
+			{children}
+		</div>
+	);
+}
+
+function SpaceDropMenuItem({
+	isActive,
+	onSelect,
+	space,
+}: {
+	isActive: boolean;
+	onSelect: () => void;
+	space: {
+		title: string;
+		path: string;
+		icon?: React.ReactNode;
+	};
+}) {
+	const { isOver, setNodeRef } = useDroppable({
+		id: spaceDropTargetId(space.path),
+	});
+
+	return (
+		<SidebarGroup>
+			<SidebarMenu>
+				<SidebarMenuItem ref={setNodeRef} data-over={isOver}>
+					<SidebarMenuButton
+						tooltip={space.title}
+						isActive={isActive}
+						className="data-[over=true]:bg-sidebar-accent data-[over=true]:text-sidebar-accent-foreground"
+						onClick={onSelect}
+					>
+						{space.icon}
+						<span>{space.title}</span>
+					</SidebarMenuButton>
+				</SidebarMenuItem>
+			</SidebarMenu>
+		</SidebarGroup>
+	);
+}
+
+const spaceDropTargetId = (path: string) => `drop:${path}`;
+
 const spaceColors = [
 	"#f04438",
 	"#fb6f24",
@@ -504,7 +604,11 @@ const spaceColors = [
 	"#7c5cff",
 	"#d946ef",
 	"#ff4f86",
+	"#e11d48",
 	"#94a3b8",
+	"#64748b",
+	"#1e293b",
+	"#f8fafc",
 ];
 
 const spaceIcons = [
@@ -518,6 +622,14 @@ const spaceIcons = [
 	{ key: "heart", icon: HeartIcon },
 	{ key: "brain", icon: BrainIcon },
 	{ key: "sparkles", icon: SparklesIcon },
+	{ key: "star", icon: StarIcon },
+	{ key: "music", icon: MusicIcon },
+	{ key: "camera", icon: CameraIcon },
+	{ key: "bookmark", icon: BookmarkIcon },
+	{ key: "zap", icon: ZapIcon },
+	{ key: "compass", icon: CompassIcon },
+	{ key: "users", icon: UsersIcon },
+	{ key: "pin", icon: PinIcon },
 ];
 
 const customIconPrefix = "custom:";

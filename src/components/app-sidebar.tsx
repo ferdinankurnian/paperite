@@ -3,6 +3,8 @@
 import {
 	DndContext,
 	type DragEndEvent,
+	DragOverlay,
+	type DragStartEvent,
 	PointerSensor,
 	useDraggable,
 	useDroppable,
@@ -12,6 +14,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { useNavigate } from "@tanstack/react-router";
 import {
+	ArrowUpDownIcon,
 	BookOpenIcon,
 	BrainIcon,
 	BriefcaseBusinessIcon,
@@ -60,6 +63,9 @@ import {
 	ContextMenuContent,
 	ContextMenuItem,
 	ContextMenuSeparator,
+	ContextMenuSub,
+	ContextMenuSubContent,
+	ContextMenuSubTrigger,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import {
@@ -110,6 +116,10 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	expandedFolders: string[];
 	viewMode: "list" | "grid";
 	onViewModeChange: (mode: "list" | "grid") => void;
+	sortOrder: SidebarSortOrder;
+	onSortOrderChange: (order: SidebarSortOrder) => void;
+	customItemOrders: Record<string, string[]>;
+	onReorderItems: (parentPath: string, itemOrder: string[]) => void;
 	onCreateFolder: (parentPath: string) => void;
 	onCreateNote: (parentPath: string) => void;
 	onCreateSpace: (title: string, color: string, icon: string) => void;
@@ -118,6 +128,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
 	onRenameItem: (path: string, title: string) => void;
+	onReorderSpaces: (spaceOrder: string[]) => void;
 	onEditSpace: (
 		path: string,
 		title: string,
@@ -126,6 +137,12 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	) => void;
 	onSelectSpace: (path: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
+};
+
+type DragPreviewItem = {
+	title: string;
+	preview?: string;
+	type: "folder" | "note";
 };
 
 const fallbackUser = {
@@ -200,8 +217,88 @@ function filterWorkspaceItems(
 	return filteredItems;
 }
 
+function sortWorkspaceItems(
+	items: WorkspaceItem[],
+	sortOrder: SidebarSortOrder,
+	customItemOrders: Record<string, string[]>,
+	parentPath: string,
+): WorkspaceItem[] {
+	const withSortedChildren = items.map((item) =>
+		item.type === "folder"
+			? {
+					...item,
+					children: sortWorkspaceItems(
+						item.children,
+						sortOrder,
+						customItemOrders,
+						item.path,
+					),
+				}
+			: item,
+	);
+
+	if (sortOrder === "custom") {
+		return orderItemsByCustomOrder(
+			withSortedChildren,
+			customItemOrders[parentPath],
+		);
+	}
+
+	if (sortOrder === "a-z" || sortOrder === "z-a") {
+		return [...withSortedChildren].sort((first, second) => {
+			const comparison = titleForSort(first).localeCompare(
+				titleForSort(second),
+				undefined,
+				{ sensitivity: "base", numeric: true },
+			);
+
+			return sortOrder === "a-z" ? comparison : -comparison;
+		});
+	}
+
+	const sortedNotes = withSortedChildren
+		.filter((item): item is WorkspaceNote => item.type === "note")
+		.sort((first, second) =>
+			sortOrder === "newest"
+				? second.updatedAt - first.updatedAt
+				: first.updatedAt - second.updatedAt,
+		);
+	let noteIndex = 0;
+
+	return withSortedChildren.map((item) =>
+		item.type === "note" ? sortedNotes[noteIndex++] : item,
+	);
+}
+
+function orderItemsByCustomOrder(
+	items: WorkspaceItem[],
+	customOrder: string[] = [],
+) {
+	if (customOrder.length === 0) return items;
+
+	const originalIndex = new Map(items.map((item, index) => [item.path, index]));
+	const orderIndex = new Map(customOrder.map((path, index) => [path, index]));
+
+	return [...items].sort((first, second) => {
+		const firstOrder = orderIndex.get(first.path) ?? Number.MAX_SAFE_INTEGER;
+		const secondOrder = orderIndex.get(second.path) ?? Number.MAX_SAFE_INTEGER;
+
+		if (firstOrder !== secondOrder) return firstOrder - secondOrder;
+
+		return (
+			(originalIndex.get(first.path) ?? Number.MAX_SAFE_INTEGER) -
+			(originalIndex.get(second.path) ?? Number.MAX_SAFE_INTEGER)
+		);
+	});
+}
+
+function titleForSort(item: WorkspaceItem) {
+	return item.title.trim() || "Untitled";
+}
+
 function NoteTree({
 	activeNotePath,
+	canDragItems,
 	expandedFolders,
 	items,
 	level = 0,
@@ -213,9 +310,13 @@ function NoteTree({
 	onRenameItem,
 	onToggleFolder,
 	parentPath,
+	spaces,
+	spaceIcons,
+	spaceColors,
 	isInbox = false,
 }: {
 	activeNotePath: string | null;
+	canDragItems: boolean;
 	expandedFolders: string[];
 	items: WorkspaceItem[];
 	level?: number;
@@ -227,6 +328,9 @@ function NoteTree({
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
 	parentPath: string;
+	spaces: WorkspaceSpace[];
+	spaceIcons: Record<string, string>;
+	spaceColors: Record<string, string>;
 	isInbox?: boolean;
 }) {
 	const { isOver, setNodeRef } = useDroppable({
@@ -243,6 +347,7 @@ function NoteTree({
 				item.type === "folder" ? (
 					<NoteFolderItem
 						activeNotePath={activeNotePath}
+						canDragItems={canDragItems}
 						expandedFolders={expandedFolders}
 						item={item}
 						key={item.path}
@@ -254,10 +359,14 @@ function NoteTree({
 						onOpenNote={onOpenNote}
 						onRenameItem={onRenameItem}
 						onToggleFolder={onToggleFolder}
+						spaces={spaces}
+						spaceIcons={spaceIcons}
+						spaceColors={spaceColors}
 						isInbox={isInbox}
 					/>
 				) : (
 					<NoteCard
+						canDragItems={canDragItems}
 						isActive={activeNotePath === item.path}
 						item={item}
 						key={item.path}
@@ -265,6 +374,9 @@ function NoteTree({
 						onOpenNote={onOpenNote}
 						onDeleteItem={onDeleteItem}
 						parentPath={parentPath}
+						spaces={spaces}
+						spaceIcons={spaceIcons}
+						spaceColors={spaceColors}
 					/>
 				),
 			)}
@@ -276,12 +388,20 @@ function NoteGrid({
 	items,
 	activeNotePath,
 	onDeleteItem,
+	onMoveItem,
 	onOpenNote,
+	spaces,
+	spaceIcons,
+	spaceColors,
 }: {
 	items: WorkspaceItem[];
 	activeNotePath: string | null;
 	onDeleteItem: (path: string) => void;
+	onMoveItem: (itemPath: string, nextParentPath: string) => void;
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+	spaces: WorkspaceSpace[];
+	spaceIcons: Record<string, string>;
+	spaceColors: Record<string, string>;
 }) {
 	const notes = React.useMemo(
 		() => items.filter((item): item is WorkspaceNote => item.type === "note"),
@@ -310,10 +430,100 @@ function NoteGrid({
 					note={note}
 					isActive={activeNotePath === note.path}
 					onDeleteItem={onDeleteItem}
+					onMoveItem={onMoveItem}
 					onOpenNote={onOpenNote}
+					spaces={spaces}
+					spaceIcons={spaceIcons}
+					spaceColors={spaceColors}
 				/>
 			))}
 		</div>
+	);
+}
+
+function MoveToSpaceMenu({
+	spaces,
+	spaceIcons,
+	spaceColors,
+	notePath,
+	onMove,
+}: {
+	spaces: WorkspaceSpace[];
+	spaceIcons: Record<string, string>;
+	spaceColors: Record<string, string>;
+	notePath: string;
+	onMove: (spacePath: string) => void;
+}) {
+	const [query, setQuery] = React.useState("");
+	const inputRef = React.useRef<HTMLInputElement>(null);
+	const currentSpacePath = notePath.split("/")[0];
+
+	const filtered = React.useMemo(
+		() =>
+			spaces.filter((s) => s.title.toLowerCase().includes(query.toLowerCase())),
+		[spaces, query],
+	);
+
+	return (
+		<ContextMenuSub
+			onOpenChange={(open) => {
+				if (open) {
+					setQuery("");
+					requestAnimationFrame(() => inputRef.current?.focus());
+				}
+			}}
+		>
+			<ContextMenuSubTrigger>
+				<FolderIcon />
+				Move to space
+			</ContextMenuSubTrigger>
+			<ContextMenuSubContent className="w-56 p-0">
+				<div className="flex items-center gap-2 border-b px-2 py-1.5">
+					<SearchIcon className="size-4 shrink-0 text-muted-foreground" />
+					<input
+						ref={inputRef}
+						type="text"
+						placeholder="Search spaces..."
+						value={query}
+						onChange={(e) => setQuery(e.target.value)}
+						className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+						onKeyDown={(e) => {
+							if (e.key === "Enter" && filtered.length === 1) {
+								onMove(filtered[0].path);
+							}
+						}}
+					/>
+				</div>
+				<div className="max-h-64 overflow-y-auto p-1">
+					{filtered.length === 0 ? (
+						<div className="px-2 py-1.5 text-sm text-muted-foreground">
+							No spaces found
+						</div>
+					) : (
+						filtered.map((space) => {
+							const isCurrent = space.path === currentSpacePath;
+							return (
+								<ContextMenuItem
+									key={space.path}
+									disabled={isCurrent}
+									onSelect={() => {
+										if (!isCurrent) onMove(space.path);
+									}}
+								>
+									<SpaceIcon
+										color={spaceColors[space.path]}
+										icon={spaceIcons[space.path]}
+										path={space.path}
+									/>
+									{space.title}
+									{isCurrent && <CheckIcon className="ml-auto" />}
+								</ContextMenuItem>
+							);
+						})
+					)}
+				</div>
+			</ContextMenuSubContent>
+		</ContextMenuSub>
 	);
 }
 
@@ -321,22 +531,42 @@ function NoteGridCard({
 	note,
 	isActive,
 	onDeleteItem,
+	onMoveItem,
 	onOpenNote,
+	spaces,
+	spaceIcons,
+	spaceColors,
 }: {
 	note: WorkspaceNote;
 	isActive: boolean;
 	onDeleteItem: (path: string) => void;
+	onMoveItem: (itemPath: string, nextParentPath: string) => void;
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+	spaces: WorkspaceSpace[];
+	spaceIcons: Record<string, string>;
+	spaceColors: Record<string, string>;
 }) {
 	const [deleteOpen, setDeleteOpen] = React.useState(false);
+	const { attributes, isDragging, listeners, setNodeRef } = useDraggable({
+		id: note.path,
+		data: {
+			preview: note.preview,
+			title: note.title,
+			type: "note" satisfies DragPreviewItem["type"],
+		},
+	});
 	return (
 		<>
 			<ContextMenu>
 				<ContextMenuTrigger asChild>
 					<button
+						ref={setNodeRef}
 						type="button"
-						className="mb-2 w-full break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground"
+						className="mb-2 w-full touch-none break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0"
 						data-active={isActive}
+						data-dragging={isDragging}
+						{...attributes}
+						{...listeners}
 						onClick={() => onOpenNote(note, "preview")}
 						onDoubleClick={() => onOpenNote(note, "pinned")}
 					>
@@ -351,6 +581,14 @@ function NoteGridCard({
 					</button>
 				</ContextMenuTrigger>
 				<ContextMenuContent className="w-44">
+					<MoveToSpaceMenu
+						spaces={spaces}
+						spaceIcons={spaceIcons}
+						spaceColors={spaceColors}
+						notePath={note.path}
+						onMove={(spacePath) => onMoveItem(note.path, spacePath)}
+					/>
+					<ContextMenuSeparator />
 					<ContextMenuItem
 						variant="destructive"
 						onSelect={() => setDeleteOpen(true)}
@@ -385,6 +623,7 @@ function NoteGridCard({
 
 function NoteFolderItem({
 	activeNotePath,
+	canDragItems,
 	expandedFolders,
 	item,
 	level,
@@ -395,9 +634,13 @@ function NoteFolderItem({
 	onOpenNote,
 	onRenameItem,
 	onToggleFolder,
+	spaces,
+	spaceIcons,
+	spaceColors,
 	isInbox = false,
 }: {
 	activeNotePath: string | null;
+	canDragItems: boolean;
 	expandedFolders: string[];
 	item: WorkspaceFolder;
 	level: number;
@@ -408,6 +651,9 @@ function NoteFolderItem({
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
+	spaces: WorkspaceSpace[];
+	spaceIcons: Record<string, string>;
+	spaceColors: Record<string, string>;
 	isInbox?: boolean;
 }) {
 	const isOpen = expandedFolders.includes(item.path);
@@ -421,7 +667,14 @@ function NoteFolderItem({
 		listeners,
 		setNodeRef: setDraggableRef,
 		transform,
-	} = useDraggable({ id: item.path });
+	} = useDraggable({
+		id: item.path,
+		disabled: !canDragItems,
+		data: {
+			title: item.title,
+			type: "folder" satisfies DragPreviewItem["type"],
+		},
+	});
 	const { isOver, setNodeRef: setDroppableRef } = useDroppable({
 		id: dropTargetId(item.path),
 	});
@@ -444,14 +697,14 @@ function NoteFolderItem({
 						>
 							<div
 								ref={setNodeRef}
-								className="group/folder flex items-center gap-1 rounded-md data-[dragging=true]:opacity-60 data-[over=true]:bg-sidebar-accent"
+								className="group/folder flex items-center gap-1 rounded-md data-[dragging=true]:opacity-0 data-[over=true]:bg-sidebar-accent"
 								data-dragging={isDragging}
 								data-over={isOver}
 								style={{
 									transform: CSS.Translate.toString(transform),
 								}}
-								{...attributes}
-								{...listeners}
+								{...(canDragItems ? attributes : {})}
+								{...(canDragItems ? listeners : {})}
 							>
 								<CollapsibleTrigger className="flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md px-2 text-left text-xs font-medium text-sidebar-foreground/80 outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0">
 									<ChevronDownIcon
@@ -495,6 +748,7 @@ function NoteFolderItem({
 									<div className="ml-3.5 border-l border-sidebar-border pl-2">
 										<NoteTree
 											activeNotePath={activeNotePath}
+											canDragItems={canDragItems}
 											expandedFolders={expandedFolders}
 											items={item.children}
 											level={level + 1}
@@ -506,6 +760,9 @@ function NoteFolderItem({
 											onRenameItem={onRenameItem}
 											onToggleFolder={onToggleFolder}
 											parentPath={item.path}
+											spaces={spaces}
+											spaceIcons={spaceIcons}
+											spaceColors={spaceColors}
 											isInbox={isInbox}
 										/>
 									</div>
@@ -640,18 +897,27 @@ function RenameItemDialog({
 }
 
 function NoteCard({
+	canDragItems,
 	item,
 	isActive,
 	onDeleteItem,
+	onMoveItem,
 	onOpenNote,
 	parentPath,
+	spaces,
+	spaceIcons,
+	spaceColors,
 }: {
+	canDragItems: boolean;
 	item: WorkspaceNote;
 	isActive: boolean;
 	onDeleteItem: (path: string) => void;
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
 	parentPath: string;
+	spaces: WorkspaceSpace[];
+	spaceIcons: Record<string, string>;
+	spaceColors: Record<string, string>;
 }) {
 	const [deleteOpen, setDeleteOpen] = React.useState(false);
 	const [infoOpen, setInfoOpen] = React.useState(false);
@@ -660,8 +926,15 @@ function NoteCard({
 		isDragging,
 		listeners,
 		setNodeRef: setDraggableRef,
-		transform,
-	} = useDraggable({ id: item.path });
+	} = useDraggable({
+		id: item.path,
+		disabled: !canDragItems,
+		data: {
+			preview: item.preview,
+			title: item.title,
+			type: "note" satisfies DragPreviewItem["type"],
+		},
+	});
 	const { isOver, setNodeRef: setDroppableRef } = useDroppable({
 		id: noteDropTargetId(item.path, parentPath),
 	});
@@ -680,15 +953,15 @@ function NoteCard({
 					<button
 						ref={setNodeRef}
 						type="button"
-						className="flex w-full touch-none flex-col items-start gap-1.5 rounded-md px-3 py-2.5 text-left text-sm leading-tight whitespace-nowrap outline-none transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0 data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-60 data-[over=true]:bg-sidebar-accent"
+						className={cn(
+							"flex w-full flex-col items-start gap-1.5 rounded-md border border-transparent px-3 py-2.5 text-left text-sm leading-tight whitespace-nowrap outline-none transition-colors hover:border-border/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0 data-[active=true]:border-border/50 data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0 data-[over=true]:bg-sidebar-accent",
+							canDragItems && "touch-none",
+						)}
 						data-active={isActive}
 						data-dragging={isDragging}
 						data-over={isOver}
-						style={{
-							transform: CSS.Translate.toString(transform),
-						}}
-						{...attributes}
-						{...listeners}
+						{...(canDragItems ? attributes : {})}
+						{...(canDragItems ? listeners : {})}
 						onClick={() => onOpenNote(item, "preview")}
 						onDoubleClick={() => onOpenNote(item, "pinned")}
 					>
@@ -709,6 +982,14 @@ function NoteCard({
 						<InfoIcon />
 						Note Info
 					</ContextMenuItem>
+					<ContextMenuSeparator />
+					<MoveToSpaceMenu
+						spaces={spaces}
+						spaceIcons={spaceIcons}
+						spaceColors={spaceColors}
+						notePath={item.path}
+						onMove={(spacePath) => onMoveItem(item.path, spacePath)}
+					/>
 					<ContextMenuSeparator />
 					<ContextMenuItem
 						variant="destructive"
@@ -768,15 +1049,13 @@ function SpaceDropHeader({
 	onCreateNote,
 	onDeleteSpace,
 	onEditSpace,
-	onSelectSpace,
 	spaceColor,
 	spaceIcon,
-	spaceColors,
-	spaceIcons,
-	spaces,
 	spaceTitle,
 	viewMode,
 	onViewModeChange,
+	sortOrder,
+	onSortOrderChange,
 }: {
 	activeSpacePath: string;
 	onCreateFolder: (parentPath: string) => void;
@@ -788,15 +1067,13 @@ function SpaceDropHeader({
 		color: string,
 		icon: string,
 	) => void;
-	onSelectSpace: (path: string) => void;
 	spaceColor?: string;
 	spaceIcon?: string;
-	spaceColors: Record<string, string>;
-	spaceIcons: Record<string, string>;
-	spaces: WorkspaceSpace[];
 	spaceTitle: string;
 	viewMode: "list" | "grid";
 	onViewModeChange: (mode: "list" | "grid") => void;
+	sortOrder: SidebarSortOrder;
+	onSortOrderChange: (order: SidebarSortOrder) => void;
 }) {
 	const { isOver, setNodeRef } = useDroppable({
 		id: dropTargetId(activeSpacePath),
@@ -827,29 +1104,91 @@ function SpaceDropHeader({
 				</DropdownMenuTrigger>
 				<DropdownMenuContent align="start" className="w-56">
 					{isInbox ? (
-						<DropdownMenuSub>
-							<DropdownMenuSubTrigger>
-								<ListIcon className="text-muted-foreground" />
-								<span>View Mode</span>
-							</DropdownMenuSubTrigger>
-							<DropdownMenuSubContent>
-								<DropdownMenuRadioGroup
-									value={viewMode}
-									onValueChange={(v) => onViewModeChange(v as "list" | "grid")}
-								>
-									<DropdownMenuRadioItem value="list">
-										<ListIcon className="text-muted-foreground" />
-										<span>List</span>
-									</DropdownMenuRadioItem>
-									<DropdownMenuRadioItem value="grid">
-										<LayoutDashboardIcon className="text-muted-foreground" />
-										<span>Card</span>
-									</DropdownMenuRadioItem>
-								</DropdownMenuRadioGroup>
-							</DropdownMenuSubContent>
-						</DropdownMenuSub>
+						<>
+							<DropdownMenuSub>
+								<DropdownMenuSubTrigger>
+									<ListIcon className="text-muted-foreground" />
+									<span>View Mode</span>
+								</DropdownMenuSubTrigger>
+								<DropdownMenuSubContent>
+									<DropdownMenuRadioGroup
+										value={viewMode}
+										onValueChange={(v) =>
+											onViewModeChange(v as "list" | "grid")
+										}
+									>
+										<DropdownMenuRadioItem value="list">
+											<ListIcon className="text-muted-foreground" />
+											<span>List</span>
+										</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="grid">
+											<LayoutDashboardIcon className="text-muted-foreground" />
+											<span>Card</span>
+										</DropdownMenuRadioItem>
+									</DropdownMenuRadioGroup>
+								</DropdownMenuSubContent>
+							</DropdownMenuSub>
+							<DropdownMenuSub>
+								<DropdownMenuSubTrigger>
+									<ArrowUpDownIcon className="text-muted-foreground" />
+									<span>Sort by</span>
+								</DropdownMenuSubTrigger>
+								<DropdownMenuSubContent>
+									<DropdownMenuRadioGroup
+										value={sortOrder === "custom" ? "newest" : sortOrder}
+										onValueChange={(v) =>
+											onSortOrderChange(v as SidebarSortOrder)
+										}
+									>
+										<DropdownMenuRadioItem value="newest">
+											<span>Newest</span>
+										</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="oldest">
+											<span>Oldest</span>
+										</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="a-z">
+											<span>A to Z</span>
+										</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="z-a">
+											<span>Z to A</span>
+										</DropdownMenuRadioItem>
+									</DropdownMenuRadioGroup>
+								</DropdownMenuSubContent>
+							</DropdownMenuSub>
+						</>
 					) : (
 						<>
+							<DropdownMenuSub>
+								<DropdownMenuSubTrigger>
+									<ArrowUpDownIcon className="text-muted-foreground" />
+									<span>Sort by</span>
+								</DropdownMenuSubTrigger>
+								<DropdownMenuSubContent>
+									<DropdownMenuRadioGroup
+										value={sortOrder}
+										onValueChange={(v) =>
+											onSortOrderChange(v as SidebarSortOrder)
+										}
+									>
+										<DropdownMenuRadioItem value="newest">
+											<span>Newest</span>
+										</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="oldest">
+											<span>Oldest</span>
+										</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="a-z">
+											<span>A to Z</span>
+										</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="z-a">
+											<span>Z to A</span>
+										</DropdownMenuRadioItem>
+										<DropdownMenuRadioItem value="custom">
+											<span>Custom</span>
+										</DropdownMenuRadioItem>
+									</DropdownMenuRadioGroup>
+								</DropdownMenuSubContent>
+							</DropdownMenuSub>
+							<DropdownMenuSeparator />
 							<DropdownMenuItem
 								onSelect={() =>
 									onEditSpace(
@@ -899,6 +1238,26 @@ function SpaceDropHeader({
 	);
 }
 
+function DragItemPreview({ item }: { item: DragPreviewItem }) {
+	return (
+		<div className="pointer-events-none w-64 rounded-lg border border-border/70 bg-popover px-3 py-2.5 text-popover-foreground shadow-2xl ring-1 ring-black/10">
+			<div className="flex items-center gap-2 text-sm font-medium">
+				{item.type === "folder" ? (
+					<FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
+				) : (
+					<FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+				)}
+				<span className="truncate">{item.title.trim() || "Untitled"}</span>
+			</div>
+			{item.preview ? (
+				<div className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+					{item.preview}
+				</div>
+			) : null}
+		</div>
+	);
+}
+
 export function AppSidebar({
 	activeNotePath,
 	activeSpacePath,
@@ -912,6 +1271,7 @@ export function AppSidebar({
 	onMoveItem,
 	onOpenNote,
 	onRenameItem,
+	onReorderSpaces,
 	onSelectSpace,
 	onToggleFolder,
 	spaceColors,
@@ -919,6 +1279,10 @@ export function AppSidebar({
 	spaces,
 	viewMode,
 	onViewModeChange,
+	sortOrder,
+	onSortOrderChange,
+	customItemOrders,
+	onReorderItems,
 	...props
 }: AppSidebarProps) {
 	const navigate = useNavigate();
@@ -927,11 +1291,27 @@ export function AppSidebar({
 	const [searchQuery, setSearchQuery] = React.useState("");
 	const [notesSheetOpen, setNotesSheetOpen] = React.useState(false);
 	const [tabletLayout, setTabletLayout] = React.useState(false);
+	const [dragPreviewItem, setDragPreviewItem] =
+		React.useState<DragPreviewItem | null>(null);
 	const activeSpace = spaces.find((space) => space.path === activeSpacePath);
 	const visibleChildren = React.useMemo(
 		() => filterWorkspaceItems(activeSpace?.children ?? [], searchQuery),
 		[activeSpace?.children, searchQuery],
 	);
+	const sortedVisibleChildren = React.useMemo(
+		() =>
+			sortWorkspaceItems(
+				visibleChildren,
+				activeSpacePath === "Inbox" && sortOrder === "custom"
+					? "newest"
+					: sortOrder,
+				customItemOrders,
+				activeSpacePath,
+			),
+		[activeSpacePath, customItemOrders, visibleChildren, sortOrder],
+	);
+	const canDragItems = true;
+	const canReorderItems = activeSpacePath !== "Inbox" && sortOrder === "custom";
 	const sensors = useSensors(
 		useSensor(PointerSensor, {
 			activationConstraint: {
@@ -989,176 +1369,258 @@ export function AppSidebar({
 		await navigate({ to: "/login" });
 	};
 
+	const startDraggingItem = ({ active }: DragStartEvent) => {
+		const data = active.data.current as DragPreviewItem | undefined;
+		setDragPreviewItem(data?.title ? data : null);
+	};
+
 	const moveDroppedItem = ({ active, over }: DragEndEvent) => {
+		setDragPreviewItem(null);
 		if (!over) return;
 
 		const itemPath = String(active.id);
-		const nextParentPath = parentPathFromDropTarget(String(over.id));
+		const draggedSpaceIndex = spaces.findIndex(
+			(space) => space.path === itemPath,
+		);
+		if (draggedSpaceIndex !== -1) {
+			const overSpacePath = String(over.id);
+			const otherSpaces = spaces.filter((space) => space.path !== "Inbox");
+			const activeIndex = otherSpaces.findIndex(
+				(space) => space.path === itemPath,
+			);
+			const overIndex = otherSpaces.findIndex(
+				(space) => space.path === overSpacePath,
+			);
+			if (activeIndex === -1 || overIndex === -1 || activeIndex === overIndex) {
+				return;
+			}
+
+			const nextSpaces = [...otherSpaces];
+			const [movedSpace] = nextSpaces.splice(activeIndex, 1);
+			nextSpaces.splice(overIndex, 0, movedSpace);
+			onReorderSpaces(nextSpaces.map((space) => space.path));
+			return;
+		}
+
+		const dropTarget = dropTargetFromId(String(over.id));
+		if (!dropTarget) return;
+
+		if (
+			canReorderItems &&
+			dropTarget.type === "note" &&
+			parentPath(itemPath) === dropTarget.parentPath &&
+			itemPath !== dropTarget.itemPath
+		) {
+			const nextOrder = reorderCustomItemOrder(
+				activeSpace,
+				dropTarget.parentPath,
+				customItemOrders,
+				itemPath,
+				dropTarget.itemPath,
+			);
+			if (nextOrder) onReorderItems(dropTarget.parentPath, nextOrder);
+			return;
+		}
+
+		if (
+			canReorderItems &&
+			dropTarget.type === "list" &&
+			parentPath(itemPath) === dropTarget.parentPath
+		) {
+			const nextOrder = reorderCustomItemOrder(
+				activeSpace,
+				dropTarget.parentPath,
+				customItemOrders,
+				itemPath,
+				null,
+			);
+			if (nextOrder) onReorderItems(dropTarget.parentPath, nextOrder);
+			return;
+		}
+
+		const nextParentPath = dropTarget.parentPath;
 		if (!nextParentPath || itemPath === nextParentPath) return;
 		if (parentPath(itemPath) === nextParentPath) return;
+		if (isSameOrChildPath(itemPath, nextParentPath)) return;
 
 		onMoveItem(itemPath, nextParentPath);
 	};
 
 	return (
 		<>
-			<Sidebar
-				collapsible="icon"
-				forceDesktop
-				forceCollapsed={tabletLayout}
-				wrapperClassName={cn(
-					"paperite-space-sidebar-wrapper",
-					notesSheetOpen && "paperite-space-sidebar-wrapper-open",
-				)}
-				className="paperite-space-sidebar"
-				{...props}
+			<DndContext
+				sensors={sensors}
+				onDragStart={startDraggingItem}
+				onDragEnd={moveDroppedItem}
+				onDragCancel={() => setDragPreviewItem(null)}
 			>
-				<SidebarHeader className="group-data-[collapsible=icon]:p-1 group-data-[collapsible=icon]:pt-3 pb-0">
-					<div className="flex h-10 items-center justify-between px-2 group-data-[collapsible=icon]:h-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
-						<div className="font-brand text-xl text-[#E94C08] group-data-[collapsible=icon]:hidden">
-							Paperite
+				<Sidebar
+					collapsible="icon"
+					forceDesktop
+					forceCollapsed={tabletLayout}
+					wrapperClassName={cn(
+						"paperite-space-sidebar-wrapper",
+						notesSheetOpen && "paperite-space-sidebar-wrapper-open",
+					)}
+					className="paperite-space-sidebar"
+					{...props}
+				>
+					<SidebarHeader className="group-data-[collapsible=icon]:p-1 group-data-[collapsible=icon]:pt-3 pb-0">
+						<div className="flex h-10 items-center justify-between px-2 group-data-[collapsible=icon]:h-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+							<div className="font-brand text-xl text-[#E94C08] group-data-[collapsible=icon]:hidden">
+								Paperite
+							</div>
+							<SidebarTrigger
+								toggleNotesSheet={tabletLayout}
+								className="size-8 rounded-md group-data-[collapsible=icon]:p-2 [&_svg]:size-4"
+							/>
 						</div>
-						<SidebarTrigger
-							toggleNotesSheet={tabletLayout}
-							className="size-8 rounded-md group-data-[collapsible=icon]:p-2 [&_svg]:size-4"
-						/>
-					</div>
-				</SidebarHeader>
-				<SidebarContent>
-					<NavMain
-						activeSpacePath={activeSpacePath}
-						spaces={spaces.map((space) => ({
-							title: space.title,
-							url: "#",
-							path: space.path,
-							icon: (
-								<SpaceIcon
-									color={spaceColors[space.path]}
-									icon={spaceIcons[space.path]}
-									path={space.path}
-								/>
-							),
-						}))}
-						onCreateSpace={onCreateSpace}
-						onDeleteSpace={onDeleteSpace}
-						onEditSpace={onEditSpace}
-						onSelectSpace={onSelectSpace}
-						spaceColorsByPath={spaceColors}
-						spaceIconsByPath={spaceIcons}
-					/>
-				</SidebarContent>
-				<SidebarFooter>
-					<NavUser onLogOut={logOut} user={user} />
-				</SidebarFooter>
-				<SidebarRail />
-			</Sidebar>
-			{tabletLayout && notesSheetOpen ? (
-				<button
-					type="button"
-					aria-label="Close notes sidebar"
-					className="paperite-note-sidebar-backdrop"
-					onClick={() => setNotesSheetOpen(false)}
-				/>
-			) : null}
-			<aside
-				data-open={notesSheetOpen}
-				className="paperite-note-sidebar flex h-full min-h-0 w-80 max-w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
-			>
-				<DndContext sensors={sensors} onDragEnd={moveDroppedItem}>
-					<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
-						<SpaceDropHeader
+					</SidebarHeader>
+					<SidebarContent>
+						<NavMain
 							activeSpacePath={activeSpacePath}
-							spaceTitle={activeSpace?.title ?? "Inbox"}
-							spaceColor={spaceColors[activeSpacePath]}
-							spaceIcon={spaceIcons[activeSpacePath]}
-							onCreateFolder={onCreateFolder}
-							onCreateNote={onCreateNote}
+							spaces={spaces.map((space) => ({
+								title: space.title,
+								url: "#",
+								path: space.path,
+								icon: (
+									<SpaceIcon
+										color={spaceColors[space.path]}
+										icon={spaceIcons[space.path]}
+										path={space.path}
+									/>
+								),
+							}))}
+							onCreateSpace={onCreateSpace}
 							onDeleteSpace={onDeleteSpace}
 							onEditSpace={onEditSpace}
 							onSelectSpace={onSelectSpace}
-							spaceColors={spaceColors}
-							spaceIcons={spaceIcons}
-							spaces={spaces}
-							viewMode={viewMode}
-							onViewModeChange={onViewModeChange}
+							spaceColorsByPath={spaceColors}
+							spaceIconsByPath={spaceIcons}
 						/>
-						<InputGroup className="h-9">
-							<InputGroupAddon>
-								<SearchIcon className="size-4" />
-							</InputGroupAddon>
-							<InputGroupInput
-								value={searchQuery}
-								placeholder="Search..."
-								onChange={(event) => setSearchQuery(event.target.value)}
+					</SidebarContent>
+					<SidebarFooter>
+						<NavUser onLogOut={logOut} user={user} />
+					</SidebarFooter>
+					<SidebarRail />
+				</Sidebar>
+				{tabletLayout && notesSheetOpen ? (
+					<button
+						type="button"
+						aria-label="Close notes sidebar"
+						className="paperite-note-sidebar-backdrop"
+						onClick={() => setNotesSheetOpen(false)}
+					/>
+				) : null}
+				<aside
+					data-open={notesSheetOpen}
+					className="paperite-note-sidebar flex h-full min-h-0 w-80 max-w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
+				>
+					<>
+						<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
+							<SpaceDropHeader
+								activeSpacePath={activeSpacePath}
+								spaceTitle={activeSpace?.title ?? "Inbox"}
+								spaceColor={spaceColors[activeSpacePath]}
+								spaceIcon={spaceIcons[activeSpacePath]}
+								onCreateFolder={onCreateFolder}
+								onCreateNote={onCreateNote}
+								onDeleteSpace={onDeleteSpace}
+								onEditSpace={onEditSpace}
+								viewMode={viewMode}
+								onViewModeChange={onViewModeChange}
+								sortOrder={sortOrder}
+								onSortOrderChange={onSortOrderChange}
 							/>
-						</InputGroup>
-					</SidebarHeader>
-					<SidebarContent className="[mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)] [-webkit-mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)]">
-						<SidebarGroup className="px-3 pt-4 pb-8">
-							<SidebarGroupContent>
-								{activeSpace && visibleChildren.length > 0 ? (
-									viewMode === "grid" && activeSpacePath === "Inbox" ? (
-										<NoteGrid
-											items={visibleChildren}
-											activeNotePath={activeNotePath}
-											onDeleteItem={onDeleteItem}
-											onOpenNote={onOpenNote}
-										/>
+							<InputGroup className="h-9">
+								<InputGroupAddon>
+									<SearchIcon className="size-4" />
+								</InputGroupAddon>
+								<InputGroupInput
+									value={searchQuery}
+									placeholder="Search..."
+									onChange={(event) => setSearchQuery(event.target.value)}
+								/>
+							</InputGroup>
+						</SidebarHeader>
+						<SidebarContent className="[mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)] [-webkit-mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)]">
+							<SidebarGroup className="px-3 pt-4 pb-8">
+								<SidebarGroupContent>
+									{activeSpace && sortedVisibleChildren.length > 0 ? (
+										viewMode === "grid" && activeSpacePath === "Inbox" ? (
+											<NoteGrid
+												items={sortedVisibleChildren}
+												activeNotePath={activeNotePath}
+												onDeleteItem={onDeleteItem}
+												onMoveItem={onMoveItem}
+												onOpenNote={onOpenNote}
+												spaces={spaces}
+												spaceIcons={spaceIcons}
+												spaceColors={spaceColors}
+											/>
+										) : (
+											<NoteTree
+												activeNotePath={activeNotePath}
+												canDragItems={canDragItems}
+												expandedFolders={expandedFolders}
+												items={sortedVisibleChildren}
+												onCreateFolder={onCreateFolder}
+												onCreateNote={onCreateNote}
+												onDeleteItem={onDeleteItem}
+												onMoveItem={onMoveItem}
+												onOpenNote={onOpenNote}
+												onRenameItem={onRenameItem}
+												onToggleFolder={onToggleFolder}
+												parentPath={activeSpacePath}
+												spaces={spaces}
+												spaceIcons={spaceIcons}
+												spaceColors={spaceColors}
+												isInbox={activeSpacePath === "Inbox"}
+											/>
+										)
 									) : (
-										<NoteTree
-											activeNotePath={activeNotePath}
-											expandedFolders={expandedFolders}
-											items={visibleChildren}
-											onCreateFolder={onCreateFolder}
-											onCreateNote={onCreateNote}
-											onDeleteItem={onDeleteItem}
-											onMoveItem={onMoveItem}
-											onOpenNote={onOpenNote}
-											onRenameItem={onRenameItem}
-											onToggleFolder={onToggleFolder}
-											parentPath={activeSpacePath}
-											isInbox={activeSpacePath === "Inbox"}
-										/>
-									)
-								) : (
-									<Empty>
-										<EmptyHeader>
-											<EmptyMedia variant="icon">
-												<FileTextIcon />
-											</EmptyMedia>
-											<EmptyTitle>No notes yet</EmptyTitle>
-											<EmptyDescription>
-												Create a note or drop one into this space.
-											</EmptyDescription>
-										</EmptyHeader>
-										<EmptyContent className="flex-row justify-center">
-											{activeSpacePath !== "Inbox" && (
+										<Empty>
+											<EmptyHeader>
+												<EmptyMedia variant="icon">
+													<FileTextIcon />
+												</EmptyMedia>
+												<EmptyTitle>No notes yet</EmptyTitle>
+												<EmptyDescription>
+													Create a note or drop one into this space.
+												</EmptyDescription>
+											</EmptyHeader>
+											<EmptyContent className="flex-row justify-center">
+												{activeSpacePath !== "Inbox" && (
+													<Button
+														type="button"
+														size="sm"
+														variant="outline"
+														onClick={() => onCreateFolder(activeSpacePath)}
+													>
+														<FolderPlusIcon />
+														New folder
+													</Button>
+												)}
 												<Button
 													type="button"
 													size="sm"
-													variant="outline"
-													onClick={() => onCreateFolder(activeSpacePath)}
+													onClick={() => onCreateNote(activeSpacePath)}
 												>
-													<FolderPlusIcon />
-													New folder
+													<StickyNotePlusIcon />
+													New note
 												</Button>
-											)}
-											<Button
-												type="button"
-												size="sm"
-												onClick={() => onCreateNote(activeSpacePath)}
-											>
-												<StickyNotePlusIcon />
-												New note
-											</Button>
-										</EmptyContent>
-									</Empty>
-								)}
-							</SidebarGroupContent>
-						</SidebarGroup>
-					</SidebarContent>
-				</DndContext>
-			</aside>
+											</EmptyContent>
+										</Empty>
+									)}
+								</SidebarGroupContent>
+							</SidebarGroup>
+						</SidebarContent>
+					</>
+				</aside>
+				<DragOverlay dropAnimation={null}>
+					{dragPreviewItem ? <DragItemPreview item={dragPreviewItem} /> : null}
+				</DragOverlay>
+			</DndContext>
 		</>
 	);
 }
@@ -1170,21 +1632,87 @@ const listDropTargetId = (path: string) => `drop-list:${path}`;
 const noteDropTargetId = (notePath: string, parentPath: string) =>
 	`drop-note:${parentPath}:${notePath}`;
 
-const parentPathFromDropTarget = (id: string) => {
-	if (id.startsWith("drop:")) return id.slice("drop:".length);
-	if (id.startsWith("drop-list:")) return id.slice("drop-list:".length);
+const dropTargetFromId = (id: string) => {
+	if (id.startsWith("drop:")) {
+		return { type: "container" as const, parentPath: id.slice("drop:".length) };
+	}
+	if (id.startsWith("drop-list:")) {
+		return { type: "list" as const, parentPath: id.slice("drop-list:".length) };
+	}
 	if (id.startsWith("drop-note:")) {
 		const value = id.slice("drop-note:".length);
-		const [, notePath] = value.split(/:(.+)/);
-		return notePath ? parentPath(notePath) : null;
+		const [targetParentPath, notePath] = value.split(/:(.+)/);
+		return notePath
+			? {
+					type: "note" as const,
+					parentPath: targetParentPath,
+					itemPath: notePath,
+				}
+			: null;
 	}
 	return null;
+};
+
+const reorderCustomItemOrder = (
+	space: WorkspaceSpace | undefined,
+	targetParentPath: string,
+	customItemOrders: Record<string, string[]>,
+	itemPath: string,
+	targetItemPath: string | null,
+) => {
+	const siblings = workspaceItemsForParent(space, targetParentPath);
+	if (!siblings.some((item) => item.path === itemPath)) return null;
+
+	const currentOrder = orderItemsByCustomOrder(
+		siblings,
+		customItemOrders[targetParentPath],
+	).map((item) => item.path);
+	const withoutItem = currentOrder.filter((path) => path !== itemPath);
+	const targetIndex = targetItemPath
+		? withoutItem.indexOf(targetItemPath)
+		: withoutItem.length;
+
+	if (targetIndex === -1) return null;
+
+	withoutItem.splice(targetIndex, 0, itemPath);
+	return withoutItem;
+};
+
+const workspaceItemsForParent = (
+	space: WorkspaceSpace | undefined,
+	parentPathToFind: string,
+): WorkspaceItem[] => {
+	if (!space) return [];
+	if (space.path === parentPathToFind) return space.children;
+
+	return workspaceItemsForParentInItems(space.children, parentPathToFind);
+};
+
+const workspaceItemsForParentInItems = (
+	items: WorkspaceItem[],
+	parentPathToFind: string,
+): WorkspaceItem[] => {
+	for (const item of items) {
+		if (item.type !== "folder") continue;
+		if (item.path === parentPathToFind) return item.children;
+
+		const children = workspaceItemsForParentInItems(
+			item.children,
+			parentPathToFind,
+		);
+		if (children.length > 0) return children;
+	}
+
+	return [];
 };
 
 const parentPath = (itemPath: string) => {
 	const separatorIndex = itemPath.lastIndexOf("/");
 	return separatorIndex === -1 ? "" : itemPath.slice(0, separatorIndex);
 };
+
+const isSameOrChildPath = (parent: string, child: string) =>
+	child === parent || child.startsWith(`${parent}/`);
 
 const spaceIconMap = {
 	cloud: CloudIcon,
