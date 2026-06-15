@@ -737,7 +737,21 @@ const googleDriveRequest = async (url, options = {}) => {
 	});
 
 	if (!response.ok) {
-		throw new Error(`google drive request failed: ${response.status}`);
+		let details = "";
+		try {
+			const errorBody = await response.json();
+			details =
+				errorBody.error?.message ||
+				errorBody.error_description ||
+				errorBody.error ||
+				"";
+		} catch {
+			details = await response.text().catch(() => "");
+		}
+
+		throw new Error(
+			`google drive request failed: ${response.status}${details ? ` (${details})` : ""}`,
+		);
 	}
 
 	return response;
