@@ -57,6 +57,10 @@ const workspaceWatchers = new Map();
 let indexDb;
 let legacyMigrationPromise;
 const legacyPathMigrations = new Map();
+let googleDriveAutoSyncTimer;
+let googleDriveAutoSyncInterval;
+let googleDriveAutoSyncInFlight = false;
+let googleDriveAutoSyncRequested = false;
 
 const workspaceRoot = () => path.join(app.getPath("documents"), "Paperite");
 const statePath = () => path.join(workspaceRoot(), ".paperite", "state.json");
@@ -691,6 +695,7 @@ const completeGoogleDriveConnection = async (callbackUrl) => {
 
 	await writeGoogleDriveToken(token);
 	mainWindow?.webContents.send("sync:changed");
+	scheduleGoogleDriveAutoSync(1_000);
 };
 
 const getGoogleDriveAccessToken = async () => {
@@ -1015,6 +1020,36 @@ const syncGoogleDrive = async () => {
 	}
 
 	return { ok: true, uploaded, downloaded };
+};
+
+const runGoogleDriveAutoSync = async () => {
+	if (googleDriveAutoSyncInFlight) {
+		googleDriveAutoSyncRequested = true;
+		return;
+	}
+
+	googleDriveAutoSyncInFlight = true;
+	googleDriveAutoSyncRequested = false;
+
+	try {
+		const result = await syncGoogleDrive();
+		if (result?.ok) mainWindow?.webContents.send("sync:changed");
+	} catch (error) {
+		mainWindow?.webContents.send("sync:changed", {
+			error:
+				error instanceof Error ? error.message : "Google Drive sync failed",
+		});
+	} finally {
+		googleDriveAutoSyncInFlight = false;
+		if (googleDriveAutoSyncRequested) scheduleGoogleDriveAutoSync(5_000);
+	}
+};
+
+const scheduleGoogleDriveAutoSync = (delayMs = 10_000) => {
+	clearTimeout(googleDriveAutoSyncTimer);
+	googleDriveAutoSyncTimer = setTimeout(() => {
+		runGoogleDriveAutoSync().catch(() => undefined);
+	}, delayMs);
 };
 
 const revisionKey = (notePath) => Buffer.from(notePath).toString("base64url");
@@ -1910,6 +1945,7 @@ ipcMain.handle("sync:set-google-drive-enabled", async (_event, enabled) => {
 	const preferences = await writeSyncPreferences({
 		googleDriveEnabled: enabled === true,
 	});
+	if (preferences.googleDriveEnabled) scheduleGoogleDriveAutoSync(1_000);
 	return { ok: true, googleDriveEnabled: preferences.googleDriveEnabled };
 });
 
@@ -1924,6 +1960,7 @@ ipcMain.handle("sync:run-google-drive", async () => {
 });
 
 ipcMain.handle("sync:disconnect-google-drive", async () => {
+	clearTimeout(googleDriveAutoSyncTimer);
 	await deleteGoogleDriveToken();
 	mainWindow?.webContents.send("sync:changed");
 	return { ok: true };
@@ -1972,7 +2009,9 @@ ipcMain.handle("notes:read-y-note", async (_event, notePath) => {
 ipcMain.handle("notes:write-y-update", async (_event, notePath, update) => {
 	await ensureWorkspace();
 	await migrateLegacyNotes();
-	return appendLocalYNoteUpdate(notePath, update);
+	const result = await appendLocalYNoteUpdate(notePath, update);
+	scheduleGoogleDriveAutoSync();
+	return result;
 });
 
 ipcMain.handle(
@@ -1980,7 +2019,9 @@ ipcMain.handle(
 	async (_event, notePath, content) => {
 		await ensureWorkspace();
 		await migrateLegacyNotes();
-		return writeDerivedNoteContent(notePath, content);
+		const result = await writeDerivedNoteContent(notePath, content);
+		scheduleGoogleDriveAutoSync();
+		return result;
 	},
 );
 
@@ -2027,6 +2068,7 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	await writeLocalYNoteSnapshot(normalizedPath, normalizedContent);
 	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
 	await getIndexedNote(normalizedPath, stats);
+	scheduleGoogleDriveAutoSync();
 	return { ok: true };
 });
 
@@ -2044,6 +2086,7 @@ ipcMain.handle("notes:create-note", async (_event, parentPath, title) => {
 		serializeNoteContent(content),
 	);
 	await writeLocalYNoteSnapshot(notePath, content);
+	scheduleGoogleDriveAutoSync();
 	return { path: notePath, title: noteTitle };
 });
 
@@ -2204,6 +2247,11 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 app.whenReady().then(() => {
 	refreshWorkspaceWatchers().catch(() => undefined);
 	createWindow();
+	scheduleGoogleDriveAutoSync(5_000);
+	googleDriveAutoSyncInterval = setInterval(
+		() => scheduleGoogleDriveAutoSync(1_000),
+		5 * 60_000,
+	);
 	const startupAuthCallback = getProtocolCallbackArg(process.argv);
 	if (startupAuthCallback) handleProtocolCallback(startupAuthCallback);
 	app.on("activate", () => {
@@ -2231,6 +2279,8 @@ app.on("open-url", (event, url) => {
 });
 
 app.on("window-all-closed", () => {
+	clearTimeout(googleDriveAutoSyncTimer);
+	clearInterval(googleDriveAutoSyncInterval);
 	for (const watcher of workspaceWatchers.values()) watcher.close();
 	workspaceWatchers.clear();
 	indexDb?.close();
