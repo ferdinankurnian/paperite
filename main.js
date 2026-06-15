@@ -771,12 +771,8 @@ const googleDriveRequest = async (url, options = {}) => {
 };
 
 const googleDriveAppPropertiesForNote = (manifest, extraProperties) => ({
-	provider: "paperite",
 	noteId: manifest.noteId,
 	...extraProperties,
-	...(Buffer.byteLength(`path${manifest.path}`, "utf8") <= 124
-		? { path: manifest.path }
-		: {}),
 });
 
 const listGoogleDriveFiles = async (noteId) => {
