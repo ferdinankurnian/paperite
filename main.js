@@ -61,6 +61,11 @@ let googleDriveAutoSyncTimer;
 let googleDriveAutoSyncInterval;
 let googleDriveAutoSyncInFlight = false;
 let googleDriveAutoSyncRequested = false;
+const googleDriveSyncState = {
+	syncing: false,
+	lastSyncedAt: null,
+	lastError: null,
+};
 
 const workspaceRoot = () => path.join(app.getPath("documents"), "Paperite");
 const statePath = () => path.join(workspaceRoot(), ".paperite", "state.json");
@@ -562,6 +567,9 @@ const getGoogleDriveStatus = async () => {
 		connected: Boolean(token?.refresh_token || token?.access_token),
 		enabled: preferences.googleDriveEnabled,
 		expiresAt: token?.expires_at ?? null,
+		syncing: googleDriveSyncState.syncing,
+		lastSyncedAt: googleDriveSyncState.lastSyncedAt,
+		lastError: googleDriveSyncState.lastError,
 	};
 };
 
@@ -1022,6 +1030,25 @@ const syncGoogleDrive = async () => {
 	return { ok: true, uploaded, downloaded };
 };
 
+const runGoogleDriveSync = async () => {
+	googleDriveSyncState.syncing = true;
+	googleDriveSyncState.lastError = null;
+	mainWindow?.webContents.send("sync:changed");
+
+	try {
+		const result = await syncGoogleDrive();
+		if (result?.ok) googleDriveSyncState.lastSyncedAt = Date.now();
+		return result;
+	} catch (error) {
+		googleDriveSyncState.lastError =
+			error instanceof Error ? error.message : "Google Drive sync failed";
+		throw error;
+	} finally {
+		googleDriveSyncState.syncing = false;
+		mainWindow?.webContents.send("sync:changed");
+	}
+};
+
 const runGoogleDriveAutoSync = async () => {
 	if (googleDriveAutoSyncInFlight) {
 		googleDriveAutoSyncRequested = true;
@@ -1032,8 +1059,7 @@ const runGoogleDriveAutoSync = async () => {
 	googleDriveAutoSyncRequested = false;
 
 	try {
-		const result = await syncGoogleDrive();
-		if (result?.ok) mainWindow?.webContents.send("sync:changed");
+		await runGoogleDriveSync();
 	} catch (error) {
 		mainWindow?.webContents.send("sync:changed", {
 			error:
@@ -1956,7 +1982,7 @@ ipcMain.handle("sync:connect-google-drive", async () => {
 
 ipcMain.handle("sync:run-google-drive", async () => {
 	await ensureWorkspace();
-	return syncGoogleDrive();
+	return runGoogleDriveSync();
 });
 
 ipcMain.handle("sync:disconnect-google-drive", async () => {
