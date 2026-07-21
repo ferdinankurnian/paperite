@@ -1,17 +1,27 @@
 import { Clerk } from "@clerk/clerk-js";
 
 const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
+let clerkInstance: Clerk | undefined;
 
-if (!publishableKey) {
-	throw new Error("missing VITE_CLERK_PUBLISHABLE_KEY");
-}
+const getClerk = () => {
+	if (!publishableKey) {
+		throw new Error("missing VITE_CLERK_PUBLISHABLE_KEY");
+	}
 
-export const clerk = new Clerk(publishableKey);
+	clerkInstance ??= new Clerk(publishableKey);
+	return clerkInstance;
+};
+
+export const clerk = new Proxy({} as Clerk, {
+	get(_target, property, receiver) {
+		return Reflect.get(getClerk(), property, receiver);
+	},
+});
 
 let clerkLoadPromise: Promise<void> | undefined;
 
 export const loadClerk = () => {
-	clerkLoadPromise ??= clerk.load();
+	clerkLoadPromise ??= getClerk().load();
 	return clerkLoadPromise;
 };
 

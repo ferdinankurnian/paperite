@@ -3,10 +3,39 @@
 interface ImportMetaEnv {
 	readonly VITE_CLERK_AUTH_CALLBACK_URL?: string;
 	readonly VITE_CONVEX_URL?: string;
+	readonly PAPERITE_WEB?: boolean;
+	readonly PAPERITE_API_URL?: string;
 }
 
 interface Window {
 	electron?: {
+		platform: {
+			isMacOS: boolean;
+		};
+		onAppMenuAction: (callback: (action: string) => void) => () => void;
+		onAppMenuFormat: (
+			callback: (
+				command:
+					| "bold"
+					| "italic"
+					| "underline"
+					| "strike"
+					| "highlight"
+					| "quote"
+					| "code-block"
+					| "typography-heading-1"
+					| "typography-heading-2"
+					| "typography-heading-3"
+					| "typography-body"
+					| "bullet-list"
+					| "ordered-list"
+					| "task-list"
+					| "align-left"
+					| "align-center"
+					| "align-right"
+					| "align-justify",
+			) => void,
+		) => () => void;
 		onAuthCallback: (callback: (url: string) => void) => () => void;
 		onWorkspaceChanged: (callback: () => void) => () => void;
 		onPopoutClosed: (callback: (notePath: string) => void) => () => void;
@@ -70,6 +99,12 @@ interface Window {
 				content: NoteContent,
 			) => Promise<{ ok: true }>;
 			writeNote: (path: string, content: NoteContent) => Promise<{ ok: true }>;
+			saveImage: (
+				notePath: string,
+				imageDataUrl: string,
+				filename: string,
+			) => Promise<{ path: string }>;
+			getAssetUrl: (notePath: string, assetPath: string) => Promise<string>;
 			createNote: (
 				parentPath: string,
 				title: string,
@@ -88,6 +123,20 @@ interface Window {
 			popoutNote: (path: string) => Promise<{ ok: true }>;
 			readAppState: () => Promise<Partial<PaperiteAppState>>;
 			writeAppState: (state: PaperiteAppState) => Promise<{ ok: true }>;
+			exportFile: (
+				content: string,
+				format: "markdown" | "txt",
+				defaultFilename: string,
+			) => Promise<{ canceled: boolean; filePath?: string }>;
+			getDefaultExportDir: () => Promise<string>;
+		};
+		trash: {
+			getContents: () => Promise<TrashNote[]>;
+			restoreItem: (
+				trashNoteName: string,
+			) => Promise<{ ok: true; path: string }>;
+			permanentDeleteItem: (trashNoteName: string) => Promise<{ ok: true }>;
+			emptyTrash: () => Promise<{ ok: true }>;
 		};
 	};
 }
@@ -161,6 +210,14 @@ type NoteSearchResult = {
 	rank: number;
 };
 
+type TrashNote = {
+	title: string;
+	trashPath: string;
+	originalPath: string;
+	deletedAt: number;
+	preview: string;
+};
+
 type OpenNoteTab = {
 	path: string;
 	title: string;
@@ -168,6 +225,8 @@ type OpenNoteTab = {
 };
 
 type SidebarSortOrder = "newest" | "oldest" | "a-z" | "z-a" | "custom";
+
+type SpacePreviewMode = "global" | "show" | "hide";
 
 type PaperiteAppState = {
 	openTabs: OpenNoteTab[];
@@ -178,8 +237,11 @@ type PaperiteAppState = {
 	spaceIcons: Record<string, string>;
 	spaceOrder: string[];
 	spaceSortOrders: Record<string, SidebarSortOrder>;
+	spacePreviewModes: Record<string, SpacePreviewMode>;
 	customItemOrders: Record<string, string[]>;
 	readOnlyNotes: Record<string, boolean>;
 	sidebarOpen: boolean;
 	inboxViewMode: "list" | "grid";
+	showNotePreview: boolean;
+	closeButtonOnly: boolean;
 };

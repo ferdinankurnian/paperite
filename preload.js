@@ -1,6 +1,21 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electron", {
+	platform: {
+		isMacOS:
+			process.platform === "darwin" ||
+			process.argv.includes("--paperite-macos-layout=1"),
+	},
+	onAppMenuAction: (cb) => {
+		const listener = (_, action) => cb(action);
+		ipcRenderer.on("app-menu:action", listener);
+		return () => ipcRenderer.removeListener("app-menu:action", listener);
+	},
+	onAppMenuFormat: (cb) => {
+		const listener = (_, command) => cb(command);
+		ipcRenderer.on("app-menu:format", listener);
+		return () => ipcRenderer.removeListener("app-menu:format", listener);
+	},
 	onAuthCallback: (cb) => {
 		const listener = (_, url) => cb(url);
 		ipcRenderer.on("auth-callback", listener);
@@ -57,6 +72,10 @@ contextBridge.exposeInMainWorld("electron", {
 			ipcRenderer.invoke("notes:write-derived-note", path, content),
 		writeNote: (path, content) =>
 			ipcRenderer.invoke("notes:write-note", path, content),
+		saveImage: (notePath, imageDataUrl, filename) =>
+			ipcRenderer.invoke("notes:save-image", notePath, imageDataUrl, filename),
+		getAssetUrl: (notePath, assetPath) =>
+			ipcRenderer.invoke("notes:get-asset-url", notePath, assetPath),
 		createNote: (parentPath, title) =>
 			ipcRenderer.invoke("notes:create-note", parentPath, title),
 		createFolder: (parentPath, title) =>
@@ -71,5 +90,21 @@ contextBridge.exposeInMainWorld("electron", {
 		readAppState: () => ipcRenderer.invoke("notes:read-app-state"),
 		writeAppState: (state) =>
 			ipcRenderer.invoke("notes:write-app-state", state),
+		exportFile: (content, format, defaultFilename) =>
+			ipcRenderer.invoke("notes:export-file", {
+				content,
+				format,
+				defaultFilename,
+			}),
+		getDefaultExportDir: () =>
+			ipcRenderer.invoke("notes:get-default-export-dir"),
+	},
+	trash: {
+		getContents: () => ipcRenderer.invoke("notes:get-trash-contents"),
+		restoreItem: (trashNoteName) =>
+			ipcRenderer.invoke("notes:restore-item", trashNoteName),
+		permanentDeleteItem: (trashNoteName) =>
+			ipcRenderer.invoke("notes:permanent-delete-item", trashNoteName),
+		emptyTrash: () => ipcRenderer.invoke("notes:empty-trash"),
 	},
 });

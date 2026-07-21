@@ -151,6 +151,124 @@ function textToNoteContent(text: string): NoteContent {
 	};
 }
 
+export function noteContentToMarkdown(content: NoteContent): string {
+	const parts: string[] = [];
+	collectMarkdown(normalizeNoteContent(content), parts);
+	return (
+		parts
+			.join("")
+			.replace(/\n{3,}/g, "\n\n")
+			.trimEnd() + "\n"
+	);
+}
+
+function collectMarkdown(node: NoteContent, parts: string[]) {
+	const type = node.type;
+
+	if (type === "heading") {
+		const level = (node.attrs?.level as number) ?? 1;
+		parts.push("#".repeat(level) + " ");
+	}
+
+	if (type === "blockquote") {
+		parts.push("> ");
+	}
+
+	if (type === "codeBlock") {
+		const lang = node.attrs?.language ?? "";
+		parts.push(`\`\`\`${lang}\n`);
+	}
+
+	if (type === "bulletList") {
+		// handled by children
+	}
+
+	if (type === "orderedList") {
+		// handled by children
+	}
+
+	if (type === "listItem" || type === "taskItem") {
+		const parent = (parts as any)._listParent as
+			| "bullet"
+			| "ordered"
+			| undefined;
+		if (parent === "ordered") {
+			// index tracked externally would be better, but simple approach:
+			parts.push("1. ");
+		} else if (type === "taskItem") {
+			const checked = node.attrs?.checked === true;
+			parts.push(`- [${checked ? "x" : " "}] `);
+		} else {
+			parts.push("- ");
+		}
+	}
+
+	if (type === "horizontalRule") {
+		parts.push("---\n");
+		return;
+	}
+
+	if (type === "hardBreak") {
+		parts.push("  \n");
+		return;
+	}
+
+	if (type === "image") {
+		const src = node.attrs?.src ?? "";
+		const alt = (node.attrs?.alt as string) ?? "";
+		parts.push(`![${alt}](${src})`);
+		return;
+	}
+
+	if (typeof node.text === "string") {
+		let text = node.text;
+		if (node.marks) {
+			for (const mark of node.marks) {
+				if (mark.type === "bold") text = `**${text}**`;
+				else if (mark.type === "italic") text = `*${text}*`;
+				else if (mark.type === "code") text = `\`${text}\``;
+				else if (mark.type === "strike") text = `~~${text}~~`;
+				else if (mark.type === "link") {
+					const href = mark.attrs?.href ?? "";
+					text = `[${text}](${href})`;
+				}
+			}
+		}
+		parts.push(text);
+	}
+
+	if (node.content) {
+		const isList = type === "bulletList" || type === "orderedList";
+		const prevLen = parts.length;
+
+		for (const child of node.content) {
+			if (isList) {
+				(parts as any)._listParent =
+					type === "orderedList" ? "ordered" : "bullet";
+			}
+			collectMarkdown(child, parts);
+		}
+
+		if (isList) {
+			(parts as any)._listParent = undefined;
+		}
+
+		// add spacing after block nodes
+		if (
+			type === "paragraph" ||
+			type === "heading" ||
+			type === "blockquote" ||
+			type === "codeBlock"
+		) {
+			if (parts.length > prevLen) parts.push("\n");
+		}
+	}
+
+	if (type === "codeBlock") {
+		parts.push("```\n");
+	}
+}
+
 function isNoteContent(content: unknown): content is NoteContent {
 	return isRecord(content) && typeof content.type === "string";
 }
