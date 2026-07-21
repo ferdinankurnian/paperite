@@ -6,8 +6,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
-	BookOpenIcon,
 	BookmarkIcon,
+	BookOpenIcon,
 	BrainIcon,
 	BriefcaseBusinessIcon,
 	CameraIcon,
@@ -25,13 +25,20 @@ import {
 	PlusIcon,
 	SparklesIcon,
 	StarIcon,
-	UsersIcon,
 	Trash2Icon,
 	UploadIcon,
+	UsersIcon,
 	XIcon,
 	ZapIcon,
 } from "lucide-react";
-import { type ChangeEvent, type DragEvent, useRef, useState } from "react";
+import {
+	type ChangeEvent,
+	type DragEvent,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -70,8 +77,14 @@ import {
 	SidebarMenuAction,
 	SidebarMenuButton,
 	SidebarMenuItem,
+	useSidebar,
 } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+	HoverCard,
+	HoverCardContent,
+	HoverCardTrigger,
+} from "@/components/ui/hover-card";
 
 export function NavMain({
 	activeSpacePath,
@@ -103,6 +116,7 @@ export function NavMain({
 	}[];
 }) {
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
+	const { state: sidebarState, isMobile: sidebarIsMobile } = useSidebar();
 	const [spaceName, setSpaceName] = useState("");
 	const [spaceColor, setSpaceColor] = useState(spaceColors[0]);
 	const [spaceIcon, setSpaceIcon] = useState(spaceIcons[0].key);
@@ -111,9 +125,10 @@ export function NavMain({
 	const [editSpaceColor, setEditSpaceColor] = useState(spaceColors[0]);
 	const [editSpaceIcon, setEditSpaceIcon] = useState(spaceIcons[0].key);
 	const [deleteSpacePath, setDeleteSpacePath] = useState<string | null>(null);
-	const editOpenedAt = useRef(0);
 	const createIconInputRef = useRef<HTMLInputElement>(null);
 	const editIconInputRef = useRef<HTMLInputElement>(null);
+	const createIconIsCustom = getCustomIcon(spaceIcon) !== null;
+	const editIconIsCustom = getCustomIcon(editSpaceIcon) !== null;
 	const inbox = spaces.find((space) => space.path === "Inbox");
 	const otherSpaces = spaces.filter((space) => space.path !== "Inbox");
 	const canCreate = spaceName.trim().length > 0;
@@ -129,15 +144,26 @@ export function NavMain({
 		setIsCreateOpen(false);
 	};
 
-	const openEdit = (space: { title: string; path: string }) => {
-		window.setTimeout(() => {
-			editOpenedAt.current = Date.now();
+	const openEdit = useCallback(
+		(space: { title: string; path: string }) => {
 			setEditSpacePath(space.path);
 			setEditSpaceName(space.title);
 			setEditSpaceColor(spaceColorsByPath[space.path] ?? spaceColors[0]);
 			setEditSpaceIcon(spaceIconsByPath[space.path] ?? spaceIcons[0].key);
-		}, 0);
-	};
+		},
+		[spaceColorsByPath, spaceIconsByPath],
+	);
+
+	useEffect(() => {
+		const handler = (event: Event) => {
+			const path = (event as CustomEvent).detail as string;
+			const space = spaces.find((s) => s.path === path);
+			if (space) openEdit(space);
+		};
+		window.addEventListener("paperite:open-edit-space", handler);
+		return () =>
+			window.removeEventListener("paperite:open-edit-space", handler);
+	}, [spaces, openEdit]);
 
 	const editSpace = () => {
 		if (!editSpacePath || !editSpaceName.trim()) return;
@@ -181,20 +207,33 @@ export function NavMain({
 							<SortableSpaceItem key={space.path} id={space.path}>
 								<SidebarMenuItem>
 									<ContextMenu>
-										<ContextMenuTrigger asChild>
-											<SidebarMenuButton
-												tooltip={space.title}
-												isActive={activeSpacePath === space.path}
-												onClick={() => onSelectSpace(space.path)}
+										<HoverCard openDelay={200} closeDelay={0}>
+											<ContextMenuTrigger asChild>
+												<HoverCardTrigger asChild>
+													<SidebarMenuButton
+														isActive={activeSpacePath === space.path}
+														onClick={() => onSelectSpace(space.path)}
+													>
+														{space.icon}
+														<span>{space.title}</span>
+													</SidebarMenuButton>
+												</HoverCardTrigger>
+											</ContextMenuTrigger>
+											<HoverCardContent
+												side="right"
+												align="center"
+												hidden={
+													sidebarState !== "collapsed" || sidebarIsMobile
+												}
+												className="w-auto px-2.5 py-1.5 text-xs"
 											>
-												{space.icon}
-												<span>{space.title}</span>
-											</SidebarMenuButton>
-										</ContextMenuTrigger>
+												{space.title}
+											</HoverCardContent>
+										</HoverCard>
 										<ContextMenuContent className="w-44">
 											<ContextMenuItem onSelect={() => openEdit(space)}>
 												<PencilIcon className="text-muted-foreground" />
-												<span>Rename Space</span>
+												<span>Edit Space</span>
 											</ContextMenuItem>
 											<ContextMenuSeparator />
 											<ContextMenuItem
@@ -206,22 +245,16 @@ export function NavMain({
 											</ContextMenuItem>
 										</ContextMenuContent>
 									</ContextMenu>
-									<Popover
-										open={editSpacePath === space.path}
-										onOpenChange={(open) => {
-											if (open) return;
-											if (Date.now() - editOpenedAt.current < 250) return;
-											setEditSpacePath(null);
-										}}
-									>
+									<Popover open={editSpacePath === space.path}>
+										<PopoverAnchor asChild>
+											<div className="absolute inset-0 pointer-events-none" />
+										</PopoverAnchor>
 										<DropdownMenu>
 											<DropdownMenuTrigger asChild>
-												<PopoverAnchor asChild>
-													<SidebarMenuAction showOnHover>
-														<MoreHorizontalIcon />
-														<span className="sr-only">More</span>
-													</SidebarMenuAction>
-												</PopoverAnchor>
+												<SidebarMenuAction showOnHover>
+													<MoreHorizontalIcon />
+													<span className="sr-only">More</span>
+												</SidebarMenuAction>
 											</DropdownMenuTrigger>
 											<DropdownMenuContent
 												className="w-44 rounded-lg"
@@ -246,17 +279,7 @@ export function NavMain({
 												</DropdownMenuItem>
 											</DropdownMenuContent>
 										</DropdownMenu>
-										<PopoverContent
-											side="right"
-											align="start"
-											className="w-56"
-											onEscapeKeyDown={() => setEditSpacePath(null)}
-											onInteractOutside={(event) => {
-												if (Date.now() - editOpenedAt.current < 250) {
-													event.preventDefault();
-												}
-											}}
-										>
+										<PopoverContent side="right" align="start" className="w-56">
 											<Input
 												autoFocus
 												value={editSpaceName}
@@ -276,24 +299,26 @@ export function NavMain({
 												onChooseUpload={() => editIconInputRef.current?.click()}
 												onSelect={setEditSpaceIcon}
 											/>
-											<div className="space-y-2">
-												<div className="text-xs text-muted-foreground">
-													Color
+											{!editIconIsCustom ? (
+												<div className="space-y-2">
+													<div className="text-xs text-muted-foreground">
+														Color
+													</div>
+													<div className="grid grid-cols-7 gap-2">
+														{spaceColors.map((color) => (
+															<button
+																type="button"
+																key={color}
+																aria-label={`Use ${color}`}
+																data-active={editSpaceColor === color}
+																className="size-5 rounded-full ring-offset-2 ring-offset-popover data-[active=true]:ring-2 data-[active=true]:ring-ring"
+																style={{ backgroundColor: color }}
+																onClick={() => setEditSpaceColor(color)}
+															/>
+														))}
+													</div>
 												</div>
-												<div className="grid grid-cols-7 gap-2">
-													{spaceColors.map((color) => (
-														<button
-															type="button"
-															key={color}
-															aria-label={`Use ${color}`}
-															data-active={editSpaceColor === color}
-															className="size-5 rounded-full ring-offset-2 ring-offset-popover data-[active=true]:ring-2 data-[active=true]:ring-ring"
-															style={{ backgroundColor: color }}
-															onClick={() => setEditSpaceColor(color)}
-														/>
-													))}
-												</div>
-											</div>
+											) : null}
 											<div className="grid grid-cols-2 gap-2">
 												<Button
 													type="button"
@@ -321,15 +346,24 @@ export function NavMain({
 						))}
 						<SidebarMenuItem>
 							<Popover open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-								<PopoverTrigger asChild>
-									<SidebarMenuButton
-										tooltip="Add Space"
-										className="text-sidebar-foreground/70"
+								<HoverCard openDelay={200} closeDelay={0}>
+									<PopoverTrigger asChild>
+										<HoverCardTrigger asChild>
+											<SidebarMenuButton className="text-sidebar-foreground/70">
+												<PlusIcon className="text-sidebar-foreground/70" />
+												<span>Add Space</span>
+											</SidebarMenuButton>
+										</HoverCardTrigger>
+									</PopoverTrigger>
+									<HoverCardContent
+										side="right"
+										align="center"
+										hidden={sidebarState !== "collapsed" || sidebarIsMobile}
+										className="w-auto px-2.5 py-1.5 text-xs"
 									>
-										<PlusIcon className="text-sidebar-foreground/70" />
-										<span>Add Space</span>
-									</SidebarMenuButton>
-								</PopoverTrigger>
+										Add Space
+									</HoverCardContent>
+								</HoverCard>
 								<PopoverContent side="right" align="start" className="w-56">
 									<Input
 										autoFocus
@@ -347,22 +381,24 @@ export function NavMain({
 										onChooseUpload={() => createIconInputRef.current?.click()}
 										onSelect={setSpaceIcon}
 									/>
-									<div className="space-y-2">
-										<div className="text-xs text-muted-foreground">Color</div>
-										<div className="grid grid-cols-7 gap-2">
-											{spaceColors.map((color) => (
-												<button
-													type="button"
-													key={color}
-													aria-label={`Use ${color}`}
-													data-active={spaceColor === color}
-													className="size-5 rounded-full ring-offset-2 ring-offset-popover data-[active=true]:ring-2 data-[active=true]:ring-ring"
-													style={{ backgroundColor: color }}
-													onClick={() => setSpaceColor(color)}
-												/>
-											))}
+									{!createIconIsCustom ? (
+										<div className="space-y-2">
+											<div className="text-xs text-muted-foreground">Color</div>
+											<div className="grid grid-cols-7 gap-2">
+												{spaceColors.map((color) => (
+													<button
+														type="button"
+														key={color}
+														aria-label={`Use ${color}`}
+														data-active={spaceColor === color}
+														className="size-5 rounded-full ring-offset-2 ring-offset-popover data-[active=true]:ring-2 data-[active=true]:ring-ring"
+														style={{ backgroundColor: color }}
+														onClick={() => setSpaceColor(color)}
+													/>
+												))}
+											</div>
 										</div>
-									</div>
+									) : null}
 									<div className="grid grid-cols-2 gap-2">
 										<Button
 											type="button"
@@ -572,20 +608,32 @@ function SpaceDropMenuItem({
 	const { isOver, setNodeRef } = useDroppable({
 		id: spaceDropTargetId(space.path),
 	});
+	const { state: sidebarState, isMobile } = useSidebar();
 
 	return (
 		<SidebarGroup>
 			<SidebarMenu>
 				<SidebarMenuItem ref={setNodeRef} data-over={isOver}>
-					<SidebarMenuButton
-						tooltip={space.title}
-						isActive={isActive}
-						className="data-[over=true]:bg-sidebar-accent data-[over=true]:text-sidebar-accent-foreground"
-						onClick={onSelect}
-					>
-						{space.icon}
-						<span>{space.title}</span>
-					</SidebarMenuButton>
+					<HoverCard openDelay={200} closeDelay={0}>
+						<HoverCardTrigger asChild>
+							<SidebarMenuButton
+								isActive={isActive}
+								className="data-[over=true]:bg-sidebar-accent data-[over=true]:text-sidebar-accent-foreground"
+								onClick={onSelect}
+							>
+								{space.icon}
+								<span>{space.title}</span>
+							</SidebarMenuButton>
+						</HoverCardTrigger>
+						<HoverCardContent
+							side="right"
+							align="center"
+							hidden={sidebarState !== "collapsed" || isMobile}
+							className="w-auto px-2.5 py-1.5 text-xs"
+						>
+							{space.title}
+						</HoverCardContent>
+					</HoverCard>
 				</SidebarMenuItem>
 			</SidebarMenu>
 		</SidebarGroup>

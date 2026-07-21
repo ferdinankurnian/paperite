@@ -5,6 +5,14 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+	define: {
+		"import.meta.env.BETA_PAPERITE": JSON.stringify(
+			process.env.BETA_PAPERITE === "1",
+		),
+		"import.meta.env.PAPERITE_WEB": JSON.stringify(
+			process.env.PAPERITE_WEB === "1",
+		),
+	},
 	base: "./",
 	resolve: {
 		alias: {

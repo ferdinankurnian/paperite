@@ -4,7 +4,14 @@ const http = require("node:http");
 const nodeCrypto = require("node:crypto");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
-const { app, BrowserWindow, ipcMain, shell } = require("electron");
+const {
+	app,
+	BrowserWindow,
+	ipcMain,
+	Menu,
+	shell,
+	dialog,
+} = require("electron");
 const Y = require("yjs");
 
 let keytar;
@@ -49,6 +56,9 @@ const loadLocalEnv = () => {
 loadLocalEnv();
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
+const shouldUseMacChrome = process.platform === "darwin";
+const shouldSimulateMacChrome = process.env.IS_MACOS === "1";
+const shouldUseMacLayout = shouldUseMacChrome || shouldSimulateMacChrome;
 let mainWindow; // hoist ke luar
 const popoutWindows = new Map(); // key: notePath, value: BrowserWindow
 let pendingAuthCallbackUrl;
@@ -68,6 +78,9 @@ const googleDriveSyncState = {
 };
 
 const workspaceRoot = () => path.join(app.getPath("documents"), "Paperite");
+const trashRoot = () => path.join(workspaceRoot(), "Trash");
+const trashMetaPath = () => path.join(trashRoot(), ".trash-meta.json");
+const TRASH_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const statePath = () => path.join(workspaceRoot(), ".paperite", "state.json");
 const indexPath = () => path.join(workspaceRoot(), ".paperite", "index.sqlite");
 const revisionsRoot = () =>
@@ -108,9 +121,85 @@ const resolveWorkspacePath = (relativePath = "") => {
 
 const ensureWorkspace = async () => {
 	await fs.mkdir(path.join(workspaceRoot(), "Inbox"), { recursive: true });
+	await fs.mkdir(trashRoot(), { recursive: true });
 	await fs.mkdir(path.dirname(statePath()), { recursive: true });
 	await fs.mkdir(revisionsRoot(), { recursive: true });
 	await fs.mkdir(syncNotesRoot(), { recursive: true });
+};
+
+const readTrashMeta = async () => {
+	try {
+		return JSON.parse(await fs.readFile(trashMetaPath(), "utf8"));
+	} catch {
+		return {};
+	}
+};
+
+const writeTrashMeta = async (meta) => {
+	await writeFileAtomic(trashMetaPath(), JSON.stringify(meta, null, 2));
+};
+
+const purgeOldTrashItems = async () => {
+	try {
+		await ensureWorkspace();
+		const trashMeta = await readTrashMeta();
+		const now = Date.now();
+		let changed = false;
+
+		for (const [name, meta] of Object.entries(trashMeta)) {
+			if (now - meta.deletedAt > TRASH_RETENTION_MS) {
+				await fs
+					.rm(path.join(trashRoot(), name), { recursive: true, force: true })
+					.catch(() => {});
+				delete trashMeta[name];
+				changed = true;
+			}
+		}
+
+		if (changed) await writeTrashMeta(trashMeta);
+	} catch (error) {
+		console.error("[paperite] trash auto-purge failed:", error);
+	}
+};
+
+const scanTrashDirectory = async () => {
+	const trashMeta = await readTrashMeta();
+	const entries = await fs.readdir(trashRoot(), { withFileTypes: true });
+	const notes = [];
+
+	for (const entry of entries) {
+		if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+
+		const metaEntry = trashMeta[entry.name];
+		if (!metaEntry) continue;
+
+		try {
+			const manifestPath = path.join(
+				trashRoot(),
+				entry.name,
+				noteManifestFilename,
+			);
+			const stats = await fs.stat(manifestPath);
+			const rawContent = await fs.readFile(manifestPath, "utf8");
+			const content = normalizeNoteContent(JSON.parse(rawContent.trim()));
+			const title =
+				readNoteTitle(content) || toNoteTitle(entry.name) || "Untitled";
+			const preview = toNotePreviewFromContent(content);
+
+			notes.push({
+				title,
+				trashPath: `Trash/${entry.name}`,
+				originalPath: metaEntry.originalPath,
+				deletedAt: metaEntry.deletedAt,
+				preview,
+			});
+		} catch {
+			// Skip entries that can't be read
+		}
+	}
+
+	notes.sort((a, b) => b.deletedAt - a.deletedAt);
+	return notes;
 };
 
 const writeFileAtomic = async (targetPath, content) => {
@@ -1681,7 +1770,12 @@ const listWorkspace = async () => {
 	});
 	const spaces = await Promise.all(
 		rootEntries
-			.filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+			.filter(
+				(entry) =>
+					entry.isDirectory() &&
+					!entry.name.startsWith(".") &&
+					entry.name !== "Trash",
+			)
 			.sort((first, second) => {
 				if (first.name === "Inbox") return -1;
 				if (second.name === "Inbox") return 1;
@@ -1819,19 +1913,165 @@ const isAppUrl = (url) => {
 	return url.startsWith("file://");
 };
 
-const createWindow = () => {
-	mainWindow = new BrowserWindow({
-		width: 800,
-		height: 600,
-		minWidth: 420,
-		minHeight: 520,
-		frame: false,
-		title: "Paperite",
-		backgroundColor: "#171717",
-		webPreferences: {
-			preload: require("node:path").join(__dirname, "preload.js"),
+const sendToFocusedWindow = (channel, payload) => {
+	const window = BrowserWindow.getFocusedWindow() ?? mainWindow;
+	window?.webContents.send(channel, payload);
+};
+
+const createWindowOptions = ({ width, height, minWidth, minHeight }) => ({
+	width,
+	height,
+	minWidth,
+	minHeight,
+	...(shouldUseMacChrome ? { titleBarStyle: "hiddenInset" } : { frame: false }),
+	title: "Paperite",
+	backgroundColor: "#171717",
+	webPreferences: {
+		preload: require("node:path").join(__dirname, "preload.js"),
+		additionalArguments: [
+			`--paperite-macos-layout=${shouldUseMacLayout ? "1" : "0"}`,
+		],
+	},
+});
+
+const createApplicationMenu = () => {
+	const template = [
+		...(shouldUseMacChrome
+			? [
+					{
+						label: app.name,
+						submenu: [
+							{ role: "about" },
+							{ type: "separator" },
+							{ role: "services" },
+							{ type: "separator" },
+							{ role: "hide" },
+							{ role: "hideOthers" },
+							{ role: "unhide" },
+							{ type: "separator" },
+							{ role: "quit" },
+						],
+					},
+				]
+			: []),
+		{
+			label: "File",
+			submenu: [
+				{
+					label: "New Note",
+					accelerator: "CommandOrControl+N",
+					click: () => sendToFocusedWindow("app-menu:action", "create-note"),
+				},
+				{
+					label: "New Folder",
+					accelerator: "CommandOrControl+Shift+N",
+					click: () => sendToFocusedWindow("app-menu:action", "create-folder"),
+				},
+				{ type: "separator" },
+				{
+					label: "Note setup...",
+					accelerator: "CommandOrControl+,",
+					click: () => sendToFocusedWindow("app-menu:action", "note-setup"),
+				},
+				{ type: "separator" },
+				shouldUseMacChrome ? { role: "close" } : { role: "quit" },
+			],
 		},
-	});
+		{
+			label: "Edit",
+			submenu: [
+				{ role: "undo" },
+				{ role: "redo" },
+				{ type: "separator" },
+				{ role: "cut" },
+				{ role: "copy" },
+				{ role: "paste" },
+				{ type: "separator" },
+				{ role: "selectAll" },
+			],
+		},
+		{
+			label: "View",
+			submenu: [
+				{
+					label: "Toggle Zen Mode",
+					accelerator: "CommandOrControl+Shift+Z",
+					click: () =>
+						sendToFocusedWindow("app-menu:action", "toggle-zen-mode"),
+				},
+				{ type: "separator" },
+				{ role: "toggleDevTools" },
+				{ type: "separator" },
+				{ role: "reload" },
+				{ role: "forceReload" },
+			],
+		},
+		{
+			label: "Format",
+			submenu: [
+				...[
+					"typography-heading-1",
+					"typography-heading-2",
+					"typography-heading-3",
+					"typography-body",
+				].map((command) => ({
+					label: command.replace("typography-", "").replaceAll("-", " "),
+					click: () => sendToFocusedWindow("app-menu:format", command),
+				})),
+				{ type: "separator" },
+				{
+					label: "Bold",
+					accelerator: "CommandOrControl+B",
+					click: () => sendToFocusedWindow("app-menu:format", "bold"),
+				},
+				{
+					label: "Italic",
+					accelerator: "CommandOrControl+I",
+					click: () => sendToFocusedWindow("app-menu:format", "italic"),
+				},
+				{
+					label: "Underline",
+					accelerator: "CommandOrControl+U",
+					click: () => sendToFocusedWindow("app-menu:format", "underline"),
+				},
+				{
+					label: "Strikethrough",
+					accelerator: "CommandOrControl+Shift+X",
+					click: () => sendToFocusedWindow("app-menu:format", "strike"),
+				},
+				{ type: "separator" },
+				...[
+					"highlight",
+					"quote",
+					"code-block",
+					"align-left",
+					"align-center",
+					"align-right",
+					"align-justify",
+					"bullet-list",
+					"ordered-list",
+					"task-list",
+				].map((command) => ({
+					label: command.replaceAll("-", " "),
+					click: () => sendToFocusedWindow("app-menu:format", command),
+				})),
+			],
+		},
+		{ role: "windowMenu" },
+	];
+
+	Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+};
+
+const createWindow = () => {
+	mainWindow = new BrowserWindow(
+		createWindowOptions({
+			width: 800,
+			height: 600,
+			minWidth: 420,
+			minHeight: 520,
+		}),
+	);
 
 	mainWindow.webContents.on("will-navigate", (event, url) => {
 		if (isAppUrl(url)) return;
@@ -2097,6 +2337,45 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	return { ok: true };
 });
 
+ipcMain.handle(
+	"notes:save-image",
+	async (_event, notePath, imageDataUrl, filename) => {
+		await ensureWorkspace();
+		const normalizedPath = currentNotePath(notePath);
+		await ensureNoteDirectory(normalizedPath);
+
+		const match = imageDataUrl.match(/^data:image\/(\w+);base64,(.+)$/);
+		if (!match) throw new Error("Invalid image data URL");
+
+		const ext = match[1] === "jpeg" ? "jpg" : match[1];
+		const base64Data = match[2];
+		const buffer = Buffer.from(base64Data, "base64");
+
+		const safeName = filename
+			? filename.replace(/[^a-zA-Z0-9._-]/g, "_").replace(/\.[^.]+$/, "")
+			: "image";
+		const assetFilename = `${safeName}-${crypto.randomUUID()}.${ext}`;
+		const assetDir = resolveWorkspacePath(noteAssetsPath(normalizedPath));
+		await fs.mkdir(assetDir, { recursive: true });
+		const assetPath = path.join(assetDir, assetFilename);
+		await fs.writeFile(assetPath, buffer);
+
+		return { path: `${noteAssetsDirectoryName}/${assetFilename}` };
+	},
+);
+
+ipcMain.handle(
+	"notes:get-asset-url",
+	async (_event, notePath, assetRelativePath) => {
+		const normalizedPath = currentNotePath(notePath);
+		const absolutePath = path.join(
+			resolveWorkspacePath(toPosixRelativePath(normalizedPath)),
+			assetRelativePath,
+		);
+		return `file://${absolutePath}`;
+	},
+);
+
 ipcMain.handle("notes:create-note", async (_event, parentPath, title) => {
 	await ensureWorkspace();
 	const noteTitle = title?.trim() || "Untitled";
@@ -2126,6 +2405,7 @@ ipcMain.handle("notes:create-folder", async (_event, parentPath, title) => {
 ipcMain.handle("notes:create-space", async (_event, title) => {
 	await ensureWorkspace();
 	const spaceName = title.trim() || "Untitled";
+	if (spaceName === "Trash") throw new Error("'Trash' is a reserved name");
 	const spacePath = await uniquePath("", spaceName);
 	await fs.mkdir(resolveWorkspacePath(spacePath), { recursive: true });
 	return { path: spacePath, title: path.basename(spacePath) };
@@ -2192,10 +2472,136 @@ ipcMain.handle("notes:delete-item", async (_event, itemPath) => {
 	await ensureWorkspace();
 	await migrateLegacyNotes();
 	const current = currentNotePath(itemPath);
+
+	// Prevent deleting the Trash directory itself
+	if (current === "Trash" || current.startsWith("Trash/")) {
+		return { ok: true };
+	}
+
 	const deletedNotes = await collectDeletedNotes(current);
 	await appendTombstones(deletedNotes);
-	await fs.rm(resolveWorkspacePath(current), { recursive: true, force: true });
+
+	// Move each note directory to Trash (flatten)
+	const trashMeta = await readTrashMeta();
+
+	for (const notePath of deletedNotes) {
+		const sourceDir = resolveWorkspacePath(notePath);
+		const noteName = path.basename(notePath);
+		let destName = noteName;
+		let suffix = 1;
+
+		// Handle name collision in Trash
+		while (
+			trashMeta[destName] ||
+			(await fs
+				.access(path.join(trashRoot(), destName))
+				.then(() => true)
+				.catch(() => false))
+		) {
+			destName = `${noteName}-${suffix}`;
+			suffix++;
+		}
+
+		const destPath = path.join(trashRoot(), destName);
+		await fs.rename(sourceDir, destPath);
+		trashMeta[destName] = {
+			originalPath: notePath,
+			deletedAt: Date.now(),
+		};
+	}
+
+	await writeTrashMeta(trashMeta);
+
+	// If it was a folder (not a note), remove the empty directory
+	if (!(await isNoteDirectory(current))) {
+		await fs
+			.rm(resolveWorkspacePath(current), { recursive: true, force: true })
+			.catch(() => {});
+	}
+
 	await deleteIndexedPath(current);
+	return { ok: true };
+});
+
+ipcMain.handle("notes:get-trash-contents", async () => {
+	await ensureWorkspace();
+	return scanTrashDirectory();
+});
+
+ipcMain.handle("notes:restore-item", async (_event, trashNoteName) => {
+	await ensureWorkspace();
+	const trashMeta = await readTrashMeta();
+	const metaEntry = trashMeta[trashNoteName];
+
+	if (!metaEntry) throw new Error("note not found in trash");
+
+	const sourcePath = path.join(trashRoot(), trashNoteName);
+	const originalPath = metaEntry.originalPath;
+	const originalAbsPath = resolveWorkspacePath(originalPath);
+
+	// Ensure parent directory exists
+	await fs.mkdir(path.dirname(originalAbsPath), { recursive: true });
+
+	// Handle name collision at original location
+	let destPath = originalAbsPath;
+	let suffix = 1;
+	while (
+		await fs
+			.access(destPath)
+			.then(() => true)
+			.catch(() => false)
+	) {
+		const parsed = path.parse(originalAbsPath);
+		destPath = path.join(parsed.dir, `${parsed.name}-${suffix}${parsed.ext}`);
+		suffix++;
+	}
+
+	await fs.rename(sourcePath, destPath);
+
+	// Update metadata
+	delete trashMeta[trashNoteName];
+	await writeTrashMeta(trashMeta);
+
+	// Re-index the restored note
+	const restoredRelativePath = toPosixRelativePath(
+		path.relative(workspaceRoot(), destPath),
+	);
+	try {
+		const stats = await fs.stat(resolveNoteContentPath(restoredRelativePath));
+		await getIndexedNote(restoredRelativePath, stats);
+	} catch {
+		// Note might not be indexable, that's ok
+	}
+
+	return { ok: true, path: restoredRelativePath };
+});
+
+ipcMain.handle("notes:permanent-delete-item", async (_event, trashNoteName) => {
+	await ensureWorkspace();
+	const trashMeta = await readTrashMeta();
+
+	const sourcePath = path.join(trashRoot(), trashNoteName);
+	await fs.rm(sourcePath, { recursive: true, force: true });
+
+	delete trashMeta[trashNoteName];
+	await writeTrashMeta(trashMeta);
+
+	return { ok: true };
+});
+
+ipcMain.handle("notes:empty-trash", async () => {
+	await ensureWorkspace();
+
+	const entries = await fs.readdir(trashRoot(), { withFileTypes: true });
+	for (const entry of entries) {
+		if (entry.name.startsWith(".")) continue;
+		await fs
+			.rm(path.join(trashRoot(), entry.name), { recursive: true, force: true })
+			.catch(() => {});
+	}
+
+	await writeTrashMeta({});
+
 	return { ok: true };
 });
 
@@ -2215,6 +2621,39 @@ ipcMain.handle("notes:write-app-state", async (_event, state) => {
 	return { ok: true };
 });
 
+ipcMain.handle(
+	"notes:export-file",
+	async (_event, { content, format, defaultFilename }) => {
+		const ext = format === "markdown" ? "md" : "txt";
+		const defaultName = defaultFilename
+			? `${defaultFilename}.${ext}`
+			: `note.${ext}`;
+
+		const result = await dialog.showSaveDialog({
+			defaultPath: path.join(app.getPath("documents"), defaultName),
+			filters: [
+				{
+					name: format === "markdown" ? "Markdown" : "Text",
+					extensions: [ext],
+				},
+				{ name: "All Files", extensions: ["*"] },
+			],
+		});
+
+		if (result.canceled || !result.filePath) {
+			return { canceled: true };
+		}
+
+		await fs.writeFile(result.filePath, content, "utf-8");
+
+		return { canceled: false, filePath: result.filePath };
+	},
+);
+
+ipcMain.handle("notes:get-default-export-dir", () => {
+	return app.getPath("documents");
+});
+
 ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 	await ensureWorkspace();
 	await migrateLegacyNotes();
@@ -2228,18 +2667,14 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 		}
 	}
 
-	const popout = new BrowserWindow({
-		width: 600,
-		height: 700,
-		minWidth: 380,
-		minHeight: 400,
-		frame: false,
-		title: "Paperite",
-		backgroundColor: "#171717",
-		webPreferences: {
-			preload: require("node:path").join(__dirname, "preload.js"),
-		},
-	});
+	const popout = new BrowserWindow(
+		createWindowOptions({
+			width: 600,
+			height: 700,
+			minWidth: 380,
+			minHeight: 400,
+		}),
+	);
 
 	popoutWindows.set(normalizedPath, popout);
 
@@ -2269,7 +2704,9 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 	return { ok: true };
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+	createApplicationMenu();
+	await purgeOldTrashItems();
 	refreshWorkspaceWatchers().catch(() => undefined);
 	createWindow();
 	scheduleGoogleDriveAutoSync(5_000);

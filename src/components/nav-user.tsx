@@ -1,11 +1,13 @@
 import {
 	ChevronsUpDownIcon,
 	CloudIcon,
+	FileTextIcon,
 	KeyboardIcon,
 	LaptopIcon,
 	LogOutIcon,
 	MoonIcon,
 	PaletteIcon,
+	PanelTopIcon,
 	RotateCcwIcon,
 	SearchIcon,
 	SettingsIcon,
@@ -81,16 +83,25 @@ const themes = [
 export function NavUser({
 	onLogOut,
 	user,
+	showNotePreview,
+	closeButtonOnly,
+	onSetShowNotePreview,
+	onSetCloseButtonOnly,
 }: {
 	onLogOut: () => void | Promise<void>;
 	user: {
 		name: string;
 		avatar: string;
 	};
+	showNotePreview: boolean;
+	closeButtonOnly: boolean;
+	onSetShowNotePreview: (show: boolean) => void;
+	onSetCloseButtonOnly: (closeButtonOnly: boolean) => void;
 }) {
 	const { isMobile } = useSidebar();
 	const { theme, setTheme } = useTheme();
 	const shortcutSettings = useKeyboardShortcuts();
+	const betaEnabled = import.meta.env.BETA_PAPERITE;
 	const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 	const [activeTab, setActiveTab] = useState<
@@ -118,10 +129,7 @@ export function NavUser({
 								size="lg"
 								className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
 							>
-								<Avatar className="size-8 rounded-lg">
-									<AvatarImage src={user.avatar} alt={user.name} />
-									<AvatarFallback className="rounded-lg">IY</AvatarFallback>
-								</Avatar>
+								<UserAvatar user={user} />
 								<div className="grid flex-1 text-left text-sm leading-tight">
 									<span className="truncate font-medium">{user.name}</span>
 									<span className="truncate text-xs">Free Plan</span>
@@ -137,10 +145,7 @@ export function NavUser({
 						>
 							<DropdownMenuLabel className="p-0 font-normal">
 								<div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-									<Avatar className="size-8 rounded-lg">
-										<AvatarImage src={user.avatar} alt={user.name} />
-										<AvatarFallback className="rounded-lg">IY</AvatarFallback>
-									</Avatar>
+									<UserAvatar user={user} />
 									<div className="grid flex-1 text-left text-sm leading-tight">
 										<span className="truncate font-medium">{user.name}</span>
 										<span className="truncate text-xs">Free Plan</span>
@@ -183,16 +188,20 @@ export function NavUser({
 									))}
 								</TabsList>
 							</Tabs>
-							<DropdownMenuSeparator />
-							<DropdownMenuItem
-								onSelect={(event) => {
-									event.preventDefault();
-									setIsLogoutDialogOpen(true);
-								}}
-							>
-								<LogOutIcon />
-								Log out
-							</DropdownMenuItem>
+							{betaEnabled ? (
+								<>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										onSelect={(event) => {
+											event.preventDefault();
+											setIsLogoutDialogOpen(true);
+										}}
+									>
+										<LogOutIcon />
+										Log out
+									</DropdownMenuItem>
+								</>
+							) : null}
 						</DropdownMenuContent>
 					</DropdownMenu>
 				</SidebarMenuItem>
@@ -231,15 +240,17 @@ export function NavUser({
 								<CloudIcon className="size-4" />
 								Sync
 							</Button>
-							<Button
-								type="button"
-								variant={activeTab === "account" ? "secondary" : "ghost"}
-								onClick={() => setActiveTab("account")}
-								className="w-full justify-start"
-							>
-								<UserRoundIcon className="size-4" />
-								Account
-							</Button>
+							{betaEnabled ? (
+								<Button
+									type="button"
+									variant={activeTab === "account" ? "secondary" : "ghost"}
+									onClick={() => setActiveTab("account")}
+									className="w-full justify-start"
+								>
+									<UserRoundIcon className="size-4" />
+									Account
+								</Button>
+							) : null}
 						</aside>
 						<div className="min-w-0 overflow-y-auto p-5 sm:p-6">
 							{activeTab === "general" && (
@@ -280,9 +291,45 @@ export function NavUser({
 											</TabsList>
 										</Tabs>
 									</section>
+									<section className="mt-4 rounded-xl bg-muted/45 p-4">
+										<div className="flex items-center justify-between">
+											<div className="flex items-center gap-2">
+												<FileTextIcon className="size-4 text-muted-foreground" />
+												<div>
+													<h3 className="text-sm font-medium">Note previews</h3>
+													<p className="text-xs text-muted-foreground">
+														Show note content previews in the sidebar.
+													</p>
+												</div>
+											</div>
+											<Switch
+												checked={showNotePreview}
+												onCheckedChange={onSetShowNotePreview}
+											/>
+										</div>
+									</section>
+									<section className="mt-4 rounded-xl bg-muted/45 p-4">
+										<div className="flex items-center justify-between gap-4">
+											<div className="flex items-center gap-2">
+												<PanelTopIcon className="size-4 text-muted-foreground" />
+												<div>
+													<h3 className="text-sm font-medium">
+														Close button only
+													</h3>
+													<p className="text-xs text-muted-foreground">
+														Hide minimize and maximize from the custom titlebar.
+													</p>
+												</div>
+											</div>
+											<Switch
+												checked={closeButtonOnly}
+												onCheckedChange={onSetCloseButtonOnly}
+											/>
+										</div>
+									</section>
 								</>
 							)}
-							{activeTab === "account" && (
+							{betaEnabled && activeTab === "account" && (
 								<>
 									<DialogHeader className="mb-5 gap-1">
 										<DialogTitle className="text-lg">Account</DialogTitle>
@@ -292,9 +339,9 @@ export function NavUser({
 									</DialogHeader>
 									<section className="rounded-xl bg-muted/45 p-4">
 										<div className="flex items-center gap-3">
-											<Avatar className="size-10 rounded-lg">
+											<Avatar className="size-10 rounded-full">
 												<AvatarImage src={user.avatar} alt={user.name} />
-												<AvatarFallback className="rounded-lg">
+												<AvatarFallback className="rounded-full">
 													{user.name
 														.split(" ")
 														.map((n) => n[0])
@@ -382,6 +429,17 @@ export function NavUser({
 				</AlertDialogContent>
 			</AlertDialog>
 		</>
+	);
+}
+
+function UserAvatar({ user }: { user: { name: string; avatar: string } }) {
+	return (
+		<Avatar className="size-8 rounded-full after:hidden">
+			<AvatarImage src={user.avatar} alt={user.name} />
+			<AvatarFallback className="rounded-full">
+				<UserRoundIcon className="size-4" />
+			</AvatarFallback>
+		</Avatar>
 	);
 }
 
@@ -792,54 +850,60 @@ function SyncSettings() {
 						</p>
 					) : null}
 				</section>
-				<section className="rounded-xl bg-muted/45 p-4">
-					<div className="flex items-start justify-between gap-3">
-						<div className="flex items-center gap-2">
-							<CloudIcon className="size-4 text-muted-foreground" />
-							<div>
-								<h3 className="text-sm font-medium">Cloud</h3>
-								<p className="text-xs text-muted-foreground">
-									Shared spaces backend for collaboration.
-								</p>
+				{import.meta.env.BETA_PAPERITE && (
+					<section className="rounded-xl bg-muted/45 p-4">
+						<div className="flex items-start justify-between gap-3">
+							<div className="flex items-center gap-2">
+								<CloudIcon className="size-4 text-muted-foreground" />
+								<div>
+									<h3 className="text-sm font-medium">Cloud</h3>
+									<p className="text-xs text-muted-foreground">
+										Shared spaces backend for collaboration.
+									</p>
+								</div>
 							</div>
+							<StatusPill
+								active={convex?.configured === true}
+								label={convex?.configured ? "Configured" : "Missing URL"}
+							/>
 						</div>
-						<StatusPill
-							active={convex?.configured === true}
-							label={convex?.configured ? "Configured" : "Missing URL"}
-						/>
-					</div>
-					<div className="mt-4 flex gap-2">
-						<Input
-							value={sharedSpaceName}
-							onChange={(event) => setSharedSpaceName(event.target.value)}
-							placeholder="Shared space name"
-							disabled={!convex?.configured || busyAction !== null}
-						/>
-						<Button
-							type="button"
-							size="sm"
-							disabled={
-								!convex?.configured ||
-								!sharedSpaceName.trim() ||
-								busyAction !== null
-							}
-							onClick={() =>
-								runAction("create-shared-space", () =>
-									createSharedSpace(sharedSpaceName.trim()),
-								)
-							}
-						>
-							{busyAction === "create-shared-space" ? "Creating..." : "Create"}
-						</Button>
-					</div>
-					<p className="mt-2 text-xs text-muted-foreground">
-						This creates the Cloud shared space record. Shared note routing UI
-						comes next.
-					</p>
-					{cloudMessage ? (
-						<p className="mt-2 text-xs text-muted-foreground">{cloudMessage}</p>
-					) : null}
-				</section>
+						<div className="mt-4 flex gap-2">
+							<Input
+								value={sharedSpaceName}
+								onChange={(event) => setSharedSpaceName(event.target.value)}
+								placeholder="Shared space name"
+								disabled={!convex?.configured || busyAction !== null}
+							/>
+							<Button
+								type="button"
+								size="sm"
+								disabled={
+									!convex?.configured ||
+									!sharedSpaceName.trim() ||
+									busyAction !== null
+								}
+								onClick={() =>
+									runAction("create-shared-space", () =>
+										createSharedSpace(sharedSpaceName.trim()),
+									)
+								}
+							>
+								{busyAction === "create-shared-space"
+									? "Creating..."
+									: "Create"}
+							</Button>
+						</div>
+						<p className="mt-2 text-xs text-muted-foreground">
+							This creates the Cloud shared space record. Shared note routing UI
+							comes next.
+						</p>
+						{cloudMessage ? (
+							<p className="mt-2 text-xs text-muted-foreground">
+								{cloudMessage}
+							</p>
+						) : null}
+					</section>
+				)}
 			</div>
 		</>
 	);

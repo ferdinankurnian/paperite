@@ -1,4 +1,7 @@
+import { useRouterState } from "@tanstack/react-router";
+import { CloudAlert, CloudCheck, CloudOff, CloudSync } from "lucide-react";
 import { useEffect, useState } from "react";
+import { ExportQueue } from "@/components/export-queue";
 import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
 import {
 	HoverCard,
@@ -51,6 +54,10 @@ type EditorFormatCommand =
 export function AppTitlebar() {
 	const [title, setTitle] = useState(() => document.title || fallbackTitle);
 	const [zenMode, setZenMode] = useState(false);
+	const [closeButtonOnly, setCloseButtonOnly] = useState(false);
+	const location = useRouterState({ select: (s) => s.location });
+	const isLoginPage = location.pathname === "/login";
+	const isMacOS = window.electron?.platform.isMacOS ?? false;
 
 	useEffect(() => {
 		const syncTitle = () => setTitle(document.title || fallbackTitle);
@@ -69,31 +76,72 @@ export function AppTitlebar() {
 			}
 		};
 
+		const handleControlsChange = (
+			event: CustomEvent<{ closeButtonOnly: boolean }>,
+		) => {
+			setCloseButtonOnly(event.detail.closeButtonOnly);
+		};
+
 		window.addEventListener("paperite:title-change", syncTitle);
+		const removeAppMenuActionListener = window.electron?.onAppMenuAction(
+			(action: string) => {
+				window.dispatchEvent(new Event(`paperite:${action}`));
+			},
+		);
+		const removeAppMenuFormatListener = window.electron?.onAppMenuFormat(
+			(command: EditorFormatCommand) => {
+				window.dispatchEvent(
+					new CustomEvent("paperite:editor-format", {
+						detail: { command },
+					}),
+				);
+			},
+		);
 		window.addEventListener(
 			"paperite:toggle-zen-mode",
 			toggleZenMode as EventListener,
 		);
+		window.addEventListener(
+			"paperite:window-controls-change",
+			handleControlsChange as EventListener,
+		);
 
 		return () => {
 			observer.disconnect();
+			removeAppMenuActionListener?.();
+			removeAppMenuFormatListener?.();
 			window.removeEventListener("paperite:title-change", syncTitle);
 			window.removeEventListener(
 				"paperite:toggle-zen-mode",
 				toggleZenMode as EventListener,
+			);
+			window.removeEventListener(
+				"paperite:window-controls-change",
+				handleControlsChange as EventListener,
 			);
 		};
 	}, []);
 
 	return (
 		<header
-			className={`app-region-drag relative z-50 grid h-9 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-b border-border/60 text-foreground ${zenMode ? "bg-background" : "bg-sidebar"}`}
+			className={cn(
+				"app-region-drag relative z-50 grid h-9 shrink-0 items-center border-b border-border/60 text-foreground",
+				isMacOS ? "grid-cols-[120px_1fr_120px]" : "grid-cols-[1fr_auto_1fr]",
+				zenMode ? "bg-background" : "bg-sidebar",
+			)}
 		>
-			<AppMenu />
+			{isLoginPage || isMacOS ? <div /> : <AppMenu />}
 			<div className="pointer-events-none min-w-0 px-4 text-center text-[13px] font-medium text-muted-foreground">
 				<span className="block max-w-[48vw] truncate">{title}</span>
 			</div>
-			<WindowControls />
+			{isMacOS ? (
+				<div className="app-region-no-drag ml-auto flex h-full items-stretch justify-end">
+					<ExportQueue />
+					<SyncIndicator />
+				</div>
+			) : (
+				<WindowControls closeButtonOnly={closeButtonOnly} />
+			)}
 		</header>
 	);
 }
@@ -350,19 +398,28 @@ function AppMenu() {
 	);
 }
 
-function WindowControls() {
+function WindowControls({ closeButtonOnly }: { closeButtonOnly: boolean }) {
 	return (
 		<div className="app-region-no-drag ml-auto flex h-full items-stretch justify-end">
+			<ExportQueue />
 			<SyncIndicator />
-			<WindowControl action="minimize" icon="/minimize.png" label="Minimize" />
-			<WindowControl
-				action="toggleMaximize"
-				icon="/maximize.png"
-				label="Maximize"
-			/>
+			{!closeButtonOnly && (
+				<>
+					<WindowControl
+						action="minimize"
+						icon="./minimize.png"
+						label="Minimize"
+					/>
+					<WindowControl
+						action="toggleMaximize"
+						icon="./maximize.png"
+						label="Maximize"
+					/>
+				</>
+			)}
 			<WindowControl
 				action="close"
-				icon="/close.png"
+				icon="./close.png"
 				label="Close"
 				className="hover:bg-destructive/90 hover:text-white"
 			/>
@@ -414,6 +471,15 @@ function SyncIndicator() {
 		? friendlySyncError(googleDrive.lastError)
 		: null;
 
+	const Icon =
+		state === "syncing"
+			? CloudSync
+			: state === "synced"
+				? CloudCheck
+				: state === "paused"
+					? CloudOff
+					: CloudAlert;
+
 	return (
 		<HoverCard openDelay={150} closeDelay={80}>
 			<HoverCardTrigger asChild>
@@ -422,13 +488,13 @@ function SyncIndicator() {
 					aria-label={label}
 					className="flex h-full w-8 items-center justify-center"
 				>
-					<span
+					<Icon
 						className={cn(
-							"size-2.5 rounded-full bg-muted-foreground/60 shadow-[0_0_0_2px_rgb(255_255_255/0.05)]",
-							state === "syncing" && "animate-pulse bg-sky-400",
-							state === "synced" && "bg-emerald-500",
-							state === "paused" && "bg-amber-500",
-							state === "error" && "bg-destructive",
+							"size-3.5",
+							state === "syncing" && "animate-pulse text-sky-400",
+							state === "synced" && "text-emerald-500",
+							state === "paused" && "text-amber-500",
+							state === "error" && "text-destructive",
 						)}
 					/>
 				</button>
@@ -491,7 +557,8 @@ function WindowControl({
 			<img
 				src={icon}
 				alt=""
-				className="size-3.5 object-contain invert dark:invert-0"
+				className="size-3.5 object-contain"
+				style={{ filter: "brightness(0) invert(1)" }}
 				draggable={false}
 			/>
 		</button>

@@ -28,8 +28,10 @@ import {
 	ChevronUpIcon,
 	Code2Icon,
 	HighlighterIcon,
+	ClipboardPasteIcon,
 	ImagePlusIcon,
 	ItalicIcon,
+	UploadIcon,
 	ListIcon,
 	ListOrderedIcon,
 	ListTodoIcon,
@@ -40,6 +42,7 @@ import {
 import {
 	type ChangeEvent,
 	type ComponentType,
+	type DragEvent,
 	type MouseEvent,
 	type ReactNode,
 	type RefObject,
@@ -51,6 +54,12 @@ import {
 	useState,
 } from "react";
 import * as Y from "yjs";
+import { Button } from "@/components/ui/button";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@/components/ui/popover";
 import {
 	Select,
 	SelectContent,
@@ -66,6 +75,65 @@ import {
 import { normalizeNoteContent, serializeNoteContent } from "@/lib/note-content";
 import { cn } from "@/lib/utils";
 
+function isRelativeAssetSrc(src: string): boolean {
+	return (
+		!src.startsWith("data:") &&
+		!src.startsWith("http") &&
+		!src.startsWith("file://") &&
+		!src.startsWith("/")
+	);
+}
+
+async function resolveImagePaths(
+	notePath: string,
+	node: NoteContent,
+): Promise<NoteContent> {
+	if (
+		node.type === "image" &&
+		typeof node.attrs?.src === "string" &&
+		isRelativeAssetSrc(node.attrs.src)
+	) {
+		const url = await window.electron?.notes.getAssetUrl(
+			notePath,
+			node.attrs.src,
+		);
+		if (url) {
+			return { ...node, attrs: { ...node.attrs, src: url } };
+		}
+	}
+	if (node.content) {
+		const resolvedChildren = await Promise.all(
+			node.content.map((child) => resolveImagePaths(notePath, child)),
+		);
+		return { ...node, content: resolvedChildren };
+	}
+	return node;
+}
+
+function toRelativeAssetSrc(src: string): string {
+	if (!src.startsWith("file://")) return src;
+	const assetsIdx = src.indexOf("/assets/");
+	if (assetsIdx === -1) return src;
+	return src.slice(assetsIdx + 1);
+}
+
+function denormalizeImagePaths(node: NoteContent): NoteContent {
+	if (
+		node.type === "image" &&
+		typeof node.attrs?.src === "string" &&
+		node.attrs.src.startsWith("file://")
+	) {
+		return {
+			...node,
+			attrs: { ...node.attrs, src: toRelativeAssetSrc(node.attrs.src) },
+		};
+	}
+	if (node.content) {
+		return { ...node, content: node.content.map(denormalizeImagePaths) };
+	}
+	return node;
+}
+
 type NoteEditorProps = {
 	content: NoteContent;
 	noteTitle: string;
@@ -75,7 +143,11 @@ type NoteEditorProps = {
 	searchQuery: string;
 	yDoc?: Y.Doc | null;
 	zenMode?: boolean;
-	onChange: (content: NoteContent, notePath: string | null) => void;
+	onChange: (
+		content: NoteContent,
+		notePath: string | null,
+		isUserEdit: boolean,
+	) => void;
 	onContentRendered?: (notePath: string) => void;
 	onContentSnapshot?: (
 		notePath: string | null,
@@ -279,13 +351,34 @@ export function NoteEditor({
 	const readOnlyRef = useRef(readOnly);
 	const searchQueryRef = useRef(searchQuery);
 	const syncingExternalDocRef = useRef(false);
-	const editorContent = useMemo(() => {
+	const hasUserInteractedRef = useRef(false);
+	const lastCommittedTitleRef = useRef(noteTitle || "");
+	const [resolvedContent, setResolvedContent] = useState<NoteContent>(() => {
 		const cleaned = normalizeNoteContent(content);
 		const { id: _id, title: _title, ...editorReady } = cleaned;
 		return editorReady as NoteContent;
-	}, [content]);
+	});
 
-	const initialContentRef = useRef(editorContent);
+	useEffect(() => {
+		if (!notePath || !window.electron?.notes.getAssetUrl) {
+			const cleaned = normalizeNoteContent(content);
+			const { id: _id, title: _title, ...editorReady } = cleaned;
+			setResolvedContent(editorReady as NoteContent);
+			return;
+		}
+		let cancelled = false;
+		resolveImagePaths(notePath, content).then((resolved) => {
+			if (cancelled) return;
+			const cleaned = normalizeNoteContent(resolved);
+			const { id: _id, title: _title, ...editorReady } = cleaned;
+			setResolvedContent(editorReady as NoteContent);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [content, notePath]);
+
+	const initialContentRef = useRef(resolvedContent);
 
 	notePathRef.current = notePath;
 	onChangeRef.current = onChange;
@@ -306,9 +399,9 @@ export function NoteEditor({
 		if (yDoc.getXmlFragment(collaborationField).length > 0) return;
 
 		const schema = getSchema(baseExtensions);
-		const importedDoc = prosemirrorJSONToYDoc(schema, editorContent);
+		const importedDoc = prosemirrorJSONToYDoc(schema, resolvedContent);
 		Y.applyUpdate(yDoc, Y.encodeStateAsUpdate(importedDoc));
-	}, [baseExtensions, editorContent, yDoc]);
+	}, [baseExtensions, resolvedContent, yDoc]);
 
 	const extensions = useMemo(
 		() => [
@@ -338,6 +431,10 @@ export function NoteEditor({
 				class: "paperite-prosemirror min-h-full outline-none",
 			},
 			handleDOMEvents: {
+				keydown: () => {
+					hasUserInteractedRef.current = true;
+					return false;
+				},
 				mouseover: (_view, event) => {
 					const target = event.target;
 					if (!(target instanceof HTMLElement)) return false;
@@ -359,9 +456,11 @@ export function NoteEditor({
 		onUpdate: ({ editor: currentEditor }) => {
 			if (syncingExternalDocRef.current) return;
 
+			const raw = currentEditor.getJSON() as NoteContent;
 			onChangeRef.current(
-				currentEditor.getJSON() as NoteContent,
+				denormalizeImagePaths(raw),
 				notePathRef.current,
+				hasUserInteractedRef.current,
 			);
 			setToolbarVersion((version) => version + 1);
 		},
@@ -377,19 +476,19 @@ export function NoteEditor({
 		const currentSerialized = serializeNoteContent(
 			editor.getJSON() as NoteContent,
 		);
-		const nextSerialized = serializeNoteContent(editorContent);
+		const nextSerialized = serializeNoteContent(resolvedContent);
 
 		if (currentSerialized !== nextSerialized) {
 			syncingExternalDocRef.current = true;
 			try {
-				editor.commands.setContent(editorContent, { emitUpdate: false });
+				editor.commands.setContent(resolvedContent, { emitUpdate: false });
 			} finally {
 				syncingExternalDocRef.current = false;
 			}
 		}
 
 		if (notePath) requestAnimationFrame(() => onContentRendered?.(notePath));
-	}, [editorContent, editor, notePath, onContentRendered, yDoc]);
+	}, [resolvedContent, editor, notePath, onContentRendered, yDoc]);
 
 	useLayoutEffect(() => {
 		if (!editor || !notePath) {
@@ -461,8 +560,11 @@ export function NoteEditor({
 
 	const commitTitle = () => {
 		const nextTitle = draftTitle.trim();
-		const currentTitle = noteTitle || "";
-		if (nextTitle && nextTitle !== currentTitle) onRename(nextTitle);
+		const committedTitle = lastCommittedTitleRef.current;
+		if (nextTitle && nextTitle !== committedTitle) {
+			lastCommittedTitleRef.current = nextTitle;
+			onRename(nextTitle);
+		}
 	};
 
 	if (!notePath) {
@@ -567,21 +669,78 @@ function FormatMenu({
 		};
 	}, [editor]);
 
+	const [imagePopoverOpen, setImagePopoverOpen] = useState(false);
+	const [isDragOver, setIsDragOver] = useState(false);
+
+	const insertImage = (file: File) => {
+		if (!file.type.startsWith("image/")) return;
+		if (!notePath) return;
+		const reader = new FileReader();
+		reader.addEventListener("load", async () => {
+			if (typeof reader.result !== "string") return;
+			try {
+				const result = await window.electron?.notes.saveImage(
+					notePath,
+					reader.result,
+					file.name || "image",
+				);
+				if (result?.path) {
+					editor
+						.chain()
+						.focus()
+						.setImage({ src: result.path, alt: file.name })
+						.run();
+				}
+			} catch {
+				editor
+					.chain()
+					.focus()
+					.setImage({ src: reader.result, alt: file.name })
+					.run();
+			}
+			setImagePopoverOpen(false);
+		});
+		reader.readAsDataURL(file);
+	};
+
 	const uploadImage = (event: ChangeEvent<HTMLInputElement>) => {
 		const file = event.target.files?.[0];
 		event.target.value = "";
-		if (!file?.type.startsWith("image/")) return;
+		if (file) insertImage(file);
+	};
 
-		const reader = new FileReader();
-		reader.addEventListener("load", () => {
-			if (typeof reader.result !== "string") return;
-			editor
-				.chain()
-				.focus()
-				.setImage({ src: reader.result, alt: file.name })
-				.run();
-		});
-		reader.readAsDataURL(file);
+	const handlePaste = async () => {
+		try {
+			const clipboardItems = await navigator.clipboard.read();
+			for (const item of clipboardItems) {
+				for (const type of item.types) {
+					if (type.startsWith("image/")) {
+						const blob = await item.getType(type);
+						const file = new File(
+							[blob],
+							`pasted-image.${blob.type.split("/")[1]}`,
+							{ type: blob.type },
+						);
+						insertImage(file);
+						return;
+					}
+				}
+			}
+		} catch {
+			// clipboard access might fail, silently ignore
+		}
+	};
+
+	const handleDragOver = (e: DragEvent) => {
+		e.preventDefault();
+		setIsDragOver(true);
+	};
+	const handleDragLeave = () => setIsDragOver(false);
+	const handleDrop = (e: DragEvent) => {
+		e.preventDefault();
+		setIsDragOver(false);
+		const file = e.dataTransfer.files[0];
+		if (file) insertImage(file);
 	};
 
 	return (
@@ -653,18 +812,70 @@ function FormatMenu({
 					editor={editor}
 					disabled={readOnly}
 				/>
-				<ToolbarTooltip label="Upload image">
-					<button
-						type="button"
-						aria-label="Upload image"
-						disabled={readOnly}
-						className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
-						onMouseDown={(event) => event.preventDefault()}
-						onClick={() => imageInputRef.current?.click()}
+				<Popover open={imagePopoverOpen} onOpenChange={setImagePopoverOpen}>
+					<ToolbarTooltip label="Upload image">
+						<PopoverTrigger asChild>
+							<button
+								type="button"
+								aria-label="Upload image"
+								disabled={readOnly}
+								className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+								onMouseDown={(event) => event.preventDefault()}
+							>
+								<ImagePlusIcon className="size-4" />
+							</button>
+						</PopoverTrigger>
+					</ToolbarTooltip>
+					<PopoverContent
+						align="center"
+						side="top"
+						sideOffset={8}
+						onOpenAutoFocus={(e) => e.preventDefault()}
+						className="w-64 p-0"
 					>
-						<ImagePlusIcon className="size-4" />
-					</button>
-				</ToolbarTooltip>
+						<div
+							className={cn(
+								"flex flex-col items-center gap-3 p-4 text-center transition-colors",
+								isDragOver && "bg-muted/50",
+							)}
+							onDragOver={handleDragOver}
+							onDragLeave={handleDragLeave}
+							onDrop={handleDrop}
+						>
+							<div className="flex size-10 items-center justify-center rounded-full bg-muted">
+								<UploadIcon className="size-5 text-muted-foreground" />
+							</div>
+							<div className="space-y-1">
+								<p className="text-sm font-medium">
+									{isDragOver ? "Drop image here" : "Drag & drop an image"}
+								</p>
+								<p className="text-xs text-muted-foreground">
+									or click below to browse
+								</p>
+							</div>
+							<div className="flex w-full gap-2">
+								<Button
+									variant="outline"
+									size="xs"
+									className="flex-1"
+									onClick={() => imageInputRef.current?.click()}
+								>
+									<ImagePlusIcon className="size-3.5" />
+									Browse
+								</Button>
+								<Button
+									variant="outline"
+									size="xs"
+									className="flex-1"
+									onClick={handlePaste}
+								>
+									<ClipboardPasteIcon className="size-3.5" />
+									Paste
+								</Button>
+							</div>
+						</div>
+					</PopoverContent>
+				</Popover>
 				<input
 					ref={imageInputRef}
 					type="file"
@@ -765,35 +976,36 @@ function ColorMenu({
 		return savedSelectionRef.current;
 	};
 
-	const applySelectedColor = () => {
+	const applyColor = (color: string) => {
 		const range = selectionRange();
-		const hasActiveMark =
-			mode === "highlight"
-				? editor.isActive("highlight")
-				: Boolean(editor.getAttributes("textStyle").color);
 		const chain = editor.chain().focus();
 		if (range) chain.setTextSelection(range);
 
 		if (mode === "highlight") {
-			if (hasActiveMark) {
+			const currentHighlight = editor.isActive("highlight")
+				? editor.getAttributes("highlight")
+				: null;
+			const currentColor = currentHighlight?.color;
+
+			if (currentColor === color) {
 				chain.extendMarkRange("highlight").unsetHighlight().run();
 				return;
 			}
 
-			chain
-				.extendMarkRange("highlight")
-				.setHighlight({ color: selectedColor })
-				.run();
+			chain.extendMarkRange("highlight").setHighlight({ color }).run();
 			return;
 		}
 
-		if (hasActiveMark) {
+		const currentColor = editor.getAttributes("textStyle").color;
+		if (currentColor === color) {
 			chain.extendMarkRange("textStyle").unsetColor().run();
 			return;
 		}
 
-		chain.extendMarkRange("textStyle").setColor(selectedColor).run();
+		chain.extendMarkRange("textStyle").setColor(color).run();
 	};
+
+	const applySelectedColor = () => applyColor(selectedColor);
 
 	const clearColor = () => {
 		const range = selectionRange();
@@ -841,8 +1053,9 @@ function ColorMenu({
 					ref={triggerRef}
 					type="button"
 					aria-label={`${label} options`}
+					data-active={active}
 					disabled={disabled}
-					className="flex h-8 w-4 items-center justify-center rounded-r-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+					className="flex h-8 w-4 items-center justify-center rounded-r-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50 data-[active=true]:bg-muted data-[active=true]:text-foreground"
 					onMouseDown={(event) => event.preventDefault()}
 					onClick={() => {
 						updateDropupPosition();
@@ -871,6 +1084,7 @@ function ColorMenu({
 								onMouseDown={(event) => event.preventDefault()}
 								onClick={() => {
 									setSelectedColor(color);
+									applyColor(color);
 									setOpen(false);
 								}}
 							/>

@@ -22,7 +22,6 @@ import {
 	InfoIcon,
 	MoreVerticalIcon,
 	PencilIcon,
-	PrinterIcon,
 	SearchIcon,
 	Trash2Icon,
 	XIcon,
@@ -30,6 +29,8 @@ import {
 import {
 	type CSSProperties,
 	type ReactNode,
+	memo,
+	startTransition,
 	useCallback,
 	useEffect,
 	useMemo,
@@ -39,6 +40,8 @@ import {
 import { AppSidebar } from "@/components/app-sidebar";
 import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
 import { NoteEditor, type PageFormat } from "@/components/note-editor";
+
+const MemoNoteEditor = memo(NoteEditor);
 import { SidebarHotkeys } from "@/components/sidebar-hotkeys";
 import { Button } from "@/components/ui/button";
 import {
@@ -59,9 +62,12 @@ import {
 	SidebarTrigger,
 } from "@/components/ui/sidebar";
 import { clerk, loadClerk } from "@/lib/clerk";
+import { addExport, updateExport } from "@/lib/export-queue";
 import {
 	createEmptyNoteContent,
 	noteContentPreview,
+	noteContentText,
+	noteContentToMarkdown,
 	replaceInNoteContent,
 	serializeNoteContent,
 	serializeNoteContentBody,
@@ -69,10 +75,13 @@ import {
 import { getNotesEngine } from "@/lib/notes-engine";
 import { isShortcutEditableInput, shortcutMatchesEvent } from "@/lib/shortcuts";
 import { getSyncEngine } from "@/lib/sync-engine";
+import { getTrashEngine } from "@/lib/trash-engine";
 import { type LoadedYNote, loadYNote } from "@/lib/y-note-store";
 
 export const Route = createFileRoute("/_main/")({
 	beforeLoad: async () => {
+		if (!import.meta.env.BETA_PAPERITE) return;
+
 		await loadClerk();
 
 		if (!clerk.isSignedIn) {
@@ -91,10 +100,13 @@ const defaultAppState: PaperiteAppState = {
 	spaceIcons: {},
 	spaceOrder: [],
 	spaceSortOrders: {},
+	spacePreviewModes: {},
 	customItemOrders: {},
 	readOnlyNotes: {},
 	sidebarOpen: true,
 	inboxViewMode: "list",
+	showNotePreview: true,
+	closeButtonOnly: false,
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
@@ -192,6 +204,27 @@ function Index() {
 			setAppState((prev) => ({ ...prev, inboxViewMode: mode })),
 		[],
 	);
+	const setShowNotePreview = useCallback(
+		(show: boolean) =>
+			setAppState((prev) => ({ ...prev, showNotePreview: show })),
+		[],
+	);
+	const setCloseButtonOnly = useCallback(
+		(closeButtonOnly: boolean) =>
+			setAppState((prev) => ({ ...prev, closeButtonOnly })),
+		[],
+	);
+	const setSpacePreviewMode = useCallback(
+		(spacePath: string, mode: SpacePreviewMode) =>
+			setAppState((prev) => ({
+				...prev,
+				spacePreviewModes: {
+					...prev.spacePreviewModes,
+					[spacePath]: mode,
+				},
+			})),
+		[],
+	);
 	const setSpaceSortOrder = useCallback(
 		(spacePath: string, order: SidebarSortOrder) =>
 			setAppState((prev) => ({
@@ -217,6 +250,8 @@ function Index() {
 	} | null>(null);
 	const [floatingPanelMode, setFloatingPanelMode] =
 		useState<FloatingPanelMode>(null);
+	const [floatingPanelVisible, setFloatingPanelVisible] = useState(false);
+	const floatingPanelLastMode = useRef<FloatingPanelMode>(null);
 	const [zenMode, setZenMode] = useState(false);
 	const [findText, setFindText] = useState("");
 	const [replaceText, setReplaceText] = useState("");
@@ -231,6 +266,9 @@ function Index() {
 	const activeNotePathRef = useRef<string | null>(null);
 	const noteContentRef = useRef<NoteContent>(createEmptyNoteContent());
 	const tabListRef = useRef<HTMLDivElement>(null);
+	const [newlyCreatedFolderPath, setNewlyCreatedFolderPath] = useState<
+		string | null
+	>(null);
 	const noteContentCache = useRef(new Map<string, NoteContent>());
 	const notePersistedCache = useRef(new Map<string, NoteContent>());
 	const noteWriteQueue = useRef(new Map<string, Promise<void>>());
@@ -245,6 +283,18 @@ function Index() {
 	const [lockedNotePaths, setLockedNotePaths] = useState<Set<string>>(
 		() => new Set(),
 	);
+	const [trashNotes, setTrashNotes] = useState<TrashNote[]>([]);
+
+	const refreshTrash = useCallback(async () => {
+		const trashApi = getTrashEngine();
+		if (!trashApi) return;
+		try {
+			const notes = await trashApi.getContents();
+			setTrashNotes(notes);
+		} catch {
+			// Ignore trash read errors
+		}
+	}, []);
 
 	const restrictToHorizontalAxis: Modifier = ({
 		transform,
@@ -617,7 +667,8 @@ function Index() {
 		if (!notesApi) return;
 		const nextWorkspace = await notesApi.getWorkspace();
 		setWorkspace(nextWorkspace);
-	}, [notesApi]);
+		await refreshTrash();
+	}, [notesApi, refreshTrash]);
 
 	const syncExternalWorkspace = useCallback(async () => {
 		if (!notesApi) return;
@@ -681,6 +732,7 @@ function Index() {
 				),
 			);
 			didHydrate.current = true;
+			await refreshTrash();
 		};
 
 		hydrate().catch((error) => {
@@ -691,7 +743,7 @@ function Index() {
 		return () => {
 			cancelled = true;
 		};
-	}, [notesApi]);
+	}, [notesApi, refreshTrash]);
 
 	useEffect(() => {
 		if (!notesApi) return;
@@ -704,13 +756,31 @@ function Index() {
 	useEffect(() => {
 		if (!notesApi || !didHydrate.current) return;
 
-		notesApi.writeAppState(appState);
+		const timer = setTimeout(() => {
+			notesApi.writeAppState(appState);
+		}, 300);
+		return () => clearTimeout(timer);
 	}, [appState, notesApi]);
+
+	useEffect(() => {
+		window.dispatchEvent(
+			new CustomEvent("paperite:window-controls-change", {
+				detail: { closeButtonOnly: appState.closeButtonOnly },
+			}),
+		);
+	}, [appState.closeButtonOnly]);
 
 	useEffect(() => {
 		if (!floatingPanelMode) return;
 
 		findInputRef.current?.focus();
+	}, [floatingPanelMode]);
+
+	useEffect(() => {
+		if (floatingPanelMode) {
+			floatingPanelLastMode.current = floatingPanelMode;
+			setFloatingPanelVisible(true);
+		}
 	}, [floatingPanelMode]);
 
 	useEffect(() => {
@@ -894,6 +964,8 @@ function Index() {
 	}, [workspace]);
 
 	const currentSpacePath = useMemo(() => {
+		if (appState.activeSpacePath === "Trash") return "Trash";
+
 		if (
 			!workspace?.spaces.some(
 				(space) => space.path === appState.activeSpacePath,
@@ -915,25 +987,28 @@ function Index() {
 		return orderSpaces(decoratedSpaces, appState.spaceOrder);
 	}, [appState.spaceOrder, workspace, notePreviews, noteTitleDrafts]);
 
-	const setActiveSpacePath = (path: string) => {
+	const setActiveSpacePath = useCallback((path: string) => {
 		setAppState((current) => ({ ...current, activeSpacePath: path }));
-	};
+	}, []);
 
-	const reorderSpaces = (spaceOrder: string[]) => {
+	const reorderSpaces = useCallback((spaceOrder: string[]) => {
 		setAppState((current) => ({ ...current, spaceOrder }));
-	};
+	}, []);
 
-	const reorderItems = (parentPath: string, itemOrder: string[]) => {
-		if (topLevelPath(parentPath) === "Inbox") return;
+	const reorderItems = useCallback(
+		(parentPath: string, itemOrder: string[]) => {
+			if (topLevelPath(parentPath) === "Inbox") return;
 
-		setAppState((current) => ({
-			...current,
-			customItemOrders: {
-				...current.customItemOrders,
-				[parentPath]: unique(itemOrder),
-			},
-		}));
-	};
+			setAppState((current) => ({
+				...current,
+				customItemOrders: {
+					...current.customItemOrders,
+					[parentPath]: unique(itemOrder),
+				},
+			}));
+		},
+		[],
+	);
 
 	const openNote = useCallback(
 		(note: WorkspaceNote, mode: "preview" | "pinned") => {
@@ -1055,11 +1130,17 @@ function Index() {
 					]),
 				}));
 				await refreshWorkspace();
+				setNewlyCreatedFolderPath(folder.path);
 			} catch {
 				setSaveStatus("error");
 			}
 		},
 		[notesApi, refreshWorkspace],
+	);
+
+	const handleRenameComplete = useCallback(
+		() => setNewlyCreatedFolderPath(null),
+		[],
 	);
 
 	useEffect(() => {
@@ -1157,6 +1238,11 @@ function Index() {
 					path,
 					renamed.path,
 				),
+				spacePreviewModes: moveDecorations(
+					current.spacePreviewModes,
+					path,
+					renamed.path,
+				),
 				customItemOrders: moveCustomItemOrders(
 					current.customItemOrders,
 					path,
@@ -1205,6 +1291,7 @@ function Index() {
 				spaceColors: omitDecoration(current.spaceColors, path),
 				spaceIcons: omitDecoration(current.spaceIcons, path),
 				spaceSortOrders: omitDecoration(current.spaceSortOrders, path),
+				spacePreviewModes: omitDecoration(current.spacePreviewModes, path),
 				customItemOrders: omitCustomItemOrders(current.customItemOrders, path),
 				readOnlyNotes: omitDecoration(current.readOnlyNotes, path),
 			}));
@@ -1217,14 +1304,20 @@ function Index() {
 		}
 	};
 
-	const toggleFolder = (path: string, isOpen: boolean) => {
-		setAppState((current) => ({
-			...current,
-			expandedFolders: isOpen
-				? unique([...current.expandedFolders, path])
-				: current.expandedFolders.filter((folderPath) => folderPath !== path),
-		}));
-	};
+	const toggleFolder = useCallback((path: string, isOpen: boolean) => {
+		// Low-priority update: sidebar already painted via local expand state.
+		// Avoid blocking the main thread with a full Index + TipTap re-render.
+		startTransition(() => {
+			setAppState((current) => ({
+				...current,
+				expandedFolders: isOpen
+					? unique([...current.expandedFolders, path])
+					: current.expandedFolders.filter(
+							(folderPath) => folderPath !== path,
+						),
+			}));
+		});
+	}, []);
 
 	const moveItem = async (itemPath: string, nextParentPath: string) => {
 		if (!notesApi) return;
@@ -1283,11 +1376,11 @@ function Index() {
 		}
 	};
 
-	const renameActiveNote = async (title: string) => {
-		if (!notesApi || !appState.activeNotePath) return;
+	const renameActiveNote = useCallback(async (title: string) => {
+		if (!notesApi || !activeNotePathRef.current) return;
 
 		try {
-			const previousPath = appState.activeNotePath;
+			const previousPath = activeNotePathRef.current;
 			const renamed = await notesApi.renameItem(previousPath, title);
 			const nextTitle =
 				renamed.path === previousPath
@@ -1345,7 +1438,7 @@ function Index() {
 		} catch {
 			setSaveStatus("error");
 		}
-	};
+	}, [notesApi, refreshWorkspace]);
 
 	const deleteActiveNote = async () => {
 		if (!notesApi || !appState.activeNotePath) return;
@@ -1469,6 +1562,43 @@ function Index() {
 		}
 	};
 
+	const restoreTrashItem = async (trashNoteName: string) => {
+		const trashApi = getTrashEngine();
+		if (!trashApi) return;
+
+		try {
+			await trashApi.restoreItem(trashNoteName);
+			await refreshTrash();
+			await refreshWorkspace();
+		} catch {
+			setSaveStatus("error");
+		}
+	};
+
+	const permanentDeleteItem = async (trashNoteName: string) => {
+		const trashApi = getTrashEngine();
+		if (!trashApi) return;
+
+		try {
+			await trashApi.permanentDeleteItem(trashNoteName);
+			await refreshTrash();
+		} catch {
+			setSaveStatus("error");
+		}
+	};
+
+	const emptyTrash = async () => {
+		const trashApi = getTrashEngine();
+		if (!trashApi) return;
+
+		try {
+			await trashApi.emptyTrash();
+			await refreshTrash();
+		} catch {
+			setSaveStatus("error");
+		}
+	};
+
 	const replaceInNote = () => {
 		if (!findText) return;
 		setNoteContent((current) =>
@@ -1483,20 +1613,21 @@ function Index() {
 		);
 	};
 
-	const updateActiveTitleDraft = (title: string) => {
-		if (!appState.activeNotePath) return;
+	const updateActiveTitleDraft = useCallback((title: string) => {
+		const notePath = activeNotePathRef.current;
+		if (!notePath) return;
 
 		setNoteTitleDrafts((current) => ({
 			...current,
-			[appState.activeNotePath as string]: title,
+			[notePath]: title,
 		}));
 		setAppState((current) => ({
 			...current,
 			openTabs: current.openTabs.map((tab) =>
-				tab.path === current.activeNotePath ? { ...tab, title } : tab,
+				tab.path === notePath ? { ...tab, title } : tab,
 			),
 		}));
-	};
+	}, []);
 
 	const updateActivePageFormat = useCallback(
 		(patch: Partial<PageFormat>) => {
@@ -1514,9 +1645,26 @@ function Index() {
 	);
 
 	const updateNoteContent = useCallback(
-		(nextContent: NoteContent, sourceNotePath: string | null) => {
+		(
+			nextContent: NoteContent,
+			sourceNotePath: string | null,
+			isUserEdit: boolean,
+		) => {
 			if (!sourceNotePath) return;
 			if (sourceNotePath !== activeNotePathRef.current) return;
+
+			if (isUserEdit) {
+				setAppState((current) => {
+					const tab = current.openTabs.find((t) => t.path === sourceNotePath);
+					if (!tab?.preview) return current;
+					return {
+						...current,
+						openTabs: current.openTabs.map((t) =>
+							t.path === sourceNotePath ? { ...t, preview: false } : t,
+						),
+					};
+				});
+			}
 
 			noteContentRef.current = nextContent;
 			noteContentCache.current.set(sourceNotePath, nextContent);
@@ -1553,7 +1701,15 @@ function Index() {
 	useEffect(() => {
 		const handleShortcut = (event: KeyboardEvent) => {
 			if (event.repeat) return;
-			if (isShortcutEditableInput(event.target)) return;
+
+			const zenShortcut = getShortcut("view.toggleZen");
+			const sidebarShortcut = getShortcut("view.toggleSidebar");
+			const isGlobalViewShortcut =
+				shortcutMatchesEvent(zenShortcut, event) ||
+				shortcutMatchesEvent(sidebarShortcut, event);
+
+			if (isShortcutEditableInput(event.target) && !isGlobalViewShortcut)
+				return;
 
 			if (shortcutMatchesEvent(getShortcut("note.saveAndSync"), event)) {
 				event.preventDefault();
@@ -1609,13 +1765,13 @@ function Index() {
 				return;
 			}
 
-			if (shortcutMatchesEvent(getShortcut("view.toggleZen"), event)) {
+			if (shortcutMatchesEvent(zenShortcut, event)) {
 				event.preventDefault();
 				window.dispatchEvent(new Event("paperite:toggle-zen-mode"));
 				return;
 			}
 
-			if (shortcutMatchesEvent(getShortcut("view.toggleSidebar"), event)) {
+			if (shortcutMatchesEvent(sidebarShortcut, event)) {
 				event.preventDefault();
 				window.dispatchEvent(new Event("paperite:toggle-sidebar"));
 			}
@@ -1667,7 +1823,9 @@ function Index() {
 	if (!notesApi) {
 		return (
 			<div className="grid h-full place-items-center text-sm text-muted-foreground">
-				Paperite needs the Electron shell to access local notes.
+				{import.meta.env.PAPERITE_WEB
+					? "Connecting to Paperite server..."
+					: "Paperite needs the Electron shell to access local notes."}
 			</div>
 		);
 	}
@@ -1694,6 +1852,12 @@ function Index() {
 						expandedFolders={appState.expandedFolders}
 						spaceColors={appState.spaceColors}
 						spaceIcons={appState.spaceIcons}
+						spacePreviewModes={appState.spacePreviewModes}
+						showNotePreview={appState.showNotePreview}
+						closeButtonOnly={appState.closeButtonOnly}
+						onSetShowNotePreview={setShowNotePreview}
+						onSetCloseButtonOnly={setCloseButtonOnly}
+						onSetSpacePreviewMode={setSpacePreviewMode}
 						spaces={visibleSpaces}
 						viewMode={inboxViewMode}
 						onViewModeChange={setInboxViewMode}
@@ -1718,6 +1882,12 @@ function Index() {
 						onReorderSpaces={reorderSpaces}
 						onSelectSpace={setActiveSpacePath}
 						onToggleFolder={toggleFolder}
+						trashNotes={trashNotes}
+						onRestoreItem={restoreTrashItem}
+						onPermanentDeleteItem={permanentDeleteItem}
+						onEmptyTrash={emptyTrash}
+						newlyCreatedFolderPath={newlyCreatedFolderPath}
+						onRenameComplete={handleRenameComplete}
 					/>
 				</>
 			)}
@@ -1733,6 +1903,15 @@ function Index() {
 						<div
 							ref={tabListRef}
 							className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
+							onWheel={(e) => {
+								if (e.deltaY !== 0) {
+									e.preventDefault();
+									tabListRef.current?.scrollBy({
+										left: e.deltaY,
+										behavior: "auto",
+									});
+								}
+							}}
 						>
 							<DndContext
 								sensors={dndSensors}
@@ -1825,10 +2004,36 @@ function Index() {
 											: "Pop out note"}
 									</DropdownMenuItem>
 									<DropdownMenuSeparator />
-									<DropdownMenuItem>
-										<PrinterIcon />
-										Print…
-									</DropdownMenuItem>
+									<DropdownMenuSub>
+										<DropdownMenuSubTrigger>
+											<span className="size-4" />
+											Copy as…
+										</DropdownMenuSubTrigger>
+										<DropdownMenuPortal>
+											<DropdownMenuSubContent>
+												<DropdownMenuItem
+													onSelect={() => {
+														const text = noteContentText(
+															noteContentRef.current,
+														);
+														navigator.clipboard.writeText(text);
+													}}
+												>
+													Plain text
+												</DropdownMenuItem>
+												<DropdownMenuItem
+													onSelect={() => {
+														const md = noteContentToMarkdown(
+															noteContentRef.current,
+														);
+														navigator.clipboard.writeText(md);
+													}}
+												>
+													Markdown
+												</DropdownMenuItem>
+											</DropdownMenuSubContent>
+										</DropdownMenuPortal>
+									</DropdownMenuSub>
 									<DropdownMenuSub>
 										<DropdownMenuSubTrigger>
 											<span className="size-4" />
@@ -1836,8 +2041,70 @@ function Index() {
 										</DropdownMenuSubTrigger>
 										<DropdownMenuPortal>
 											<DropdownMenuSubContent>
-												<DropdownMenuItem>PDF</DropdownMenuItem>
-												<DropdownMenuItem>MD</DropdownMenuItem>
+												<DropdownMenuItem
+													onSelect={() => {
+														const content = noteContentRef.current;
+														const md = noteContentToMarkdown(content);
+														const id = addExport({
+															noteTitle: activeNoteTitle,
+															format: "markdown",
+															destPath: null,
+														});
+														updateExport(id, { status: "writing" });
+														window.electron?.notes
+															.exportFile(md, "markdown", activeNoteTitle)
+															.then((result) => {
+																if (result.canceled) {
+																	updateExport(id, { status: "cancelled" });
+																} else {
+																	updateExport(id, {
+																		status: "done",
+																		destPath: result.filePath ?? null,
+																	});
+																}
+															})
+															.catch((err) => {
+																updateExport(id, {
+																	status: "error",
+																	error: String(err),
+																});
+															});
+													}}
+												>
+													Markdown (.md)
+												</DropdownMenuItem>
+												<DropdownMenuItem
+													onSelect={() => {
+														const content = noteContentRef.current;
+														const txt = noteContentText(content);
+														const id = addExport({
+															noteTitle: activeNoteTitle,
+															format: "txt",
+															destPath: null,
+														});
+														updateExport(id, { status: "writing" });
+														window.electron?.notes
+															.exportFile(txt, "txt", activeNoteTitle)
+															.then((result) => {
+																if (result.canceled) {
+																	updateExport(id, { status: "cancelled" });
+																} else {
+																	updateExport(id, {
+																		status: "done",
+																		destPath: result.filePath ?? null,
+																	});
+																}
+															})
+															.catch((err) => {
+																updateExport(id, {
+																	status: "error",
+																	error: String(err),
+																});
+															});
+													}}
+												>
+													Plain Text (.txt)
+												</DropdownMenuItem>
 											</DropdownMenuSubContent>
 										</DropdownMenuPortal>
 									</DropdownMenuSub>
@@ -1872,9 +2139,17 @@ function Index() {
 						</div>
 					</header>
 				)}
-				{floatingPanelMode ? (
-					<div className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-3 rounded-xl bg-popover p-3 text-sm text-popover-foreground shadow-[0_14px_40px_rgb(0_0_0/0.35),0_0_0_1px_rgb(255_255_255/0.08)]">
-						{floatingPanelMode === "format" ? (
+				{floatingPanelVisible ? (
+					<div
+						data-state={floatingPanelMode ? "open" : "closed"}
+						onAnimationEnd={(e) => {
+							if (e.target === e.currentTarget && !floatingPanelMode) {
+								setFloatingPanelVisible(false);
+							}
+						}}
+						className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-3 rounded-xl bg-popover p-3 text-sm text-popover-foreground shadow-[0_14px_40px_rgb(0_0_0/0.35),0_0_0_1px_rgb(255_255_255/0.08)] duration-150 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:[--tw-animation-fill-mode:forwards]"
+					>
+						{floatingPanelLastMode.current === "format" ? (
 							<>
 								<div className="flex items-center justify-between gap-3">
 									<div>
@@ -1931,16 +2206,18 @@ function Index() {
 											}
 										/>
 									</FormatPanelSection>
+									<div className="flex rounded-lg bg-background/35 p-1 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.05)]">
+										<FormatPanelButton
+											active={activePageFormat.firstLineIndent}
+											label="First-line indent"
+											onClick={() =>
+												updateActivePageFormat({
+													firstLineIndent: !activePageFormat.firstLineIndent,
+												})
+											}
+										/>
+									</div>
 								</div>
-								<FormatPanelButton
-									active={activePageFormat.firstLineIndent}
-									label="First-line indent"
-									onClick={() =>
-										updateActivePageFormat({
-											firstLineIndent: !activePageFormat.firstLineIndent,
-										})
-									}
-								/>
 							</>
 						) : (
 							<>
@@ -1965,7 +2242,7 @@ function Index() {
 										<XIcon />
 									</Button>
 								</div>
-								{floatingPanelMode === "replace" ? (
+								{floatingPanelLastMode.current === "replace" ? (
 									<div className="flex items-center gap-2">
 										<input
 											value={replaceText}
@@ -2008,7 +2285,7 @@ function Index() {
 					{appState.activeNotePath &&
 					loadedNotePath === appState.activeNotePath &&
 					activeYDoc ? (
-						<NoteEditor
+						<MemoNoteEditor
 							key={appState.activeNotePath}
 							content={noteContent}
 							noteTitle={activeNoteTitle}
@@ -2054,10 +2331,13 @@ function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		spaceIcons: state.spaceIcons ?? {},
 		spaceOrder: unique(state.spaceOrder ?? []),
 		spaceSortOrders: normalizeSpaceSortOrders(state.spaceSortOrders ?? {}),
+		spacePreviewModes: state.spacePreviewModes ?? {},
 		customItemOrders: normalizeCustomItemOrders(state.customItemOrders ?? {}),
 		readOnlyNotes: state.readOnlyNotes ?? {},
 		sidebarOpen: state.sidebarOpen ?? true,
 		inboxViewMode: state.inboxViewMode === "grid" ? "grid" : "list",
+		showNotePreview: state.showNotePreview !== false,
+		closeButtonOnly: state.closeButtonOnly === true,
 	};
 }
 
@@ -2073,12 +2353,14 @@ function reconcileAppState(
 			? state.activeNotePath
 			: (openTabs[0]?.path ?? null);
 	const activeSpacePath =
-		state.activeSpacePath &&
-		workspace.spaces.some((space) => space.path === state.activeSpacePath)
-			? state.activeSpacePath
-			: activeNotePath
-				? topLevelPath(activeNotePath)
-				: (workspace.spaces[0]?.path ?? "Inbox");
+		state.activeSpacePath === "Trash"
+			? "Trash"
+			: state.activeSpacePath &&
+					workspace.spaces.some((space) => space.path === state.activeSpacePath)
+				? state.activeSpacePath
+				: activeNotePath
+					? topLevelPath(activeNotePath)
+					: (workspace.spaces[0]?.path ?? "Inbox");
 
 	return {
 		activeNotePath,
@@ -2094,6 +2376,7 @@ function reconcileAppState(
 			state.spaceSortOrders,
 			workspace.spaces,
 		),
+		spacePreviewModes: state.spacePreviewModes,
 		customItemOrders: reconcileCustomItemOrders(
 			state.customItemOrders,
 			workspace.spaces,
@@ -2101,6 +2384,8 @@ function reconcileAppState(
 		readOnlyNotes: state.readOnlyNotes,
 		sidebarOpen: state.sidebarOpen,
 		inboxViewMode: state.inboxViewMode,
+		showNotePreview: state.showNotePreview,
+		closeButtonOnly: state.closeButtonOnly,
 	};
 }
 

@@ -277,6 +277,14 @@
 		@apply my-4 border-l-2 border-border pl-4 text-muted-foreground;
 	}
 
+	.paperite-tiptap .paperite-prosemirror hr {
+		@apply my-4 block h-px w-full border-0 bg-border;
+	}
+
+	.paperite-tiptap .paperite-prosemirror hr.ProseMirror-selectednode {
+		@apply bg-primary/60;
+	}
+
 	.paperite-tiptap .paperite-prosemirror ul,
 	.paperite-tiptap .paperite-prosemirror ol {
 		@apply my-3 pl-6;
