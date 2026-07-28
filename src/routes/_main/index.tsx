@@ -24,12 +24,13 @@ import {
 	PencilIcon,
 	SearchIcon,
 	Trash2Icon,
+	PinIcon,
 	XIcon,
 } from "lucide-react";
 import {
 	type CSSProperties,
-	type ReactNode,
 	memo,
+	type ReactNode,
 	startTransition,
 	useCallback,
 	useEffect,
@@ -42,8 +43,15 @@ import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
 import { NoteEditor, type PageFormat } from "@/components/note-editor";
 
 const MemoNoteEditor = memo(NoteEditor);
+
 import { SidebarHotkeys } from "@/components/sidebar-hotkeys";
 import { Button } from "@/components/ui/button";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -110,7 +118,12 @@ const defaultAppState: PaperiteAppState = {
 };
 
 type SaveStatus = "idle" | "saving" | "saved" | "error";
-type FloatingPanelMode = "find" | "format" | "replace" | null;
+type FloatingPanelMode = "find" | "format" | "info" | "replace" | null;
+
+type NoteInfoTarget = {
+	path: string;
+	title: string;
+};
 
 const defaultPageFormat: PageFormat = {
 	firstLineIndent: false,
@@ -125,6 +138,7 @@ type SortableTabProps = {
 	onSelect: () => void;
 	onDoubleClick: () => void;
 	onClose: () => void;
+	onTogglePin: () => void;
 };
 
 function SortableTab({
@@ -134,6 +148,7 @@ function SortableTab({
 	onSelect,
 	onDoubleClick,
 	onClose,
+	onTogglePin,
 }: SortableTabProps) {
 	const {
 		attributes,
@@ -151,44 +166,67 @@ function SortableTab({
 	};
 
 	return (
-		<div
-			ref={setNodeRef}
-			style={style}
-			data-active={isActive}
-			data-preview={note.preview}
-			data-dragging={isSortableDragging}
-			className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:bg-muted data-[dragging=true]:opacity-100 sm:w-36 lg:w-44 cursor-grab active:cursor-grabbing !opacity-100"
-			{...attributes}
-			{...listeners}
-		>
-			<button
-				type="button"
-				className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
-				onClick={onSelect}
-				onDoubleClick={onDoubleClick}
-				onMouseDown={(event) => {
-					if (event.button === 1) {
-						event.preventDefault();
-						onClose();
-					}
-				}}
-			>
-				<span className="min-w-0 flex-1 truncate">
-					{displayTitle(note.title)}
-				</span>
-			</button>
-			<button
-				type="button"
-				aria-label={`Close ${displayTitle(note.title)}`}
-				className="-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
-				onClick={(event) => {
-					event.stopPropagation();
-					onClose();
-				}}
-			>
-				<XIcon className="size-3.5" />
-			</button>
-		</div>
+		<ContextMenu>
+			<ContextMenuTrigger asChild>
+				<div
+					ref={setNodeRef}
+					style={style}
+					data-active={isActive}
+					data-preview={note.preview}
+					data-pinned={note.pinned}
+					data-dragging={isSortableDragging}
+					className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:bg-muted data-[dragging=true]:opacity-100 sm:w-36 lg:w-44 cursor-grab active:cursor-grabbing !opacity-100"
+					{...attributes}
+					{...listeners}
+				>
+					<button
+						type="button"
+						className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
+						onClick={onSelect}
+						onDoubleClick={onDoubleClick}
+						onMouseDown={(event) => {
+							if (event.button === 1) {
+								event.preventDefault();
+								if (!note.pinned) onClose();
+							}
+						}}
+					>
+						<span className="min-w-0 flex-1 truncate">
+							{displayTitle(note.title)}
+						</span>
+					</button>
+					<button
+						type="button"
+						aria-label={
+							note.pinned
+								? `Unpin ${displayTitle(note.title)}`
+								: `Close ${displayTitle(note.title)}`
+						}
+						className={
+							note.pinned
+								? "-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-65 hover:opacity-100"
+								: "-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
+						}
+						onClick={(event) => {
+							event.stopPropagation();
+							if (note.pinned) onTogglePin();
+							else onClose();
+						}}
+					>
+						{note.pinned ? (
+							<PinIcon className="size-3.5" />
+						) : (
+							<XIcon className="size-3.5" />
+						)}
+					</button>
+				</div>
+			</ContextMenuTrigger>
+			<ContextMenuContent>
+				<ContextMenuItem onSelect={onTogglePin}>
+					{note.pinned ? "Unpin Tab" : "Pin Tab"}
+				</ContextMenuItem>
+			</ContextMenuContent>
+		</ContextMenu>
 	);
 }
 
@@ -252,6 +290,9 @@ function Index() {
 		useState<FloatingPanelMode>(null);
 	const [floatingPanelVisible, setFloatingPanelVisible] = useState(false);
 	const floatingPanelLastMode = useRef<FloatingPanelMode>(null);
+	const [noteInfoTarget, setNoteInfoTarget] = useState<NoteInfoTarget | null>(
+		null,
+	);
 	const [zenMode, setZenMode] = useState(false);
 	const [findText, setFindText] = useState("");
 	const [replaceText, setReplaceText] = useState("");
@@ -392,8 +433,10 @@ function Index() {
 		(notePath: string, content: NoteContent) => {
 			clearNoteAutosaveTimer(notePath);
 
+			// Only flip to "saving" when status actually changes — same-value
+			// setState is a no-op in React, so rapid keystrokes stay cheap.
 			if (activeNotePathRef.current === notePath) {
-				setSaveStatus("saving");
+				setSaveStatus((current) => (current === "saving" ? current : "saving"));
 			}
 
 			const timer = window.setTimeout(() => {
@@ -409,7 +452,9 @@ function Index() {
 				if (latestBody === persistedBody) {
 					if (activeNotePathRef.current === notePath) {
 						lastPersistedContent.current = latestBody;
-						setSaveStatus("saved");
+						setSaveStatus((current) =>
+							current === "saved" ? current : "saved",
+						);
 					}
 					return;
 				}
@@ -424,17 +469,24 @@ function Index() {
 
 						if (activeNotePathRef.current === notePath) {
 							lastPersistedContent.current = latestBody;
-							setSaveStatus(currentBody === latestBody ? "saved" : "saving");
+							const nextStatus =
+								currentBody === latestBody ? "saved" : "saving";
+							setSaveStatus((current) =>
+								current === nextStatus ? current : nextStatus,
+							);
 						}
 
-						setWorkspace((current) =>
-							current
-								? updateWorkspaceNote(current, notePath, {
-										preview: noteContentPreview(latestContent),
-										updatedAt: Date.now(),
-									})
-								: current,
-						);
+						// Preview text is non-urgent; don't block the editor paint.
+						startTransition(() => {
+							setWorkspace((current) =>
+								current
+									? updateWorkspaceNote(current, notePath, {
+											preview: noteContentPreview(latestContent),
+											updatedAt: Date.now(),
+										})
+									: current,
+							);
+						});
 					})
 					.catch(() => {
 						if (activeNotePathRef.current === notePath) setSaveStatus("error");
@@ -451,7 +503,9 @@ function Index() {
 			const existingTimer = yjsDerivedAutosaveTimers.current.get(notePath);
 			if (existingTimer !== undefined) window.clearTimeout(existingTimer);
 
-			if (activeNotePathRef.current === notePath) setSaveStatus("saving");
+			if (activeNotePathRef.current === notePath) {
+				setSaveStatus((current) => (current === "saving" ? current : "saving"));
+			}
 
 			const timer = window.setTimeout(() => {
 				yjsDerivedAutosaveTimers.current.delete(notePath);
@@ -465,7 +519,9 @@ function Index() {
 				if (latestBody === persistedBody) {
 					if (activeNotePathRef.current === notePath) {
 						lastPersistedContent.current = latestBody;
-						setSaveStatus("saved");
+						setSaveStatus((current) =>
+							current === "saved" ? current : "saved",
+						);
 					}
 					return;
 				}
@@ -478,17 +534,21 @@ function Index() {
 
 						if (activeNotePathRef.current === notePath) {
 							lastPersistedContent.current = latestBody;
-							setSaveStatus("saved");
+							setSaveStatus((current) =>
+								current === "saved" ? current : "saved",
+							);
 						}
 
-						setWorkspace((current) =>
-							current
-								? updateWorkspaceNote(current, notePath, {
-										preview: noteContentPreview(latestContent),
-										updatedAt: Date.now(),
-									})
-								: current,
-						);
+						startTransition(() => {
+							setWorkspace((current) =>
+								current
+									? updateWorkspaceNote(current, notePath, {
+											preview: noteContentPreview(latestContent),
+											updatedAt: Date.now(),
+										})
+									: current,
+							);
+						});
 					})
 					.catch(() => {
 						if (activeNotePathRef.current === notePath) setSaveStatus("error");
@@ -606,6 +666,11 @@ function Index() {
 	const activePageFormat = appState.activeNotePath
 		? (pageFormats[appState.activeNotePath] ?? defaultPageFormat)
 		: defaultPageFormat;
+
+	const openTabPaths = useMemo(
+		() => appState.openTabs.map((t) => t.path),
+		[appState.openTabs],
+	);
 
 	activeNotePathRef.current = appState.activeNotePath;
 
@@ -988,7 +1053,11 @@ function Index() {
 	}, [appState.spaceOrder, workspace, notePreviews, noteTitleDrafts]);
 
 	const setActiveSpacePath = useCallback((path: string) => {
-		setAppState((current) => ({ ...current, activeSpacePath: path }));
+		setAppState((current) =>
+			current.activeSpacePath === path
+				? current
+				: { ...current, activeSpacePath: path },
+		);
 	}, []);
 
 	const reorderSpaces = useCallback((spaceOrder: string[]) => {
@@ -1011,7 +1080,7 @@ function Index() {
 	);
 
 	const openNote = useCallback(
-		(note: WorkspaceNote, mode: "preview" | "pinned") => {
+		(note: WorkspaceNote, mode: "preview" | "fixed") => {
 			setAppState((current) => {
 				const existing = current.openTabs.find((tab) => tab.path === note.path);
 				const previewIndex = current.openTabs.findIndex((tab) => tab.preview);
@@ -1019,11 +1088,12 @@ function Index() {
 					path: note.path,
 					title: note.title,
 					preview: mode === "preview" && !existing,
+					pinned: false,
 				};
 				const openTabs = existing
 					? current.openTabs.map((tab) =>
 							tab.path === note.path
-								? { ...tab, preview: mode === "pinned" ? false : tab.preview }
+								? { ...tab, preview: mode === "fixed" ? false : tab.preview }
 								: tab,
 						)
 					: replaceOrAppendPreviewTab(current.openTabs, nextTab, previewIndex);
@@ -1106,7 +1176,7 @@ function Index() {
 						...note,
 						title: "",
 					},
-					"pinned",
+					"fixed",
 				);
 			} catch {
 				setSaveStatus("error");
@@ -1151,26 +1221,51 @@ function Index() {
 		);
 	}, [currentSpacePath]);
 
+	const openNoteInfo = useCallback((target: NoteInfoTarget) => {
+		setNoteInfoTarget(target);
+		setFloatingPanelMode("info");
+	}, []);
+
 	useEffect(() => {
 		const createNoteFromMenu = () => createNote(currentSpacePath);
 		const createFolderFromMenu = () => {
 			if (currentSpacePath !== "Inbox") createFolder(currentSpacePath);
 		};
 		const openNoteSetup = () => setFloatingPanelMode("format");
+		const openNoteInfoFromEvent = (event: CustomEvent<NoteInfoTarget>) => {
+			if (!event.detail?.path) return;
+			openNoteInfo({
+				path: event.detail.path,
+				title: event.detail.title || "Untitled",
+			});
+		};
 
+		const refreshFromEvent = () => {
+			void refreshWorkspace();
+		};
 		window.addEventListener("paperite:create-note", createNoteFromMenu);
 		window.addEventListener("paperite:create-folder", createFolderFromMenu);
 		window.addEventListener("paperite:note-setup", openNoteSetup);
+		window.addEventListener("paperite:refresh-workspace", refreshFromEvent);
+		window.addEventListener(
+			"paperite:note-info",
+			openNoteInfoFromEvent as EventListener,
+		);
 
 		return () => {
 			window.removeEventListener("paperite:create-note", createNoteFromMenu);
+			window.removeEventListener("paperite:refresh-workspace", refreshFromEvent);
 			window.removeEventListener(
 				"paperite:create-folder",
 				createFolderFromMenu,
 			);
 			window.removeEventListener("paperite:note-setup", openNoteSetup);
+			window.removeEventListener(
+				"paperite:note-info",
+				openNoteInfoFromEvent as EventListener,
+			);
 		};
-	}, [currentSpacePath, createNote, createFolder]);
+	}, [currentSpacePath, createNote, createFolder, openNoteInfo, refreshWorkspace]);
 
 	const createSpace = async (title: string, color: string, icon: string) => {
 		if (!notesApi) return;
@@ -1312,9 +1407,7 @@ function Index() {
 				...current,
 				expandedFolders: isOpen
 					? unique([...current.expandedFolders, path])
-					: current.expandedFolders.filter(
-							(folderPath) => folderPath !== path,
-						),
+					: current.expandedFolders.filter((folderPath) => folderPath !== path),
 			}));
 		});
 	}, []);
@@ -1376,69 +1469,73 @@ function Index() {
 		}
 	};
 
-	const renameActiveNote = useCallback(async (title: string) => {
-		if (!notesApi || !activeNotePathRef.current) return;
+	const renameActiveNote = useCallback(
+		async (title: string) => {
+			if (!notesApi || !activeNotePathRef.current) return;
 
-		try {
-			const previousPath = activeNotePathRef.current;
-			const renamed = await notesApi.renameItem(previousPath, title);
-			const nextTitle =
-				renamed.path === previousPath
-					? title
-					: stripNoteExtension(fileName(renamed.path));
+			try {
+				const previousPath = activeNotePathRef.current;
+				const renamed = await notesApi.renameItem(previousPath, title);
+				const nextTitle =
+					renamed.path === previousPath
+						? title
+						: stripNoteExtension(fileName(renamed.path));
 
-			const cachedContent = noteContentCache.current.get(previousPath);
-			if (cachedContent !== undefined) {
-				noteContentCache.current.set(renamed.path, cachedContent);
-				noteContentCache.current.delete(previousPath);
-				const persistedContent = notePersistedCache.current.get(previousPath);
-				if (persistedContent !== undefined) {
-					notePersistedCache.current.set(renamed.path, persistedContent);
-					notePersistedCache.current.delete(previousPath);
+				const cachedContent = noteContentCache.current.get(previousPath);
+				if (cachedContent !== undefined) {
+					noteContentCache.current.set(renamed.path, cachedContent);
+					noteContentCache.current.delete(previousPath);
+					const persistedContent = notePersistedCache.current.get(previousPath);
+					if (persistedContent !== undefined) {
+						notePersistedCache.current.set(renamed.path, persistedContent);
+						notePersistedCache.current.delete(previousPath);
+					}
+					lastLoadedNote.current = renamed.path;
+					lastPersistedContent.current =
+						serializeNoteContentBody(cachedContent);
+					if (renamed.path === previousPath) {
+						const updated = { ...cachedContent, title: nextTitle };
+						noteContentCache.current.set(renamed.path, updated);
+						setNoteContent(updated);
+					} else {
+						setNoteContent(cachedContent);
+					}
+					setLoadedNotePath(renamed.path);
 				}
-				lastLoadedNote.current = renamed.path;
-				lastPersistedContent.current = serializeNoteContentBody(cachedContent);
-				if (renamed.path === previousPath) {
-					const updated = { ...cachedContent, title: nextTitle };
-					noteContentCache.current.set(renamed.path, updated);
-					setNoteContent(updated);
-				} else {
-					setNoteContent(cachedContent);
-				}
-				setLoadedNotePath(renamed.path);
+
+				setAppState((current) => ({
+					...current,
+					activeNotePath: renamed.path,
+					activeSpacePath: topLevelPath(renamed.path),
+					openTabs: current.openTabs.map((tab) =>
+						tab.path === previousPath
+							? { ...tab, path: renamed.path, title: nextTitle }
+							: tab,
+					),
+					customItemOrders: moveCustomItemOrders(
+						current.customItemOrders,
+						previousPath,
+						renamed.path,
+					),
+				}));
+				setNotePreviews((current) => {
+					const { [previousPath]: preview, ...rest } = current;
+					return preview ? { ...rest, [renamed.path]: preview } : rest;
+				});
+				setNoteTitleDrafts((current) => {
+					const { [previousPath]: _previousTitle, ...rest } = current;
+					return { ...rest, [renamed.path]: nextTitle };
+				});
+				setPageFormats((current) =>
+					moveDecorations(current, previousPath, renamed.path),
+				);
+				await refreshWorkspace();
+			} catch {
+				setSaveStatus("error");
 			}
-
-			setAppState((current) => ({
-				...current,
-				activeNotePath: renamed.path,
-				activeSpacePath: topLevelPath(renamed.path),
-				openTabs: current.openTabs.map((tab) =>
-					tab.path === previousPath
-						? { ...tab, path: renamed.path, title: nextTitle }
-						: tab,
-				),
-				customItemOrders: moveCustomItemOrders(
-					current.customItemOrders,
-					previousPath,
-					renamed.path,
-				),
-			}));
-			setNotePreviews((current) => {
-				const { [previousPath]: preview, ...rest } = current;
-				return preview ? { ...rest, [renamed.path]: preview } : rest;
-			});
-			setNoteTitleDrafts((current) => {
-				const { [previousPath]: _previousTitle, ...rest } = current;
-				return { ...rest, [renamed.path]: nextTitle };
-			});
-			setPageFormats((current) =>
-				moveDecorations(current, previousPath, renamed.path),
-			);
-			await refreshWorkspace();
-		} catch {
-			setSaveStatus("error");
-		}
-	}, [notesApi, refreshWorkspace]);
+		},
+		[notesApi, refreshWorkspace],
+	);
 
 	const deleteActiveNote = async () => {
 		if (!notesApi || !appState.activeNotePath) return;
@@ -1653,7 +1750,14 @@ function Index() {
 			if (!sourceNotePath) return;
 			if (sourceNotePath !== activeNotePathRef.current) return;
 
+			// TipTap already owns the live document. Keep React noteContent
+			// stable during typing so Index / sidebar / tabs don't re-render
+			// on every keystroke. Refs + cache drive autosave and exports.
+			noteContentRef.current = nextContent;
+			noteContentCache.current.set(sourceNotePath, nextContent);
+
 			if (isUserEdit) {
+				// Promote preview tab once — avoid setState when already pinned.
 				setAppState((current) => {
 					const tab = current.openTabs.find((t) => t.path === sourceNotePath);
 					if (!tab?.preview) return current;
@@ -1664,11 +1768,10 @@ function Index() {
 						),
 					};
 				});
+			} else {
+				// External / programmatic content (find-replace, sync) needs React state.
+				setNoteContent(nextContent);
 			}
-
-			noteContentRef.current = nextContent;
-			noteContentCache.current.set(sourceNotePath, nextContent);
-			setNoteContent(nextContent);
 
 			if (loadedYNote?.path === sourceNotePath) {
 				scheduleYjsDerivedAutosave(sourceNotePath, nextContent);
@@ -1686,17 +1789,24 @@ function Index() {
 	const activeYDoc =
 		loadedYNote?.path === appState.activeNotePath ? loadedYNote.note.doc : null;
 
-	const toggleReadOnly = () => {
-		if (!appState.activeNotePath) return;
+	const toggleReadOnly = useCallback(() => {
+		const notePath = activeNotePathRef.current;
+		if (!notePath) return;
 
-		setAppState((current) => ({
-			...current,
-			readOnlyNotes: {
-				...current.readOnlyNotes,
-				[appState.activeNotePath as string]: !activeNoteReadOnly,
-			},
-		}));
-	};
+		setAppState((current) => {
+			const nextReadOnly = !(current.readOnlyNotes[notePath] === true);
+			if ((current.readOnlyNotes[notePath] === true) === nextReadOnly) {
+				return current;
+			}
+			return {
+				...current,
+				readOnlyNotes: {
+					...current.readOnlyNotes,
+					[notePath]: nextReadOnly,
+				},
+			};
+		});
+	}, []);
 
 	useEffect(() => {
 		const handleShortcut = (event: KeyboardEvent) => {
@@ -1791,21 +1901,56 @@ function Index() {
 	]);
 
 	const selectTab = useCallback((notePath: string) => {
-		setAppState((current) => ({
-			...current,
-			activeNotePath: notePath,
-			activeSpacePath: topLevelPath(notePath),
-		}));
+		setAppState((current) => {
+			if (current.activeNotePath === notePath) return current;
+			return {
+				...current,
+				activeNotePath: notePath,
+				activeSpacePath: topLevelPath(notePath),
+			};
+		});
 	}, []);
 
-	const pinTab = useCallback((notePath: string) => {
-		setAppState((current) => ({
-			...current,
-			openTabs: current.openTabs.map((tab) =>
-				tab.path === notePath ? { ...tab, preview: false } : tab,
-			),
-		}));
+	const fixTab = useCallback((notePath: string) => {
+		setAppState((current) => {
+			const tab = current.openTabs.find((t) => t.path === notePath);
+			if (!tab || !tab.preview) return current;
+			return {
+				...current,
+				openTabs: current.openTabs.map((t) =>
+					t.path === notePath ? { ...t, preview: false } : t,
+				),
+			};
+		});
 	}, []);
+
+	const togglePinTab = useCallback((notePath: string) => {
+		setAppState((current) => {
+			const tab = current.openTabs.find((t) => t.path === notePath);
+			if (!tab) return current;
+			return {
+				...current,
+				openTabs: current.openTabs.map((t) =>
+					t.path === notePath ? { ...t, pinned: !t.pinned, preview: false } : t,
+				),
+			};
+		});
+	}, []);
+
+	const handleSidebarOpenChange = useCallback((sidebarOpen: boolean) => {
+		setAppState((current) =>
+			current.sidebarOpen === sidebarOpen
+				? current
+				: { ...current, sidebarOpen },
+		);
+	}, []);
+
+	const handleSortOrderChange = useCallback(
+		(order: SidebarSortOrder) => {
+			setSpaceSortOrder(currentSpacePath, order);
+		},
+		[currentSpacePath, setSpaceSortOrder],
+	);
 
 	const completeSwitchBenchmark = useCallback((notePath: string) => {
 		const benchmark = pendingSwitchBenchmark.current;
@@ -1834,9 +1979,7 @@ function Index() {
 		<SidebarProvider
 			className="h-full min-h-0"
 			open={appState.sidebarOpen}
-			onOpenChange={(sidebarOpen) =>
-				setAppState((current) => ({ ...current, sidebarOpen }))
-			}
+			onOpenChange={handleSidebarOpenChange}
 			style={
 				{
 					"--sidebar-width": "14.5rem",
@@ -1865,9 +2008,7 @@ function Index() {
 							currentSpacePath,
 							appState.spaceSortOrders,
 						)}
-						onSortOrderChange={(order) =>
-							setSpaceSortOrder(currentSpacePath, order)
-						}
+						onSortOrderChange={handleSortOrderChange}
 						customItemOrders={appState.customItemOrders}
 						onReorderItems={reorderItems}
 						onCreateFolder={createFolder}
@@ -1920,7 +2061,7 @@ function Index() {
 								onDragEnd={handleDragEnd}
 							>
 								<SortableContext
-									items={appState.openTabs.map((t) => t.path)}
+									items={openTabPaths}
 									strategy={horizontalListSortingStrategy}
 								>
 									{appState.openTabs.map((note) => (
@@ -1930,8 +2071,9 @@ function Index() {
 											isActive={note.path === appState.activeNotePath}
 											displayTitle={displayNoteTitle}
 											onSelect={() => selectTab(note.path)}
-											onDoubleClick={() => pinTab(note.path)}
+											onDoubleClick={() => fixTab(note.path)}
 											onClose={() => closeTab(note.path)}
+											onTogglePin={() => togglePinTab(note.path)}
 										/>
 									))}
 								</SortableContext>
@@ -1964,7 +2106,15 @@ function Index() {
 									</Button>
 								</DropdownMenuTrigger>
 								<DropdownMenuContent align="end" className="w-56">
-									<DropdownMenuItem>
+									<DropdownMenuItem
+										onSelect={() => {
+											if (!appState.activeNotePath) return;
+											openNoteInfo({
+												path: appState.activeNotePath,
+												title: activeNoteTitle,
+											});
+										}}
+									>
 										<InfoIcon />
 										Note Info
 									</DropdownMenuItem>
@@ -2219,6 +2369,41 @@ function Index() {
 									</div>
 								</div>
 							</>
+						) : floatingPanelLastMode.current === "info" ? (
+							<>
+								<div className="flex items-center justify-between gap-3">
+									<div>
+										<h2 className="font-medium text-sm">Note Info</h2>
+										<p className="text-muted-foreground text-xs">
+											Details for this note.
+										</p>
+									</div>
+									<Button
+										type="button"
+										size="icon-sm"
+										variant="ghost"
+										aria-label="Close note info"
+										className="shrink-0 text-muted-foreground"
+										onClick={() => setFloatingPanelMode(null)}
+									>
+										<XIcon />
+									</Button>
+								</div>
+								<div className="space-y-3 rounded-lg bg-muted/35 p-2">
+									<div className="space-y-1 rounded-lg bg-background/35 px-2.5 py-2 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.05)]">
+										<span className="text-muted-foreground text-xs">Title</span>
+										<p className="break-words text-sm">
+											{displayNoteTitle(noteInfoTarget?.title ?? "")}
+										</p>
+									</div>
+									<div className="space-y-1 rounded-lg bg-background/35 px-2.5 py-2 shadow-[inset_0_0_0_1px_rgb(255_255_255/0.05)]">
+										<span className="text-muted-foreground text-xs">Path</span>
+										<p className="break-all font-mono text-xs text-muted-foreground">
+											{noteInfoTarget?.path ?? "—"}
+										</p>
+									</div>
+								</div>
+							</>
 						) : (
 							<>
 								<div className="flex items-center gap-2">
@@ -2326,7 +2511,9 @@ function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		activeNotePath: state.activeNotePath ?? null,
 		activeSpacePath: state.activeSpacePath || "Inbox",
 		expandedFolders: unique(state.expandedFolders ?? []),
-		openTabs: (state.openTabs ?? []).filter((tab) => tab.path && tab.title),
+		openTabs: (state.openTabs ?? [])
+			.filter((tab) => tab.path && tab.title)
+			.map((tab) => ({ ...tab, pinned: tab.pinned === true, preview: tab.preview === true })),
 		spaceColors: state.spaceColors ?? {},
 		spaceIcons: state.spaceIcons ?? {},
 		spaceOrder: unique(state.spaceOrder ?? []),

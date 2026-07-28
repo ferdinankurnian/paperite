@@ -15,7 +15,7 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { EditorContent, useEditor } from "@tiptap/react";
+import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
 import { prosemirrorJSONToYDoc } from "@tiptap/y-tiptap";
@@ -29,6 +29,7 @@ import {
 	Code2Icon,
 	HighlighterIcon,
 	ClipboardPasteIcon,
+	ExternalLinkIcon,
 	ImagePlusIcon,
 	ItalicIcon,
 	UploadIcon,
@@ -133,6 +134,26 @@ function denormalizeImagePaths(node: NoteContent): NoteContent {
 	}
 	return node;
 }
+
+async function saveImageToNote(
+	notePath: string,
+	dataUrl: string,
+	filename: string,
+): Promise<string> {
+	try {
+		const result = await window.electron?.notes.saveImage(
+			notePath,
+			dataUrl,
+			filename,
+		);
+		if (result?.path) return result.path;
+	} catch {
+		// fall through to base64
+	}
+	return dataUrl;
+}
+
+
 
 type NoteEditorProps = {
 	content: NoteContent;
@@ -343,10 +364,10 @@ export function NoteEditor({
 	onTitleChange,
 }: NoteEditorProps) {
 	const [draftTitle, setDraftTitle] = useState(editableTitle(noteTitle));
-	const [, setToolbarVersion] = useState(0);
 	const [linkHover, setLinkHover] = useState<LinkHover | null>(null);
 	const titleInputRef = useRef<HTMLTextAreaElement>(null);
 	const notePathRef = useRef(notePath);
+	const editorRef = useRef<TiptapEditor | null>(null);
 	const onChangeRef = useRef(onChange);
 	const readOnlyRef = useRef(readOnly);
 	const searchQueryRef = useRef(searchQuery);
@@ -451,8 +472,42 @@ export function NoteEditor({
 					return false;
 				},
 			},
+			handlePaste: (_view, event) => {
+				if (readOnlyRef.current) return false;
+				const path = notePathRef.current;
+				if (!path) return false;
+
+				const items = Array.from(event.clipboardData?.items ?? []);
+				const imageItem = items.find((item) => item.type.startsWith("image/"));
+				if (!imageItem) return false;
+
+				const file = imageItem.getAsFile();
+				if (!file) return false;
+
+				event.preventDefault();
+				hasUserInteractedRef.current = true;
+
+				const reader = new FileReader();
+				reader.addEventListener("load", async () => {
+					if (typeof reader.result !== "string") return;
+					const src = await saveImageToNote(
+						path,
+						reader.result,
+						file.name || "image",
+					);
+					editorRef.current
+						?.chain()
+						.focus()
+						.setImage({ src, alt: file.name })
+						.run();
+				});
+				reader.readAsDataURL(file);
+				return true;
+			},
 		},
-		onSelectionUpdate: () => setToolbarVersion((version) => version + 1),
+		// Keep transaction re-renders off — toolbar subscribes itself, and
+		// parent state must not update on every keystroke (see updateNoteContent).
+		shouldRerenderOnTransaction: false,
 		onUpdate: ({ editor: currentEditor }) => {
 			if (syncingExternalDocRef.current) return;
 
@@ -462,9 +517,10 @@ export function NoteEditor({
 				notePathRef.current,
 				hasUserInteractedRef.current,
 			);
-			setToolbarVersion((version) => version + 1);
 		},
 	});
+
+	editorRef.current = editor;
 
 	useEffect(() => {
 		if (!editor) return;
@@ -544,16 +600,14 @@ export function NoteEditor({
 		return () => window.removeEventListener("mousemove", closeWhenAway);
 	}, [linkHover]);
 
+	// Only focus when the empty canvas chrome is clicked. Clicks inside the
+	// ProseMirror surface are handled natively — calling focus() again was
+	// forcing selection updates (and parent re-renders) on every click.
 	const focusEditorCanvas = useCallback(
 		(event: MouseEvent<HTMLDivElement>) => {
 			if (!editor) return;
-
-			if (event.target === event.currentTarget) {
-				editor.commands.focus("end");
-				return;
-			}
-
-			editor.commands.focus();
+			if (event.target !== event.currentTarget) return;
+			editor.commands.focus("end");
 		},
 		[editor],
 	);
@@ -635,7 +689,13 @@ export function NoteEditor({
 					</div>
 				</div>
 				<div className="pointer-events-none absolute right-0 bottom-0 left-0 z-20 h-24 bg-gradient-to-t from-background via-background/80 to-transparent" />
-				{editor ? <FormatMenu editor={editor} readOnly={readOnly} /> : null}
+				{editor ? (
+					<FormatMenu
+						editor={editor}
+						notePath={notePath}
+						readOnly={readOnly}
+					/>
+				) : null}
 			</div>
 			{linkHover ? (
 				<LinkHoverCard hover={linkHover} onClose={() => setLinkHover(null)} />
@@ -646,15 +706,72 @@ export function NoteEditor({
 
 function FormatMenu({
 	editor,
+	notePath,
 	readOnly,
 }: {
 	editor: TiptapEditor;
+	notePath: string | null;
 	readOnly: boolean;
 }) {
 	const imageInputRef = useRef<HTMLInputElement>(null);
 	const savedTextSelectionRef = useRef<{ from: number; to: number } | null>(
 		null,
 	);
+
+	// Subscribe only to the specific active-mark/node booleans the toolbar
+	// buttons need. This re-renders FormatMenu (and only FormatMenu — never
+	// the note title, EditorContent, or Index) when one of these actually
+	// changes, instead of on every transaction/selection event.
+	const toolbarState = useEditorState({
+		editor,
+		selector: (ctx) => ({
+			bold: ctx.editor.isActive("bold"),
+			italic: ctx.editor.isActive("italic"),
+			underline: ctx.editor.isActive("underline"),
+			strike: ctx.editor.isActive("strike"),
+			highlight: ctx.editor.isActive("highlight"),
+			highlightColor: ctx.editor.isActive("highlight")
+				? (ctx.editor.getAttributes("highlight").color as string | undefined)
+				: undefined,
+			textColor: ctx.editor.getAttributes("textStyle").color as
+				| string
+				| undefined,
+			blockquote: ctx.editor.isActive("blockquote"),
+			codeBlock: ctx.editor.isActive("codeBlock"),
+			heading1: ctx.editor.isActive("heading", { level: 1 }),
+			heading2: ctx.editor.isActive("heading", { level: 2 }),
+			heading3: ctx.editor.isActive("heading", { level: 3 }),
+			paragraph: ctx.editor.isActive("paragraph"),
+			bulletList: ctx.editor.isActive("bulletList"),
+			orderedList: ctx.editor.isActive("orderedList"),
+			taskList: ctx.editor.isActive("taskList"),
+			alignLeft: ctx.editor.isActive({ textAlign: "left" }),
+			alignCenter: ctx.editor.isActive({ textAlign: "center" }),
+			alignRight: ctx.editor.isActive({ textAlign: "right" }),
+			alignJustify: ctx.editor.isActive({ textAlign: "justify" }),
+		}),
+	}) ?? {
+		bold: false,
+		italic: false,
+		underline: false,
+		strike: false,
+		highlight: false,
+		highlightColor: undefined as string | undefined,
+		textColor: undefined as string | undefined,
+		blockquote: false,
+		codeBlock: false,
+		heading1: false,
+		heading2: false,
+		heading3: false,
+		paragraph: false,
+		bulletList: false,
+		orderedList: false,
+		taskList: false,
+		alignLeft: false,
+		alignCenter: false,
+		alignRight: false,
+		alignJustify: false,
+	};
 
 	useEffect(() => {
 		const rememberSelection = () => {
@@ -678,26 +795,16 @@ function FormatMenu({
 		const reader = new FileReader();
 		reader.addEventListener("load", async () => {
 			if (typeof reader.result !== "string") return;
-			try {
-				const result = await window.electron?.notes.saveImage(
-					notePath,
-					reader.result,
-					file.name || "image",
-				);
-				if (result?.path) {
-					editor
-						.chain()
-						.focus()
-						.setImage({ src: result.path, alt: file.name })
-						.run();
-				}
-			} catch {
-				editor
-					.chain()
-					.focus()
-					.setImage({ src: reader.result, alt: file.name })
-					.run();
-			}
+			const src = await saveImageToNote(
+				notePath,
+				reader.result,
+				file.name || "image",
+			);
+			editor
+				.chain()
+				.focus()
+				.setImage({ src, alt: file.name })
+				.run();
 			setImagePopoverOpen(false);
 		});
 		reader.readAsDataURL(file);
@@ -749,7 +856,11 @@ function FormatMenu({
 				className="app-region-no-drag no-scrollbar flex w-full items-center gap-1 overflow-x-auto overflow-y-hidden rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 [&>*]:shrink-0"
 				onPointerDown={(event) => event.stopPropagation()}
 			>
-				<BlockStyleSelect editor={editor} disabled={readOnly} />
+				<BlockStyleSelect
+					editor={editor}
+					disabled={readOnly}
+					toolbarState={toolbarState}
+				/>
 				<span className="mx-0.5 h-5 w-px bg-border" />
 				<FormatButton
 					label="Bold"
@@ -757,6 +868,7 @@ function FormatMenu({
 					command="bold"
 					editor={editor}
 					disabled={readOnly}
+					active={toolbarState.bold}
 				/>
 				<FormatButton
 					label="Italic"
@@ -764,6 +876,7 @@ function FormatMenu({
 					command="italic"
 					editor={editor}
 					disabled={readOnly}
+					active={toolbarState.italic}
 				/>
 				<FormatButton
 					label="Underline"
@@ -771,6 +884,7 @@ function FormatMenu({
 					command="underline"
 					editor={editor}
 					disabled={readOnly}
+					active={toolbarState.underline}
 				/>
 				<FormatButton
 					label="Strikethrough"
@@ -778,6 +892,7 @@ function FormatMenu({
 					command="strike"
 					editor={editor}
 					disabled={readOnly}
+					active={toolbarState.strike}
 				/>
 				<span className="mx-0.5 h-5 w-px bg-border" />
 				<ColorMenu
@@ -788,6 +903,7 @@ function FormatMenu({
 					mode="highlight"
 					colors={highlightColors}
 					savedSelectionRef={savedTextSelectionRef}
+					active={toolbarState.highlight}
 				/>
 				<ColorMenu
 					editor={editor}
@@ -796,6 +912,7 @@ function FormatMenu({
 					mode="text-color"
 					colors={textColors}
 					savedSelectionRef={savedTextSelectionRef}
+					active={!!toolbarState.textColor}
 				/>
 				<span className="mx-0.5 h-5 w-px bg-border" />
 				<FormatButton
@@ -804,6 +921,7 @@ function FormatMenu({
 					command="quote"
 					editor={editor}
 					disabled={readOnly}
+					active={toolbarState.blockquote}
 				/>
 				<FormatButton
 					label="Code block"
@@ -811,6 +929,7 @@ function FormatMenu({
 					command="code-block"
 					editor={editor}
 					disabled={readOnly}
+					active={toolbarState.codeBlock}
 				/>
 				<Popover open={imagePopoverOpen} onOpenChange={setImagePopoverOpen}>
 					<ToolbarTooltip label="Upload image">
@@ -884,16 +1003,27 @@ function FormatMenu({
 					onChange={uploadImage}
 				/>
 				<span className="mx-0.5 h-5 w-px bg-border" />
-				{alignCommands.map(({ command, icon, label }) => (
-					<FormatButton
-						key={command}
-						label={label}
-						icon={icon}
-						command={command}
-						editor={editor}
-						disabled={readOnly}
-					/>
-				))}
+				{alignCommands.map(({ command, icon, label }) => {
+					const active =
+						command === "align-left"
+							? toolbarState.alignLeft
+							: command === "align-center"
+								? toolbarState.alignCenter
+								: command === "align-right"
+									? toolbarState.alignRight
+									: toolbarState.alignJustify;
+					return (
+						<FormatButton
+							key={command}
+							label={label}
+							icon={icon}
+							command={command}
+							editor={editor}
+							disabled={readOnly}
+							active={active}
+						/>
+					);
+				})}
 				<span className="mx-0.5 h-5 w-px bg-border" />
 				<FormatButton
 					label="Bullet list"
@@ -901,6 +1031,7 @@ function FormatMenu({
 					command="bullet-list"
 					editor={editor}
 					disabled={readOnly}
+					active={toolbarState.bulletList}
 				/>
 				<FormatButton
 					label="Numbered list"
@@ -908,6 +1039,7 @@ function FormatMenu({
 					command="ordered-list"
 					editor={editor}
 					disabled={readOnly}
+					active={toolbarState.orderedList}
 				/>
 				<FormatButton
 					label="Checkbox"
@@ -915,6 +1047,7 @@ function FormatMenu({
 					command="task-list"
 					editor={editor}
 					disabled={readOnly}
+					active={toolbarState.taskList}
 				/>
 			</div>
 		</div>
@@ -929,6 +1062,7 @@ function ColorMenu({
 	label,
 	mode,
 	savedSelectionRef,
+	active,
 }: {
 	colors: string[];
 	disabled: boolean;
@@ -937,15 +1071,12 @@ function ColorMenu({
 	label: string;
 	mode: "highlight" | "text-color";
 	savedSelectionRef: RefObject<{ from: number; to: number } | null>;
+	active: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	const [selectedColor, setSelectedColor] = useState(colors[0]);
 	const [dropupPosition, setDropupPosition] = useState({ left: 0, top: 0 });
 	const triggerRef = useRef<HTMLButtonElement>(null);
-	const active =
-		mode === "highlight"
-			? editor.isActive("highlight")
-			: editor.isActive("textStyle");
 
 	const updateDropupPosition = useCallback(() => {
 		const rect = triggerRef.current?.getBoundingClientRect();
@@ -1111,18 +1242,24 @@ function ColorMenu({
 function BlockStyleSelect({
 	editor,
 	disabled,
+	toolbarState,
 }: {
 	editor: TiptapEditor;
 	disabled: boolean;
+	toolbarState: {
+		heading1: boolean;
+		heading2: boolean;
+		heading3: boolean;
+		paragraph: boolean;
+	};
 }) {
-	const value =
-		blockStyleOptions.find(
-			(option) =>
-				option.value.startsWith("heading-") &&
-				editor.isActive("heading", {
-					level: Number(option.value.replace("heading-", "")),
-				}),
-		)?.value ?? "body";
+	const value = toolbarState.heading1
+		? "heading-1"
+		: toolbarState.heading2
+			? "heading-2"
+			: toolbarState.heading3
+				? "heading-3"
+				: "body";
 
 	return (
 		<Select
@@ -1156,14 +1293,15 @@ function FormatButton({
 	command,
 	editor,
 	disabled,
+	active,
 }: {
 	label: string;
 	icon: ComponentType<{ className?: string }>;
 	command: EditorFormatCommand;
 	editor: TiptapEditor;
 	disabled: boolean;
+	active: boolean;
 }) {
-	const active = isFormatActive(editor, command);
 
 	return (
 		<ToolbarTooltip label={label}>
@@ -1285,20 +1423,23 @@ function LinkHoverCard({
 	return (
 		<div
 			role="tooltip"
-			className="paperite-link-hover-card fixed z-50 w-64 -translate-x-1/2 -translate-y-[calc(100%+0.5rem)] rounded-lg bg-popover p-2.5 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10"
+			className="paperite-link-hover-card fixed z-50 w-64 -translate-x-1/2 -translate-y-full pb-2"
 			style={{ left: hover.left, top: hover.top }}
 			onMouseLeave={onClose}
 		>
-			<div className="truncate pb-2 text-xs text-muted-foreground">
-				{hover.href}
+			<div className="rounded-lg bg-popover p-2.5 text-sm text-popover-foreground shadow-lg ring-1 ring-foreground/10">
+				<div className="truncate pb-2 text-xs text-muted-foreground">
+					{hover.href}
+				</div>
+				<button
+					type="button"
+					className="flex h-8 w-full items-center justify-center gap-1.5 rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground transition-[opacity,scale] active:scale-[0.96] hover:opacity-90"
+					onClick={() => window.electron?.openExternal(hover.href)}
+				>
+					<ExternalLinkIcon className="size-3.5" />
+					Open in browser
+				</button>
 			</div>
-			<button
-				type="button"
-				className="flex h-8 w-full items-center justify-center rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground transition-[opacity,scale] active:scale-[0.96] hover:opacity-90"
-				onClick={() => window.electron?.openExternal(hover.href)}
-			>
-				Open in browser
-			</button>
 		</div>
 	);
 }

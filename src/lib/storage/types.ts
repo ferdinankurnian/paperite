@@ -22,6 +22,7 @@ export type WorkspaceNote = {
 	path: string;
 	preview: string;
 	updatedAt: number;
+	pinned: boolean;
 };
 
 export type WorkspaceFolder = {
@@ -64,6 +65,7 @@ export type OpenNoteTab = {
 	path: string;
 	title: string;
 	preview: boolean;
+	pinned: boolean;
 };
 
 export type SidebarSortOrder = "newest" | "oldest" | "a-z" | "z-a" | "custom";

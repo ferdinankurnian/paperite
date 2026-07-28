@@ -285,13 +285,21 @@
 		@apply bg-primary/60;
 	}
 
-	.paperite-tiptap .paperite-prosemirror ul,
+	/* Tailwind preflight sets list-style: none — restore markers for editor lists. */
+	.paperite-tiptap .paperite-prosemirror ul:not([data-type="taskList"]) {
+		@apply my-3 list-disc pl-6;
+	}
+
 	.paperite-tiptap .paperite-prosemirror ol {
-		@apply my-3 pl-6;
+		@apply my-3 list-decimal pl-6;
 	}
 
 	.paperite-tiptap .paperite-prosemirror li {
 		@apply my-1;
+	}
+
+	.paperite-tiptap .paperite-prosemirror li::marker {
+		color: var(--muted-foreground);
 	}
 
 	.paperite-tiptap .paperite-prosemirror li p {
@@ -391,24 +399,97 @@
 		@apply bg-yellow-300/80 text-neutral-950 outline-none;
 	}
 
+	/* Task list — NodeView does NOT set data-type on <li>, so target via parent ul */
 	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] {
-		@apply list-none pl-0;
+		list-style: none;
+		padding-left: 0;
+		margin: 0.75rem 0;
 	}
 
-	.paperite-tiptap .paperite-prosemirror li[data-type="taskItem"] {
-		@apply my-1 flex gap-2;
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] ul[data-type="taskList"] {
+		padding-left: 1.5rem;
 	}
 
-	.paperite-tiptap .paperite-prosemirror li[data-type="taskItem"] > label {
-		@apply mt-1 inline-flex size-4 shrink-0 items-center justify-center;
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li {
+		display: flex;
+		flex-direction: row;
+		align-items: flex-start;
+		gap: 0.5rem;
+		margin: 0.25rem 0;
 	}
 
-	.paperite-tiptap .paperite-prosemirror li[data-type="taskItem"] input {
-		@apply size-4 cursor-pointer rounded-[4px] border border-input bg-transparent accent-primary outline-none;
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li > label {
+		display: inline-flex;
+		flex-shrink: 0;
+		align-items: center;
+		justify-content: center;
+		width: 1rem;
+		height: 1rem;
+		margin-top: 0.2em;
+		cursor: pointer;
+		user-select: none;
 	}
 
-	.paperite-tiptap .paperite-prosemirror li[data-type="taskItem"] > div {
-		@apply min-w-0 flex-1;
+	/* TipTap adds an empty <span> next to the input for styling hooks */
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li > label > span {
+		display: none;
+	}
+
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li > label > input[type="checkbox"] {
+		appearance: none;
+		-webkit-appearance: none;
+		position: relative;
+		width: 1rem;
+		height: 1rem;
+		margin: 0;
+		flex-shrink: 0;
+		cursor: pointer;
+		border-radius: 4px;
+		border: 1px solid var(--input);
+		background-color: var(--background);
+		outline: none;
+		transition: border-color 0.15s, background-color 0.15s;
+	}
+
+	.dark .paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li > label > input[type="checkbox"] {
+		background-color: color-mix(in oklab, var(--input) 30%, transparent);
+	}
+
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li > label > input[type="checkbox"]:hover {
+		border-color: color-mix(in oklab, var(--muted-foreground) 50%, transparent);
+	}
+
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li > label > input[type="checkbox"]:focus-visible {
+		border-color: var(--ring);
+		box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 50%, transparent);
+	}
+
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li > label > input[type="checkbox"]:checked {
+		border-color: var(--primary);
+		background-color: var(--primary);
+		color: var(--primary-foreground);
+	}
+
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li > label > input[type="checkbox"]:checked::after {
+		content: "";
+		position: absolute;
+		left: 4px;
+		top: 1px;
+		width: 5px;
+		height: 9px;
+		border: solid currentColor;
+		border-width: 0 1.5px 1.5px 0;
+		transform: rotate(45deg);
+	}
+
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li > div {
+		flex: 1 1 0%;
+		min-width: 0;
+	}
+
+	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] > li[data-checked="true"] > div {
+		color: var(--muted-foreground);
+		text-decoration: line-through;
 	}
 
 	.paperite-emoji-menu button[data-active="true"] {

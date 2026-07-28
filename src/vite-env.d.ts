@@ -105,6 +105,7 @@ interface Window {
 				filename: string,
 			) => Promise<{ path: string }>;
 			getAssetUrl: (notePath: string, assetPath: string) => Promise<string>;
+			setPinned: (notePath: string, pinned: boolean) => Promise<{ pinned: boolean }>;
 			createNote: (
 				parentPath: string,
 				title: string,
@@ -180,6 +181,7 @@ type WorkspaceNote = {
 	path: string;
 	preview: string;
 	updatedAt: number;
+	pinned: boolean;
 };
 
 type WorkspaceFolder = {

@@ -16,6 +16,9 @@ import {
 	MenubarMenu,
 	MenubarSeparator,
 	MenubarShortcut,
+	MenubarSub,
+	MenubarSubContent,
+	MenubarSubTrigger,
 	MenubarTrigger,
 } from "@/components/ui/menubar";
 import type { CommandId } from "@/lib/commands";
@@ -297,20 +300,23 @@ function AppMenu() {
 				<MenubarMenu>
 					<MenubarTrigger>Format</MenubarTrigger>
 					<MenubarContent>
-						<MenubarGroup>
-							<MenubarItem onSelect={() => runFormat("typography-heading-1")}>
-								Heading 1
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("typography-heading-2")}>
-								Heading 2
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("typography-heading-3")}>
-								Heading 3
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("typography-body")}>
-								Body
-							</MenubarItem>
-						</MenubarGroup>
+						<MenubarSub>
+							<MenubarSubTrigger>Paragraph</MenubarSubTrigger>
+							<MenubarSubContent>
+								<MenubarItem onSelect={() => runFormat("typography-heading-1")}>
+									Heading 1
+								</MenubarItem>
+								<MenubarItem onSelect={() => runFormat("typography-heading-2")}>
+									Heading 2
+								</MenubarItem>
+								<MenubarItem onSelect={() => runFormat("typography-heading-3")}>
+									Heading 3
+								</MenubarItem>
+								<MenubarItem onSelect={() => runFormat("typography-body")}>
+									Body
+								</MenubarItem>
+							</MenubarSubContent>
+						</MenubarSub>
 						<MenubarSeparator />
 						<MenubarGroup>
 							<MenubarItem onSelect={() => runFormat("bold")}>
@@ -329,49 +335,53 @@ function AppMenu() {
 								Strikethrough
 								<MenubarShortcut>Ctrl+Shift+X</MenubarShortcut>
 							</MenubarItem>
-						</MenubarGroup>
-						<MenubarSeparator />
-						<MenubarGroup>
 							<MenubarItem onSelect={() => runFormat("highlight")}>
 								Highlight
 							</MenubarItem>
 						</MenubarGroup>
 						<MenubarSeparator />
-						<MenubarGroup>
-							<MenubarItem onSelect={() => runFormat("quote")}>
-								Quote
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("code-block")}>
-								Code Block
-							</MenubarItem>
-						</MenubarGroup>
-						<MenubarSeparator />
-						<MenubarGroup>
-							<MenubarItem onSelect={() => runFormat("align-left")}>
-								Align Left
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("align-center")}>
-								Align Center
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("align-right")}>
-								Align Right
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("align-justify")}>
-								Justify
-							</MenubarItem>
-						</MenubarGroup>
-						<MenubarSeparator />
-						<MenubarGroup>
-							<MenubarItem onSelect={() => runFormat("bullet-list")}>
-								Bullet List
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("ordered-list")}>
-								Numbered List
-							</MenubarItem>
-							<MenubarItem onSelect={() => runFormat("task-list")}>
-								Checkbox List
-							</MenubarItem>
-						</MenubarGroup>
+						<MenubarSub>
+							<MenubarSubTrigger>Block</MenubarSubTrigger>
+							<MenubarSubContent>
+								<MenubarItem onSelect={() => runFormat("quote")}>
+									Quote
+								</MenubarItem>
+								<MenubarItem onSelect={() => runFormat("code-block")}>
+									Code Block
+								</MenubarItem>
+							</MenubarSubContent>
+						</MenubarSub>
+						<MenubarSub>
+							<MenubarSubTrigger>Align</MenubarSubTrigger>
+							<MenubarSubContent>
+								<MenubarItem onSelect={() => runFormat("align-left")}>
+									Align Left
+								</MenubarItem>
+								<MenubarItem onSelect={() => runFormat("align-center")}>
+									Align Center
+								</MenubarItem>
+								<MenubarItem onSelect={() => runFormat("align-right")}>
+									Align Right
+								</MenubarItem>
+								<MenubarItem onSelect={() => runFormat("align-justify")}>
+									Justify
+								</MenubarItem>
+							</MenubarSubContent>
+						</MenubarSub>
+						<MenubarSub>
+							<MenubarSubTrigger>List</MenubarSubTrigger>
+							<MenubarSubContent>
+								<MenubarItem onSelect={() => runFormat("bullet-list")}>
+									Bullet List
+								</MenubarItem>
+								<MenubarItem onSelect={() => runFormat("ordered-list")}>
+									Numbered List
+								</MenubarItem>
+								<MenubarItem onSelect={() => runFormat("task-list")}>
+									Checkbox List
+								</MenubarItem>
+							</MenubarSubContent>
+						</MenubarSub>
 					</MenubarContent>
 				</MenubarMenu>
 				<MenubarMenu>
