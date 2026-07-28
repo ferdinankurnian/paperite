@@ -1,6 +1,7 @@
 import { Outlet } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { AppTitlebar } from "@/components/app-titlebar";
+import { ErrorBoundary } from "@/components/error-boundary";
 import {
 	KeyboardShortcutsProvider,
 	useKeyboardShortcuts,
@@ -18,7 +19,9 @@ export function RootLayout() {
 					<div className="paperite-shell flex h-svh flex-col overflow-hidden bg-background">
 						<AppTitlebar />
 						<div className="min-h-0 flex-1 overflow-hidden">
-							<Outlet />
+							<ErrorBoundary>
+								<Outlet />
+							</ErrorBoundary>
 						</div>
 					</div>
 				</TooltipProvider>

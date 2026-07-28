@@ -202,7 +202,7 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	onDeleteItem: (path: string) => void;
 	onDeleteSpace: (path: string) => void;
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
-	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	onRenameItem: (path: string, title: string) => void;
 	onReorderSpaces: (spaceOrder: string[]) => void;
 	onEditSpace: (
@@ -299,6 +299,16 @@ function filterWorkspaceItems(
 	return filteredItems;
 }
 
+async function toggleNotePinned(note: WorkspaceNote) {
+	const next = !note.pinned;
+	try {
+		await window.electron?.notes.setPinned(note.path, next);
+		window.dispatchEvent(new Event("paperite:refresh-workspace"));
+	} catch {
+		// ignore — workspace will stay as-is
+	}
+}
+
 function sortWorkspaceItems(
 	items: WorkspaceItem[],
 	sortOrder: SidebarSortOrder,
@@ -319,15 +329,27 @@ function sortWorkspaceItems(
 			: item,
 	);
 
+	const pinFirst = (list: WorkspaceItem[]) => {
+		const pinned = list.filter(
+			(item) => item.type === "note" && item.pinned === true,
+		);
+		const rest = list.filter(
+			(item) => !(item.type === "note" && item.pinned === true),
+		);
+		return [...pinned, ...rest];
+	};
+
 	if (sortOrder === "custom") {
-		return orderItemsByCustomOrder(
-			withSortedChildren,
-			customItemOrders[parentPath],
+		return pinFirst(
+			orderItemsByCustomOrder(
+				withSortedChildren,
+				customItemOrders[parentPath],
+			),
 		);
 	}
 
 	if (sortOrder === "a-z" || sortOrder === "z-a") {
-		return [...withSortedChildren].sort((first, second) => {
+		const sorted = [...withSortedChildren].sort((first, second) => {
 			const comparison = titleForSort(first).localeCompare(
 				titleForSort(second),
 				undefined,
@@ -336,6 +358,7 @@ function sortWorkspaceItems(
 
 			return sortOrder === "a-z" ? comparison : -comparison;
 		});
+		return pinFirst(sorted);
 	}
 
 	const sortedNotes = withSortedChildren
@@ -347,9 +370,10 @@ function sortWorkspaceItems(
 		);
 	let noteIndex = 0;
 
-	return withSortedChildren.map((item) =>
+	const dateSorted = withSortedChildren.map((item) =>
 		item.type === "note" ? sortedNotes[noteIndex++] : item,
 	);
+	return pinFirst(dateSorted);
 }
 
 function orderItemsByCustomOrder(
@@ -407,7 +431,7 @@ function NoteTree({
 	onCreateNote: (parentPath: string) => void;
 	onDeleteItem: (path: string) => void;
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
-	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
 	parentPath: string;
@@ -496,7 +520,7 @@ function NoteGrid({
 	activeNotePath: string | null;
 	onDeleteItem: (path: string) => void;
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
-	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
 	spaceColors: Record<string, string>;
@@ -651,7 +675,7 @@ function NoteGridCard({
 	isActive: boolean;
 	onDeleteItem: (path: string) => void;
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
-	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
 	spaceColors: Record<string, string>;
@@ -682,9 +706,12 @@ function NoteGridCard({
 						{...attributes}
 						{...listeners}
 						onClick={() => onOpenNote(note, "preview")}
-						onDoubleClick={() => onOpenNote(note, "pinned")}
+						onDoubleClick={() => onOpenNote(note, "fixed")}
 					>
 						<div className="line-clamp-3 text-sm font-semibold leading-tight">
+							{note.pinned ? (
+								<PinIcon className="mr-1 inline size-3.5 shrink-0 text-muted-foreground" />
+							) : null}
 							{note.title.trim() || "Untitled"}
 						</div>
 						{showPreview && note.preview ? (
@@ -728,6 +755,10 @@ function NoteGridCard({
 								notePath={note.path}
 								onMove={(spacePath) => onMoveItem(note.path, spacePath)}
 							/>
+							<ContextMenuItem onSelect={() => void toggleNotePinned(note)}>
+								<PinIcon />
+								{note.pinned ? "Unpin note" : "Pin note"}
+							</ContextMenuItem>
 							<ContextMenuSeparator />
 							<ContextMenuItem
 								variant="destructive"
@@ -791,7 +822,7 @@ const MemoizedFolderChildren = React.memo(function FolderChildren({
 	onCreateNote: (parentPath: string) => void;
 	onDeleteItem: (path: string) => void;
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
-	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
 	spaces: WorkspaceSpace[];
@@ -859,7 +890,7 @@ function NoteFolderItem({
 	onCreateNote: (parentPath: string) => void;
 	onDeleteItem: (path: string) => void;
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
-	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
 	spaces: WorkspaceSpace[];
@@ -1142,7 +1173,7 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 	isActive: boolean;
 	onDeleteItem: (path: string) => void;
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
-	onOpenNote: (note: WorkspaceNote, mode: "preview" | "pinned") => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	parentPath: string;
 	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
@@ -1196,11 +1227,16 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 						{...(canDragItems ? attributes : {})}
 						{...(canDragItems ? listeners : {})}
 						onClick={() => onOpenNote(item, "preview")}
-						onDoubleClick={() => onOpenNote(item, "pinned")}
+						onDoubleClick={() => onOpenNote(item, "fixed")}
 					>
 						<div className="flex w-full items-center gap-2">
 							<span className="min-w-0 flex-1 truncate font-medium">
+								<>
+								{item.pinned ? (
+									<PinIcon className="mr-1 inline size-3.5 shrink-0 text-muted-foreground" />
+								) : null}
 								{item.title.trim() || "Untitled"}
+							</>
 							</span>
 						</div>
 						{showPreview && item.preview ? (
@@ -1249,6 +1285,10 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 								notePath={item.path}
 								onMove={(spacePath) => onMoveItem(item.path, spacePath)}
 							/>
+							<ContextMenuItem onSelect={() => void toggleNotePinned(item)}>
+								<PinIcon />
+								{item.pinned ? "Unpin note" : "Pin note"}
+							</ContextMenuItem>
 							<ContextMenuSeparator />
 							<ContextMenuItem
 								variant="destructive"

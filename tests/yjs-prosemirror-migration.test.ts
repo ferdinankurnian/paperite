@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import { expect, test } from "bun:test";
 import { getSchema } from "@tiptap/core";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
@@ -28,22 +28,22 @@ const noteJson = {
 	],
 };
 
-const schema = getSchema([
-	StarterKit.configure({ underline: false, undoRedo: false }),
-	Underline,
-	TextStyle.configure({ mergeNestedSpanStyles: true }),
-	TextAlign.configure({ types: ["heading", "paragraph"] }),
-	TaskList,
-	TaskItem.configure({ nested: true }),
-]);
+test("prosemirror note json round-trips through yjs without data loss", () => {
+	const schema = getSchema([
+		StarterKit.configure({ underline: false, undoRedo: false }),
+		Underline,
+		TextStyle.configure({ mergeNestedSpanStyles: true }),
+		TextAlign.configure({ types: ["heading", "paragraph"] }),
+		TaskList,
+		TaskItem.configure({ nested: true }),
+	]);
 
-const importedDoc = prosemirrorJSONToYDoc(schema, noteJson);
-const persistedUpdate = Y.encodeStateAsUpdate(importedDoc);
-const restoredDoc = new Y.Doc();
+	const importedDoc = prosemirrorJSONToYDoc(schema, noteJson);
+	const persistedUpdate = Y.encodeStateAsUpdate(importedDoc);
+	const restoredDoc = new Y.Doc();
 
-Y.applyUpdate(restoredDoc, persistedUpdate);
+	Y.applyUpdate(restoredDoc, persistedUpdate);
 
-assert.ok(restoredDoc.getXmlFragment("prosemirror").length > 0);
-assert.deepEqual(yDocToProsemirrorJSON(restoredDoc), noteJson);
-
-console.log("Yjs ProseMirror migration verified.");
+	expect(restoredDoc.getXmlFragment("prosemirror").length).toBeGreaterThan(0);
+	expect(yDocToProsemirrorJSON(restoredDoc)).toEqual(noteJson);
+});

@@ -527,6 +527,9 @@ const writeDerivedNoteContent = async (notePath, content) => {
 			if (!normalizedContent.title && existingContent.title) {
 				normalizedContent.title = existingContent.title;
 			}
+			if (normalizedContent.pinned === undefined && existingContent.pinned !== undefined) {
+				normalizedContent.pinned = existingContent.pinned;
+			}
 		} catch {
 			// Keep the derived payload as-is when the manifest is missing.
 		}
@@ -1397,6 +1400,12 @@ const getIndexDb = async () => {
 		"last_synced_at",
 		"last_synced_at INTEGER",
 	);
+	addColumnIfMissing(
+		indexDb,
+		"notes",
+		"pinned",
+		"pinned INTEGER NOT NULL DEFAULT 0",
+	);
 	indexDb.exec("CREATE UNIQUE INDEX IF NOT EXISTS notes_id_idx ON notes(id)");
 
 	return indexDb;
@@ -1407,7 +1416,7 @@ const getIndexedNote = async (notePath, stats) => {
 	const db = await getIndexDb();
 	const existing = db
 		.prepare(
-			"SELECT id, title, preview, mtime_ms AS mtimeMs, size FROM notes WHERE path = ?",
+			"SELECT id, title, preview, mtime_ms AS mtimeMs, size, pinned FROM notes WHERE path = ?",
 		)
 		.get(normalizedPath);
 
@@ -1420,6 +1429,7 @@ const getIndexedNote = async (notePath, stats) => {
 			title: existing.title,
 			preview: existing.preview,
 			updatedAt: existing.mtimeMs,
+			pinned: existing.pinned === 1,
 		};
 	}
 
@@ -1429,11 +1439,12 @@ const getIndexedNote = async (notePath, stats) => {
 	const title =
 		readNoteTitle(content) || toNoteTitle(path.posix.basename(normalizedPath));
 	const preview = toNotePreviewFromContent(content);
+	const pinned = content.pinned === true;
 	const metadata = extractNoteMetadata(content);
 
 	db.prepare(`
-		INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version)
-		VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sync_status FROM notes WHERE path = ?), 'local'), COALESCE((SELECT sync_version FROM notes WHERE path = ?), 0) + 1)
+		INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version, pinned)
+		VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sync_status FROM notes WHERE path = ?), 'local'), COALESCE((SELECT sync_version FROM notes WHERE path = ?), 0) + 1, ?)
 		ON CONFLICT(path) DO UPDATE SET
 			id = excluded.id,
 			title = excluded.title,
@@ -1442,7 +1453,8 @@ const getIndexedNote = async (notePath, stats) => {
 			size = excluded.size,
 			indexed_at = excluded.indexed_at,
 			sync_status = excluded.sync_status,
-			sync_version = excluded.sync_version
+			sync_version = excluded.sync_version,
+			pinned = excluded.pinned
 	`).run(
 		id,
 		normalizedPath,
@@ -1453,6 +1465,7 @@ const getIndexedNote = async (notePath, stats) => {
 		Date.now(),
 		normalizedPath,
 		normalizedPath,
+		pinned ? 1 : 0,
 	);
 	db.prepare("DELETE FROM note_headings WHERE note_id = ?").run(id);
 	db.prepare("DELETE FROM note_tags WHERE note_id = ?").run(id);
@@ -1497,6 +1510,7 @@ const getIndexedNote = async (notePath, stats) => {
 		title,
 		preview,
 		updatedAt: stats.mtimeMs,
+		pinned,
 	};
 };
 
@@ -1723,6 +1737,7 @@ const scanDirectory = async (relativePath = "", knownNotePaths = new Set()) => {
 				path: childPath,
 				preview: indexedNote.preview,
 				updatedAt: indexedNote.updatedAt,
+				pinned: indexedNote.pinned === true,
 			});
 			continue;
 		}
@@ -1752,6 +1767,7 @@ const scanDirectory = async (relativePath = "", knownNotePaths = new Set()) => {
 			path: notePath,
 			preview: indexedNote.preview,
 			updatedAt: indexedNote.updatedAt,
+			pinned: indexedNote.pinned === true,
 		});
 	}
 	notes.sort((first, second) => second.updatedAt - first.updatedAt);
@@ -2335,6 +2351,21 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	await getIndexedNote(normalizedPath, stats);
 	scheduleGoogleDriveAutoSync();
 	return { ok: true };
+});
+
+
+ipcMain.handle("notes:set-pinned", async (_event, notePath, pinned) => {
+	await ensureWorkspace();
+	const normalizedPath = currentNotePath(notePath);
+	const content = await readNoteContent(normalizedPath, true);
+	content.pinned = pinned === true;
+	await writeFileAtomic(
+		resolveNoteContentPath(normalizedPath),
+		serializeNoteContent(content),
+	);
+	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+	await getIndexedNote(normalizedPath, stats);
+	return { pinned: content.pinned };
 });
 
 ipcMain.handle(
