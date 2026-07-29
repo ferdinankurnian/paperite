@@ -68,9 +68,17 @@ export class WebNotesEngine implements NotesEngine {
 		path: string,
 		update: Uint8Array,
 	): Promise<{ ok: true; noteId: string; updatedAt: number }> {
+		// `Uint8Array`'s type is generic over its backing buffer
+		// (`ArrayBufferLike` = `ArrayBuffer | SharedArrayBuffer`), and DOM's
+		// `BodyInit`/`BlobPart` types only accept the concrete `ArrayBuffer`
+		// case. At runtime this is always a real, non-shared buffer (it
+		// comes straight from Yjs's update encoder, never from a
+		// SharedArrayBuffer-backed view) — `fetch` has always accepted a
+		// plain `Uint8Array` body. This cast bridges that lib-type gap
+		// without an unnecessary copy.
 		return api(`/api/notes/${encodeURIComponent(path)}/yjs/update`, {
 			method: "POST",
-			body: update,
+			body: update as BodyInit,
 			headers: { "Content-Type": "application/octet-stream" },
 		});
 	}
