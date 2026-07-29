@@ -31,7 +31,7 @@ function ExportItemRow({ item }: { item: ExportItem }) {
 	const handleOpenFolder = useCallback(async () => {
 		if (item.destPath) {
 			const dir = item.destPath.substring(0, item.destPath.lastIndexOf("/"));
-			window.electron.openExternal(`file://${dir}`);
+			window.electron?.openExternal(`file://${dir}`);
 		}
 	}, [item.destPath]);
 

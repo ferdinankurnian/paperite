@@ -359,7 +359,8 @@ function Index() {
 	const [noteContent, setNoteContent] = useState<NoteContent>(() =>
 		createEmptyNoteContent(),
 	);
-	const [loadedNotePath, setLoadedNotePath] = useState<string | null>(null);
+	// Write-only: retained for symmetry with setLoadedNotePath call sites;
+	const [, setLoadedNotePath] = useState<string | null>(null);
 	const [notePreviews, setNotePreviews] = useState<Record<string, string>>({});
 	const [noteTitleDrafts, setNoteTitleDrafts] = useState<
 		Record<string, string>
@@ -1383,6 +1384,7 @@ function Index() {
 						type: "note",
 						preview: "",
 						updatedAt: Date.now(),
+						pinned: false,
 						...note,
 						title: "",
 					},
