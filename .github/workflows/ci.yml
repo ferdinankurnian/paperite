@@ -14,5 +14,6 @@ jobs:
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
+      - run: bunx tsc -b
       - run: bunx biome check src main.js preload.js --max-diagnostics=50 || true
       - run: bun test
