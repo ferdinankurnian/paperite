@@ -1387,32 +1387,6 @@ function runFormatCommand(
 		.run();
 }
 
-function isFormatActive(editor: TiptapEditor, command: EditorFormatCommand) {
-	if (command === "bold") return editor.isActive("bold");
-	if (command === "italic") return editor.isActive("italic");
-	if (command === "underline") return editor.isActive("underline");
-	if (command === "strike") return editor.isActive("strike");
-	if (command === "highlight") return editor.isActive("highlight");
-	if (command === "quote") return editor.isActive("blockquote");
-	if (command === "code-block") return editor.isActive("codeBlock");
-	if (command === "typography-heading-1") {
-		return editor.isActive("heading", { level: 1 });
-	}
-	if (command === "typography-heading-2") {
-		return editor.isActive("heading", { level: 2 });
-	}
-	if (command === "typography-heading-3") {
-		return editor.isActive("heading", { level: 3 });
-	}
-	if (command === "typography-body") return editor.isActive("paragraph");
-	if (command === "bullet-list") return editor.isActive("bulletList");
-	if (command === "ordered-list") return editor.isActive("orderedList");
-	if (command === "task-list") return editor.isActive("taskList");
-
-	const alignment = command.replace("align-", "") as TextAlignment;
-	return editor.isActive({ textAlign: alignment });
-}
-
 function LinkHoverCard({
 	hover,
 	onClose,

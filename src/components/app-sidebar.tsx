@@ -2123,6 +2123,7 @@ export function AppSidebar({
 						}))}
 						onCreateSpace={onCreateSpace}
 						onDeleteSpace={onDeleteSpace}
+						onEditSpace={onEditSpace}
 						onSelectSpace={onSelectSpace}
 						spaceColorsByPath={spaceColors}
 						spaceIconsByPath={spaceIcons}
@@ -2216,6 +2217,7 @@ export function AppSidebar({
 												path: n.trashPath,
 												preview: n.preview,
 												updatedAt: n.deletedAt,
+												pinned: false,
 											}))}
 											activeNotePath={activeNotePath}
 											onDeleteItem={() => {}}
