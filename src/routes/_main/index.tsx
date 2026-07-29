@@ -18,13 +18,16 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 import {
 	BookOpenIcon,
 	CheckIcon,
+	CloudIcon,
 	ExternalLinkIcon,
+	FolderIcon,
+	InboxIcon,
 	InfoIcon,
 	MoreVerticalIcon,
 	PencilIcon,
+	PinIcon,
 	SearchIcon,
 	Trash2Icon,
-	PinIcon,
 	XIcon,
 } from "lucide-react";
 import {
@@ -42,10 +45,33 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
 import { NoteEditor, type PageFormat } from "@/components/note-editor";
 
-const MemoNoteEditor = memo(NoteEditor);
+const MemoNoteEditor = memo(NoteEditor, (prev, next) => {
+	// Tab switch only toggles visibility in the parent — keep TipTap mounted
+	// and skip re-render unless something the editor actually uses changed.
+	return (
+		prev.content === next.content &&
+		prev.noteTitle === next.noteTitle &&
+		prev.notePath === next.notePath &&
+		prev.pageFormat === next.pageFormat &&
+		prev.readOnly === next.readOnly &&
+		prev.yDoc === next.yDoc &&
+		prev.searchQuery === next.searchQuery &&
+		prev.zenMode === next.zenMode &&
+		prev.onChange === next.onChange &&
+		prev.onContentRendered === next.onContentRendered &&
+		prev.onRename === next.onRename &&
+		prev.onTitleChange === next.onTitleChange
+	);
+});
 
 import { SidebarHotkeys } from "@/components/sidebar-hotkeys";
 import { Button } from "@/components/ui/button";
+import {
+	HoverCard,
+	HoverCardContent,
+	HoverCardTrigger,
+} from "@/components/ui/hover-card";
+import { Input } from "@/components/ui/input";
 import {
 	ContextMenu,
 	ContextMenuContent,
@@ -135,6 +161,12 @@ type SortableTabProps = {
 	note: OpenNoteTab;
 	isActive: boolean;
 	displayTitle: (title: string) => string;
+	spacePath: string;
+	spaceTitle: string;
+	spaceIcon?: string;
+	spaceColor?: string;
+	openDelay: number;
+	onHoverOpen: () => void;
 	onSelect: () => void;
 	onDoubleClick: () => void;
 	onClose: () => void;
@@ -145,6 +177,12 @@ function SortableTab({
 	note,
 	isActive,
 	displayTitle,
+	spacePath,
+	spaceTitle,
+	spaceIcon,
+	spaceColor,
+	openDelay,
+	onHoverOpen,
 	onSelect,
 	onDoubleClick,
 	onClose,
@@ -165,68 +203,112 @@ function SortableTab({
 		opacity: isSortableDragging ? "1" : undefined,
 	};
 
+	const title = displayTitle(note.title);
+	const customIcon =
+		spaceIcon?.startsWith("custom:") ? spaceIcon.slice("custom:".length) : null;
+
 	return (
-		<ContextMenu>
-			<ContextMenuTrigger asChild>
-				<div
-					ref={setNodeRef}
-					style={style}
-					data-active={isActive}
-					data-preview={note.preview}
-					data-pinned={note.pinned}
-					data-dragging={isSortableDragging}
-					className="group relative z-10 my-2 w-28 shrink-0 rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:bg-muted data-[dragging=true]:opacity-100 sm:w-36 lg:w-44 cursor-grab active:cursor-grabbing !opacity-100"
-					{...attributes}
-					{...listeners}
-				>
-					<button
-						type="button"
-						className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
-						onClick={onSelect}
-						onDoubleClick={onDoubleClick}
-						onMouseDown={(event) => {
-							if (event.button === 1) {
-								event.preventDefault();
-								if (!note.pinned) onClose();
-							}
-						}}
-					>
-						<span className="min-w-0 flex-1 truncate">
-							{displayTitle(note.title)}
-						</span>
-					</button>
-					<button
-						type="button"
-						aria-label={
-							note.pinned
-								? `Unpin ${displayTitle(note.title)}`
-								: `Close ${displayTitle(note.title)}`
-						}
-						className={
-							note.pinned
-								? "-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-65 hover:opacity-100"
-								: "-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
-						}
-						onClick={(event) => {
-							event.stopPropagation();
-							if (note.pinned) onTogglePin();
-							else onClose();
-						}}
-					>
-						{note.pinned ? (
-							<PinIcon className="size-3.5" />
-						) : (
-							<XIcon className="size-3.5" />
-						)}
-					</button>
+		<HoverCard
+			openDelay={openDelay}
+			closeDelay={100}
+			onOpenChange={(open) => {
+				if (open) onHoverOpen();
+			}}
+		>
+			<ContextMenu>
+				<HoverCardTrigger asChild>
+					<ContextMenuTrigger asChild>
+						<div
+							ref={setNodeRef}
+							style={style}
+							data-active={isActive}
+							data-preview={note.preview}
+							data-pinned={note.pinned}
+							data-dragging={isSortableDragging}
+							className="group relative z-10 my-2 w-28 shrink-0 cursor-grab rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:bg-muted data-[dragging=true]:opacity-100 active:cursor-grabbing sm:w-36 lg:w-44 !opacity-100"
+							{...attributes}
+							{...listeners}
+						>
+							<button
+								type="button"
+								className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
+								onClick={onSelect}
+								onDoubleClick={onDoubleClick}
+								onMouseDown={(event) => {
+									if (event.button === 1) {
+										event.preventDefault();
+										if (!note.pinned) onClose();
+									}
+								}}
+							>
+								<span className="min-w-0 flex-1 truncate">{title}</span>
+							</button>
+							<button
+								type="button"
+								aria-label={
+									note.pinned ? `Unpin ${title}` : `Close ${title}`
+								}
+								className={
+									note.pinned
+										? "-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-65 hover:opacity-100"
+										: "-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
+								}
+								onClick={(event) => {
+									event.stopPropagation();
+									if (note.pinned) onTogglePin();
+									else onClose();
+								}}
+							>
+								{note.pinned ? (
+									<PinIcon className="size-3.5" />
+								) : (
+									<XIcon className="size-3.5" />
+								)}
+							</button>
+						</div>
+					</ContextMenuTrigger>
+				</HoverCardTrigger>
+				<ContextMenuContent>
+					<ContextMenuItem onSelect={onTogglePin}>
+						{note.pinned ? "Unpin Tab" : "Pin Tab"}
+					</ContextMenuItem>
+				</ContextMenuContent>
+			</ContextMenu>
+			<HoverCardContent
+				side="bottom"
+				align="start"
+				sideOffset={6}
+				className="w-48 gap-0 overflow-hidden p-0"
+			>
+				<div className="px-3 py-2.5">
+					<p className="font-medium text-sm leading-snug text-popover-foreground">
+						{title}
+					</p>
 				</div>
-			</ContextMenuTrigger>
-			<ContextMenuContent>
-				<ContextMenuItem onSelect={onTogglePin}>
-					{note.pinned ? "Unpin Tab" : "Pin Tab"}
-				</ContextMenuItem>
-			</ContextMenuContent>
-		</ContextMenu>
+				<div className="flex items-center gap-2 border-border/60 border-t bg-muted/40 px-3 py-2 text-muted-foreground text-xs">
+					{spacePath === "Inbox" ? (
+						<InboxIcon className="size-3.5 shrink-0" />
+					) : customIcon ? (
+						<img
+							src={customIcon}
+							alt=""
+							className="size-3.5 shrink-0 rounded-sm object-cover"
+						/>
+					) : spaceIcon === "folder" ? (
+						<FolderIcon
+							className="size-3.5 shrink-0"
+							style={spaceColor ? { color: spaceColor } : undefined}
+						/>
+					) : (
+						<CloudIcon
+							className="size-3.5 shrink-0"
+							style={spaceColor ? { color: spaceColor } : undefined}
+						/>
+					)}
+					<span className="min-w-0 truncate">{spaceTitle}</span>
+				</div>
+			</HoverCardContent>
+		</HoverCard>
 	);
 }
 
@@ -282,10 +364,6 @@ function Index() {
 	const [noteTitleDrafts, setNoteTitleDrafts] = useState<
 		Record<string, string>
 	>({});
-	const [loadedYNote, setLoadedYNote] = useState<{
-		path: string;
-		note: LoadedYNote;
-	} | null>(null);
 	const [floatingPanelMode, setFloatingPanelMode] =
 		useState<FloatingPanelMode>(null);
 	const [floatingPanelVisible, setFloatingPanelVisible] = useState(false);
@@ -307,10 +385,29 @@ function Index() {
 	const activeNotePathRef = useRef<string | null>(null);
 	const noteContentRef = useRef<NoteContent>(createEmptyNoteContent());
 	const tabListRef = useRef<HTMLDivElement>(null);
+	const [tabHoverWarm, setTabHoverWarm] = useState(false);
+	const tabHoverCoolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+		null,
+	);
+	const markTabHoverWarm = useCallback(() => {
+		if (tabHoverCoolTimerRef.current) {
+			clearTimeout(tabHoverCoolTimerRef.current);
+			tabHoverCoolTimerRef.current = null;
+		}
+		setTabHoverWarm(true);
+	}, []);
+	const scheduleTabHoverCool = useCallback(() => {
+		if (tabHoverCoolTimerRef.current) clearTimeout(tabHoverCoolTimerRef.current);
+		tabHoverCoolTimerRef.current = setTimeout(() => {
+			setTabHoverWarm(false);
+			tabHoverCoolTimerRef.current = null;
+		}, 200);
+	}, []);
 	const [newlyCreatedFolderPath, setNewlyCreatedFolderPath] = useState<
 		string | null
 	>(null);
 	const noteContentCache = useRef(new Map<string, NoteContent>());
+	const loadedYNoteCache = useRef(new Map<string, LoadedYNote>());
 	const notePersistedCache = useRef(new Map<string, NoteContent>());
 	const noteWriteQueue = useRef(new Map<string, Promise<void>>());
 	const noteAutosaveTimers = useRef(new Map<string, number>());
@@ -322,6 +419,10 @@ function Index() {
 		start: number;
 	} | null>(null);
 	const [lockedNotePaths, setLockedNotePaths] = useState<Set<string>>(
+		() => new Set(),
+	);
+	// Paths whose content + yDoc are ready so we can keep a live TipTap instance.
+	const [readyEditorPaths, setReadyEditorPaths] = useState<Set<string>>(
 		() => new Set(),
 	);
 	const [trashNotes, setTrashNotes] = useState<TrashNote[]>([]);
@@ -579,7 +680,7 @@ function Index() {
 			clearAutosavesForPath(notePath);
 
 			try {
-				if (loadedYNote?.path === notePath) {
+				if (loadedYNoteCache.current.has(notePath)) {
 					await notesApi?.writeDerivedNote(notePath, latestContent);
 				} else {
 					await enqueueNoteWrite(notePath, latestContent);
@@ -610,7 +711,6 @@ function Index() {
 		clearAutosavesForPath,
 		clearNoteAutosaveTimer,
 		enqueueNoteWrite,
-		loadedYNote?.path,
 		notesApi,
 	]);
 
@@ -685,38 +785,94 @@ function Index() {
 		}
 	}, [appState.activeNotePath, noteContent]);
 
+	const markEditorReady = useCallback((notePath: string) => {
+		if (!noteContentCache.current.has(notePath)) return;
+		if (!loadedYNoteCache.current.has(notePath)) return;
+		setReadyEditorPaths((current) => {
+			if (current.has(notePath)) return current;
+			const next = new Set(current);
+			next.add(notePath);
+			return next;
+		});
+	}, []);
+
+	// Keep yDocs warm for every open tab so switching is hide/show, not remount.
 	useEffect(() => {
-		if (!appState.activeNotePath) {
-			setLoadedYNote((current) => {
-				current?.note.destroy();
-				return null;
-			});
-			return;
-		}
+		const openPaths = new Set(appState.openTabs.map((tab) => tab.path));
+
+		// Drop readiness for closed tabs (yDoc destroy happens in closeTab).
+		setReadyEditorPaths((current) => {
+			let changed = false;
+			const next = new Set<string>();
+			for (const path of current) {
+				if (openPaths.has(path)) next.add(path);
+				else changed = true;
+			}
+			return changed ? next : current;
+		});
 
 		let cancelled = false;
-		const notePath = appState.activeNotePath;
 
-		loadYNote(notePath)
-			.then((note) => {
-				if (!note) return;
+		for (const notePath of openPaths) {
+			const cached = loadedYNoteCache.current.get(notePath);
+			if (cached) {
+				markEditorReady(notePath);
+				continue;
+			}
 
-				if (cancelled) {
-					note.destroy();
-					return;
-				}
-
-				setLoadedYNote((current) => {
-					current?.note.destroy();
-					return { path: notePath, note };
+			loadYNote(notePath)
+				.then((note) => {
+					if (!note) return;
+					if (cancelled) {
+						note.destroy();
+						return;
+					}
+					loadedYNoteCache.current.set(notePath, note);
+					markEditorReady(notePath);
+				})
+				.catch(() => {
+					if (notePath === activeNotePathRef.current) setSaveStatus("error");
 				});
-			})
-			.catch(() => setSaveStatus("error"));
+		}
+
+		if (!appState.activeNotePath) {
+		}
 
 		return () => {
 			cancelled = true;
 		};
-	}, [appState.activeNotePath]);
+	}, [appState.activeNotePath, appState.openTabs, markEditorReady]);
+
+	// Warm content cache for open tabs so first switch after restore is instant.
+	useEffect(() => {
+		if (!notesApi) return;
+		let cancelled = false;
+
+		for (const tab of appState.openTabs) {
+			if (noteContentCache.current.has(tab.path)) {
+				markEditorReady(tab.path);
+				continue;
+			}
+
+			notesApi
+				.readNote(tab.path)
+				.then((content) => {
+					if (cancelled) return;
+					if (!noteContentCache.current.has(tab.path)) {
+						noteContentCache.current.set(tab.path, content);
+					}
+					if (!notePersistedCache.current.has(tab.path)) {
+						notePersistedCache.current.set(tab.path, content);
+					}
+					markEditorReady(tab.path);
+				})
+				.catch(() => undefined);
+		}
+
+		return () => {
+			cancelled = true;
+		};
+	}, [appState.openTabs, notesApi, markEditorReady]);
 
 	useEffect(() => {
 		const title = appState.activeNotePath
@@ -843,6 +999,8 @@ function Index() {
 
 	useEffect(() => {
 		if (floatingPanelMode) {
+			// Single shared panel: switching modes replaces content in-place
+			// (no close animation between info/find/setup/replace).
 			floatingPanelLastMode.current = floatingPanelMode;
 			setFloatingPanelVisible(true);
 		}
@@ -908,31 +1066,59 @@ function Index() {
 			return;
 		}
 
-		let cancelled = false;
 		const notePath = appState.activeNotePath;
 
+		// Editor already mounted for this tab — just point refs at the cache.
+		// Zero setState: switching tabs must not re-render TipTap instances.
+		if (
+			readyEditorPaths.has(notePath) &&
+			noteContentCache.current.has(notePath)
+		) {
+			const cached = noteContentCache.current.get(notePath)!;
+			const persisted = notePersistedCache.current.get(notePath);
+			lastLoadedNote.current = notePath;
+			noteContentRef.current = cached;
+			lastPersistedContent.current = persisted
+				? serializeNoteContentBody(persisted)
+				: serializeNoteContentBody(cached);
+			return;
+		}
+
+		let cancelled = false;
+
 		const loadNote = async () => {
-			setSaveStatus("idle");
 			const cachedContent = noteContentCache.current.get(notePath);
+			const persistedContent = notePersistedCache.current.get(notePath);
 			setNotePreviews((current) => omitExact(current, notePath));
 
+			// Fast path: trust in-memory cache on tab switch. Skip the IPC
+			// round-trip so the editor paints immediately.
 			if (cachedContent !== undefined) {
-				const persistedContent = notePersistedCache.current.get(notePath);
 				const cachedSerialized = serializeNoteContent(cachedContent);
 				const persistedSerialized = persistedContent
 					? serializeNoteContent(persistedContent)
 					: "";
+				const isDirty =
+					persistedContent !== undefined &&
+					cachedSerialized !== persistedSerialized;
 
+				lastLoadedNote.current = notePath;
+				lastPersistedContent.current = persistedContent
+					? serializeNoteContentBody(persistedContent)
+					: serializeNoteContentBody(cachedContent);
 				setNoteContent(cachedContent);
 				setLoadedNotePath(notePath);
 				setSaveStatus(
-					persistedContent
-						? cachedSerialized === persistedSerialized
-							? "saved"
-							: "saving"
-						: "idle",
+					persistedContent ? (isDirty ? "saving" : "saved") : "idle",
 				);
+
+				// Already in cache + we know the persisted snapshot → done.
+				if (persistedContent !== undefined) {
+					markEditorReady(notePath);
+					return;
+				}
 			} else {
+				setSaveStatus("idle");
 				lastLoadedNote.current = null;
 				lastPersistedContent.current = "";
 				setLoadedNotePath(null);
@@ -974,6 +1160,7 @@ function Index() {
 				}
 				setLoadedNotePath(notePath);
 				setSaveStatus("saving");
+				markEditorReady(notePath);
 				return;
 			}
 
@@ -984,6 +1171,7 @@ function Index() {
 			setNoteContent(content);
 			setLoadedNotePath(notePath);
 			setSaveStatus("saved");
+			markEditorReady(notePath);
 
 			if (readDuration > 16) {
 				console.info(
@@ -997,7 +1185,7 @@ function Index() {
 		return () => {
 			cancelled = true;
 		};
-	}, [appState.activeNotePath, notesApi]);
+	}, [appState.activeNotePath, notesApi, markEditorReady, readyEditorPaths]);
 
 	useEffect(
 		() => () => {
@@ -1009,6 +1197,16 @@ function Index() {
 			}
 			noteAutosaveTimers.current.clear();
 			yjsDerivedAutosaveTimers.current.clear();
+		},
+		[],
+	);
+
+	useEffect(
+		() => () => {
+			for (const note of loadedYNoteCache.current.values()) {
+				note.destroy();
+			}
+			loadedYNoteCache.current.clear();
 		},
 		[],
 	);
@@ -1111,6 +1309,18 @@ function Index() {
 
 	const closeTab = useCallback(
 		(path: string, _options: { flush?: boolean } = {}) => {
+			const cached = loadedYNoteCache.current.get(path);
+			if (cached) {
+				cached.destroy();
+				loadedYNoteCache.current.delete(path);
+			}
+			setReadyEditorPaths((current) => {
+				if (!current.has(path)) return current;
+				const next = new Set(current);
+				next.delete(path);
+				return next;
+			});
+
 			setAppState((current) => {
 				const tabIndex = current.openTabs.findIndex((tab) => tab.path === path);
 				const openTabs = current.openTabs.filter((tab) => tab.path !== path);
@@ -1254,7 +1464,10 @@ function Index() {
 
 		return () => {
 			window.removeEventListener("paperite:create-note", createNoteFromMenu);
-			window.removeEventListener("paperite:refresh-workspace", refreshFromEvent);
+			window.removeEventListener(
+				"paperite:refresh-workspace",
+				refreshFromEvent,
+			);
 			window.removeEventListener(
 				"paperite:create-folder",
 				createFolderFromMenu,
@@ -1265,7 +1478,13 @@ function Index() {
 				openNoteInfoFromEvent as EventListener,
 			);
 		};
-	}, [currentSpacePath, createNote, createFolder, openNoteInfo, refreshWorkspace]);
+	}, [
+		currentSpacePath,
+		createNote,
+		createFolder,
+		openNoteInfo,
+		refreshWorkspace,
+	]);
 
 	const createSpace = async (title: string, color: string, icon: string) => {
 		if (!notesApi) return;
@@ -1748,13 +1967,13 @@ function Index() {
 			isUserEdit: boolean,
 		) => {
 			if (!sourceNotePath) return;
-			if (sourceNotePath !== activeNotePathRef.current) return;
 
-			// TipTap already owns the live document. Keep React noteContent
-			// stable during typing so Index / sidebar / tabs don't re-render
-			// on every keystroke. Refs + cache drive autosave and exports.
-			noteContentRef.current = nextContent;
+			// TipTap owns the live doc per mounted tab. Cache drives autosave.
+			// Only mirror into the active noteContentRef (exports / find-replace).
 			noteContentCache.current.set(sourceNotePath, nextContent);
+			if (sourceNotePath === activeNotePathRef.current) {
+				noteContentRef.current = nextContent;
+			}
 
 			if (isUserEdit) {
 				// Promote preview tab once — avoid setState when already pinned.
@@ -1773,21 +1992,20 @@ function Index() {
 				setNoteContent(nextContent);
 			}
 
-			if (loadedYNote?.path === sourceNotePath) {
+			// Prefer yjs-derived write when this note has a live yDoc.
+			if (loadedYNoteCache.current.has(sourceNotePath)) {
 				scheduleYjsDerivedAutosave(sourceNotePath, nextContent);
 				return;
 			}
 
 			scheduleNoteAutosave(sourceNotePath, nextContent);
 		},
-		[loadedYNote?.path, scheduleNoteAutosave, scheduleYjsDerivedAutosave],
+		[scheduleNoteAutosave, scheduleYjsDerivedAutosave],
 	);
 
 	const activeNoteReadOnly = appState.activeNotePath
 		? appState.readOnlyNotes[appState.activeNotePath] === true
 		: false;
-	const activeYDoc =
-		loadedYNote?.path === appState.activeNotePath ? loadedYNote.note.doc : null;
 
 	const toggleReadOnly = useCallback(() => {
 		const notePath = activeNotePathRef.current;
@@ -1901,6 +2119,7 @@ function Index() {
 	]);
 
 	const selectTab = useCallback((notePath: string) => {
+		// Urgent update — startTransition made switches feel delayed.
 		setAppState((current) => {
 			if (current.activeNotePath === notePath) return current;
 			return {
@@ -1914,7 +2133,7 @@ function Index() {
 	const fixTab = useCallback((notePath: string) => {
 		setAppState((current) => {
 			const tab = current.openTabs.find((t) => t.path === notePath);
-			if (!tab || !tab.preview) return current;
+			if (!tab?.preview) return current;
 			return {
 				...current,
 				openTabs: current.openTabs.map((t) =>
@@ -2044,6 +2263,13 @@ function Index() {
 						<div
 							ref={tabListRef}
 							className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
+							onMouseEnter={() => {
+								if (tabHoverCoolTimerRef.current) {
+									clearTimeout(tabHoverCoolTimerRef.current);
+									tabHoverCoolTimerRef.current = null;
+								}
+							}}
+							onMouseLeave={scheduleTabHoverCool}
 							onWheel={(e) => {
 								if (e.deltaY !== 0) {
 									e.preventDefault();
@@ -2064,18 +2290,34 @@ function Index() {
 									items={openTabPaths}
 									strategy={horizontalListSortingStrategy}
 								>
-									{appState.openTabs.map((note) => (
-										<SortableTab
-											key={note.path}
-											note={note}
-											isActive={note.path === appState.activeNotePath}
-											displayTitle={displayNoteTitle}
-											onSelect={() => selectTab(note.path)}
-											onDoubleClick={() => fixTab(note.path)}
-											onClose={() => closeTab(note.path)}
-											onTogglePin={() => togglePinTab(note.path)}
-										/>
-									))}
+									{appState.openTabs.map((note) => {
+										const spacePath = topLevelPath(note.path);
+										const space =
+											visibleSpaces.find((entry) => entry.path === spacePath) ??
+											null;
+										return (
+											<SortableTab
+												key={note.path}
+												note={note}
+												isActive={note.path === appState.activeNotePath}
+												displayTitle={displayNoteTitle}
+												spacePath={spacePath}
+												spaceTitle={
+													spacePath === "Inbox"
+														? "Inbox"
+														: (space?.title ?? spacePath)
+												}
+												spaceIcon={appState.spaceIcons[spacePath]}
+												spaceColor={appState.spaceColors[spacePath]}
+												openDelay={tabHoverWarm ? 0 : 1000}
+												onHoverOpen={markTabHoverWarm}
+												onSelect={() => selectTab(note.path)}
+												onDoubleClick={() => fixTab(note.path)}
+												onClose={() => closeTab(note.path)}
+												onTogglePin={() => togglePinTab(note.path)}
+											/>
+										);
+									})}
 								</SortableContext>
 							</DndContext>
 						</div>
@@ -2299,7 +2541,7 @@ function Index() {
 						}}
 						className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-3 rounded-xl bg-popover p-3 text-sm text-popover-foreground shadow-[0_14px_40px_rgb(0_0_0/0.35),0_0_0_1px_rgb(255_255_255/0.08)] duration-150 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=closed]:[--tw-animation-fill-mode:forwards]"
 					>
-						{floatingPanelLastMode.current === "format" ? (
+						{(floatingPanelMode ?? floatingPanelLastMode.current) === "format" ? (
 							<>
 								<div className="flex items-center justify-between gap-3">
 									<div>
@@ -2369,7 +2611,7 @@ function Index() {
 									</div>
 								</div>
 							</>
-						) : floatingPanelLastMode.current === "info" ? (
+						) : (floatingPanelMode ?? floatingPanelLastMode.current) === "info" ? (
 							<>
 								<div className="flex items-center justify-between gap-3">
 									<div>
@@ -2407,11 +2649,11 @@ function Index() {
 						) : (
 							<>
 								<div className="flex items-center gap-2">
-									<input
+									<Input
 										ref={findInputRef}
 										value={findText}
 										placeholder="Find..."
-										className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 outline-none focus-visible:border-ring"
+										className="min-w-0 flex-1"
 										onChange={(event) => setFindText(event.target.value)}
 										onKeyDown={(event) => {
 											if (event.key === "Escape") setFloatingPanelMode(null);
@@ -2427,12 +2669,12 @@ function Index() {
 										<XIcon />
 									</Button>
 								</div>
-								{floatingPanelLastMode.current === "replace" ? (
+								{(floatingPanelMode ?? floatingPanelLastMode.current) === "replace" ? (
 									<div className="flex items-center gap-2">
-										<input
+										<Input
 											value={replaceText}
 											placeholder="Replace..."
-											className="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 outline-none focus-visible:border-ring"
+											className="min-w-0 flex-1"
 											onChange={(event) => setReplaceText(event.target.value)}
 											onKeyDown={(event) => {
 												if (event.key === "Escape") setFloatingPanelMode(null);
@@ -2457,7 +2699,7 @@ function Index() {
 				) : null}
 				<section
 					aria-label="Note editor"
-					className="flex min-h-0 flex-1 overflow-y-auto overscroll-contain"
+					className="relative flex min-h-0 flex-1 overflow-hidden overscroll-contain"
 					onKeyDown={(event) => {
 						if (
 							event.key.toLowerCase() === "b" &&
@@ -2467,38 +2709,76 @@ function Index() {
 						}
 					}}
 				>
-					{appState.activeNotePath &&
-					loadedNotePath === appState.activeNotePath &&
-					activeYDoc ? (
-						<MemoNoteEditor
-							key={appState.activeNotePath}
-							content={noteContent}
-							noteTitle={activeNoteTitle}
-							notePath={appState.activeNotePath}
-							pageFormat={activePageFormat}
-							readOnly={activeNoteReadOnly}
-							yDoc={activeYDoc}
-							searchQuery={
-								floatingPanelMode === "find" || floatingPanelMode === "replace"
-									? findText
-									: ""
-							}
-							zenMode={zenMode}
-							onChange={updateNoteContent}
-							onContentRendered={completeSwitchBenchmark}
-							onRename={renameActiveNote}
-							onTitleChange={updateActiveTitleDraft}
-						/>
-					) : appState.activeNotePath ? (
-						<div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
-							Loading note...
-						</div>
-					) : (
+					{!appState.activeNotePath ? (
 						<div className="flex flex-1 items-center justify-center">
 							<h1 className="font-brand text-5xl text-muted-foreground/50 select-none">
 								Paperite
 							</h1>
 						</div>
+					) : (
+						<>
+							{appState.openTabs.map((tab) => {
+								const isActive = tab.path === appState.activeNotePath;
+								const isReady = readyEditorPaths.has(tab.path);
+								const yNote = loadedYNoteCache.current.get(tab.path);
+								const cachedContent = noteContentCache.current.get(tab.path);
+
+								if (!isReady || !yNote || cachedContent === undefined) {
+									if (!isActive) return null;
+									return (
+										<div
+											key={tab.path}
+											className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground"
+										>
+											Loading note...
+										</div>
+									);
+								}
+
+								const tabTitle =
+									noteTitleDrafts[tab.path] !== undefined
+										? noteTitleDrafts[tab.path]
+										: tab.title || "Untitled";
+								const tabPageFormat =
+									pageFormats[tab.path] ?? defaultPageFormat;
+								const tabReadOnly =
+									appState.readOnlyNotes[tab.path] === true;
+
+								return (
+									<div
+										key={tab.path}
+										className={
+											isActive
+												? "relative z-10 flex min-h-0 flex-1 overflow-hidden"
+												: "pointer-events-none invisible absolute inset-0 z-0 overflow-hidden"
+										}
+										aria-hidden={!isActive}
+										inert={!isActive ? true : undefined}
+									>
+										<MemoNoteEditor
+											content={cachedContent}
+											noteTitle={tabTitle}
+											notePath={tab.path}
+											pageFormat={tabPageFormat}
+											readOnly={tabReadOnly}
+											yDoc={yNote.doc}
+											searchQuery={
+												isActive &&
+												(floatingPanelMode === "find" ||
+													floatingPanelMode === "replace")
+													? findText
+													: ""
+											}
+											zenMode={zenMode}
+											onChange={updateNoteContent}
+											onContentRendered={completeSwitchBenchmark}
+											onRename={renameActiveNote}
+											onTitleChange={updateActiveTitleDraft}
+										/>
+									</div>
+								);
+							})}
+						</>
 					)}
 				</section>
 			</SidebarInset>
@@ -2513,7 +2793,11 @@ function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		expandedFolders: unique(state.expandedFolders ?? []),
 		openTabs: (state.openTabs ?? [])
 			.filter((tab) => tab.path && tab.title)
-			.map((tab) => ({ ...tab, pinned: tab.pinned === true, preview: tab.preview === true })),
+			.map((tab) => ({
+				...tab,
+				pinned: tab.pinned === true,
+				preview: tab.preview === true,
+			})),
 		spaceColors: state.spaceColors ?? {},
 		spaceIcons: state.spaceIcons ?? {},
 		spaceOrder: unique(state.spaceOrder ?? []),

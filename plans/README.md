@@ -14,6 +14,7 @@
 | 006 | [Tab fixed vs pinned rework](./006-tab-fixed-vs-pinned-rework.md) | DONE | P2 |
 | 007 | [Pin note to top](./007-pin-note-to-top.md) | DONE | P2 |
 | 008 | [Finish re-render/performance pass](./008-finish-rerender-optimization.md) | DONE | P0 |
+| 009 | [Cache loaded YDocs per tab](./009-cache-loaded-ynotes-per-tab.md) | DONE | P1 |
 
 > Note (2026-07-28): the three `001-*` plans were marked TODO/missing from
 > this table despite being fully implemented in the codebase — verified by
@@ -36,6 +37,26 @@
 > same-value no-ops or `startTransition`; folder expand uses local store +
 > deferred parent update). Full `React.memo` on `AppSidebar`/`AppTitlebar`
 > deferred — would need deep prop-stability refactor (STOP condition).
+
+> Note (2026-07-29, plan 009): done. Added `loadedYNoteCache` (Map ref) in
+> `src/routes/_main/index.tsx`, made the YDoc-loading effect check it before
+> calling `loadYNote`, evict+destroy on `closeTab`, and destroy all on
+> unmount. Tab switching between already-open notes no longer shows
+> "Loading note...". Also fixed pre-existing lint debt in the same file
+> (unsorted lucide-react import, two unformatted blocks, one
+> `useOptionalChain` warning) to satisfy this plan's lint done-criteria —
+> unrelated to the cache change itself.
+>
+> While verifying `tsc -b` against the pre-existing baseline noted above,
+> found it's incomplete: `OpenNoteTab.pinned` is used throughout
+> `src/routes/_main/index.tsx` (SortableTab props, `openNote`, `togglePinTab`,
+> `normalizeAppState`, etc.) but `OpenNoteTab` in `src/lib/storage/types.ts`
+> has no `pinned` field, producing ~9 more `tsc` errors than this file
+> previously documented. Confirmed via before/after diff that plan 009
+> didn't introduce these — they predate it (likely missed when plan
+> 006/007 landed the pin-tab feature). Not fixed here (out of scope for
+> 009) — worth its own plan since it's a real type-safety gap, not just
+> lint noise.
 
 ## Execution Order
 

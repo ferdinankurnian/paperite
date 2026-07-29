@@ -171,10 +171,13 @@ const ExpandedFoldersContext = React.createContext<ExpandedFoldersStore>(
 
 function useIsFolderExpanded(path: string) {
 	const store = React.useContext(ExpandedFoldersContext);
-	return React.useSyncExternalStore(
+	const forceExpandPaths = React.useContext(SearchExpandPathsContext);
+	const expanded = React.useSyncExternalStore(
 		React.useCallback((cb) => store.subscribe(path, cb), [store, path]),
 		React.useCallback(() => store.isExpanded(path), [store, path]),
 	);
+	// While searching, keep match folders open without mutating saved expand state.
+	return expanded || forceExpandPaths.has(path);
 }
 
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
@@ -280,7 +283,7 @@ function filterWorkspaceItems(
 		if (item.type === "note") {
 			if (
 				item.title.toLocaleLowerCase().includes(normalizedQuery) ||
-				item.preview.toLocaleLowerCase().includes(normalizedQuery)
+				(item.preview ?? "").toLocaleLowerCase().includes(normalizedQuery)
 			) {
 				filteredItems.push(item);
 			}
@@ -400,6 +403,82 @@ function orderItemsByCustomOrder(
 
 function titleForSort(item: WorkspaceItem) {
 	return item.title.trim() || "Untitled";
+}
+
+const SearchQueryContext = React.createContext("");
+const SearchExpandPathsContext = React.createContext<ReadonlySet<string>>(
+	new Set(),
+);
+
+/** Folder paths that must stay open so search hits inside them are visible. */
+function collectSearchExpandPaths(
+	items: WorkspaceItem[],
+	query: string,
+): Set<string> {
+	const normalizedQuery = query.trim().toLocaleLowerCase();
+	const paths = new Set<string>();
+	if (!normalizedQuery) return paths;
+
+	const walk = (nodes: WorkspaceItem[]): boolean => {
+		let anyMatch = false;
+		for (const item of nodes) {
+			if (item.type === "note") {
+				if (
+					item.title.toLocaleLowerCase().includes(normalizedQuery) ||
+					(item.preview ?? "").toLocaleLowerCase().includes(normalizedQuery)
+				) {
+					anyMatch = true;
+				}
+				continue;
+			}
+
+			const selfMatch = item.title
+				.toLocaleLowerCase()
+				.includes(normalizedQuery);
+			const childMatch = walk(item.children);
+			if (selfMatch || childMatch) {
+				paths.add(item.path);
+				anyMatch = true;
+			}
+		}
+		return anyMatch;
+	};
+
+	walk(items);
+	return paths;
+}
+
+/** Highlight case-insensitive matches — same yellow mark as in-note find. */
+function highlightSearchText(text: string, query: string): React.ReactNode {
+	const needle = query.trim();
+	if (!needle || !text) return text;
+
+	const lowerText = text.toLocaleLowerCase();
+	const lowerNeedle = needle.toLocaleLowerCase();
+	const parts: React.ReactNode[] = [];
+	let start = 0;
+	let matchIndex = lowerText.indexOf(lowerNeedle, start);
+	let key = 0;
+
+	while (matchIndex >= 0) {
+		if (matchIndex > start) {
+			parts.push(text.slice(start, matchIndex));
+		}
+		parts.push(
+			<mark
+				key={key}
+				className="rounded-[2px] bg-yellow-300/80 px-0.5 text-neutral-950"
+			>
+				{text.slice(matchIndex, matchIndex + needle.length)}
+			</mark>,
+		);
+		key += 1;
+		start = matchIndex + needle.length;
+		matchIndex = lowerText.indexOf(lowerNeedle, start);
+	}
+
+	if (start < text.length) parts.push(text.slice(start));
+	return parts.length > 0 ? <>{parts}</> : text;
 }
 
 function NoteTree({
@@ -693,6 +772,8 @@ function NoteGridCard({
 			type: "note" satisfies DragPreviewItem["type"],
 		},
 	});
+	const searchQuery = React.useContext(SearchQueryContext);
+	const displayTitle = note.title.trim() || "Untitled";
 	return (
 		<>
 			<ContextMenu>
@@ -712,11 +793,11 @@ function NoteGridCard({
 							{note.pinned ? (
 								<PinIcon className="mr-1 inline size-3.5 shrink-0 text-muted-foreground" />
 							) : null}
-							{note.title.trim() || "Untitled"}
+							{highlightSearchText(displayTitle, searchQuery)}
 						</div>
 						{showPreview && note.preview ? (
 							<p className="mt-1 text-xs leading-snug text-muted-foreground line-clamp-4">
-								{note.preview}
+								{highlightSearchText(note.preview, searchQuery)}
 							</p>
 						) : null}
 					</button>
@@ -1209,6 +1290,8 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 		},
 		[setDraggableRef, setDroppableRef],
 	);
+	const searchQuery = React.useContext(SearchQueryContext);
+	const displayTitle = item.title.trim() || "Untitled";
 
 	return (
 		<>
@@ -1235,13 +1318,13 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 								{item.pinned ? (
 									<PinIcon className="mr-1 inline size-3.5 shrink-0 text-muted-foreground" />
 								) : null}
-								{item.title.trim() || "Untitled"}
+								{highlightSearchText(displayTitle, searchQuery)}
 							</>
 							</span>
 						</div>
 						{showPreview && item.preview ? (
 							<span className="line-clamp-2 w-full text-xs whitespace-break-spaces text-sidebar-foreground/65">
-								{item.preview}
+								{highlightSearchText(item.preview, searchQuery)}
 							</span>
 						) : null}
 					</button>
@@ -1692,9 +1775,35 @@ export function AppSidebar({
 	const [tabletLayout, setTabletLayout] = React.useState(false);
 	const [dragPreviewItem, setDragPreviewItem] =
 		React.useState<DragPreviewItem | null>(null);
+	// Keep previously visited space lists mounted (hide/show) so switching
+	// spaces is instant — same idea as browser tabs / editor tabs.
+	const [mountedSpacePaths, setMountedSpacePaths] = React.useState<string[]>(
+		() =>
+			activeSpacePath && activeSpacePath !== "Trash"
+				? [activeSpacePath]
+				: ["Inbox"],
+	);
+	React.useEffect(() => {
+		if (!activeSpacePath || activeSpacePath === "Trash") return;
+		setMountedSpacePaths((prev) =>
+			prev.includes(activeSpacePath) ? prev : [...prev, activeSpacePath],
+		);
+	}, [activeSpacePath]);
+	React.useEffect(() => {
+		const valid = new Set(spaces.map((space) => space.path));
+		setMountedSpacePaths((prev) => {
+			const next = prev.filter((path) => valid.has(path));
+			return next.length === prev.length ? prev : next;
+		});
+	}, [spaces]);
 	const activeSpace = spaces.find((space) => space.path === activeSpacePath);
 	const visibleChildren = React.useMemo(
 		() => filterWorkspaceItems(activeSpace?.children ?? [], searchQuery),
+		[activeSpace?.children, searchQuery],
+	);
+
+	const searchExpandPaths = React.useMemo(
+		() => collectSearchExpandPaths(activeSpace?.children ?? [], searchQuery),
 		[activeSpace?.children, searchQuery],
 	);
 	const sortedVisibleChildren = React.useMemo(
@@ -1709,6 +1818,69 @@ export function AppSidebar({
 			),
 		[activeSpacePath, customItemOrders, visibleChildren, sortOrder],
 	);
+	const spaceItemsCacheRef = React.useRef(
+		new Map<
+			string,
+			{
+				children: unknown;
+				searchQuery: string;
+				sortOrder: string;
+				customOrder: unknown;
+				items: typeof sortedVisibleChildren;
+			}
+		>(),
+	);
+	const sortOrderByPathRef = React.useRef<Record<string, typeof sortOrder>>({});
+	if (activeSpacePath && activeSpacePath !== "Trash") {
+		sortOrderByPathRef.current[activeSpacePath] = sortOrder;
+	}
+	const mountedSpaceItems = React.useMemo(() => {
+		const map = new Map<
+			string,
+			{ space: (typeof spaces)[number]; items: typeof sortedVisibleChildren }
+		>();
+		for (const path of mountedSpacePaths) {
+			const space = spaces.find((entry) => entry.path === path);
+			if (!space) continue;
+			const pathSort = sortOrderByPathRef.current[path] ?? sortOrder;
+			const effectiveSort =
+				path === "Inbox" && pathSort === "custom" ? "newest" : pathSort;
+			const customOrder = customItemOrders[path];
+			const cached = spaceItemsCacheRef.current.get(path);
+			if (
+				cached &&
+				cached.children === space.children &&
+				cached.searchQuery === searchQuery &&
+				cached.sortOrder === effectiveSort &&
+				cached.customOrder === customOrder
+			) {
+				map.set(path, { space, items: cached.items });
+				continue;
+			}
+			const items = sortWorkspaceItems(
+				filterWorkspaceItems(space.children ?? [], searchQuery),
+				effectiveSort,
+				customItemOrders,
+				path,
+			);
+			spaceItemsCacheRef.current.set(path, {
+				children: space.children,
+				searchQuery,
+				sortOrder: effectiveSort,
+				customOrder,
+				items,
+			});
+			map.set(path, { space, items });
+		}
+		return map;
+	}, [
+		mountedSpacePaths,
+		spaces,
+		activeSpacePath,
+		sortOrder,
+		customItemOrders,
+		searchQuery,
+	]);
 	const canDragItems = true;
 	const canReorderItems = activeSpacePath !== "Inbox" && sortOrder === "custom";
 	// Keep expand/collapse state in a per-path store so the sidebar paints
@@ -1738,12 +1910,35 @@ export function AppSidebar({
 		},
 		[expandedFoldersStore, onToggleFolder],
 	);
+
+	/** Persist-expand ancestor folders when opening a note (e.g. from search). */
+	const handleOpenNote = React.useCallback(
+		(note: WorkspaceNote, mode: "preview" | "fixed") => {
+			const parts = note.path.split("/");
+			// path segments before the note name are folders (space/folder/.../note)
+			for (let i = 1; i < parts.length - 1; i++) {
+				const folderPath = parts.slice(0, i + 1).join("/");
+				handleToggleFolder(folderPath, true);
+			}
+			onOpenNote(note, mode);
+		},
+		[handleToggleFolder, onOpenNote],
+	);
 	const resolvedShowPreview = React.useMemo(() => {
 		const mode = spacePreviewModes[activeSpacePath] ?? "global";
 		if (mode === "show") return true;
 		if (mode === "hide") return false;
 		return showNotePreview;
 	}, [activeSpacePath, spacePreviewModes, showNotePreview]);
+	const showPreviewForSpace = React.useCallback(
+		(spacePath: string) => {
+			const mode = spacePreviewModes[spacePath] ?? "global";
+			if (mode === "show") return true;
+			if (mode === "hide") return false;
+			return showNotePreview;
+		},
+		[spacePreviewModes, showNotePreview],
+	);
 	const sensors = useSensors(
 		useSensor(PointerSensor, {
 			activationConstraint: {
@@ -1968,6 +2163,8 @@ export function AppSidebar({
 					onClick={() => setNotesSheetOpen(false)}
 				/>
 			) : null}
+			<SearchQueryContext.Provider value={searchQuery}>
+			<SearchExpandPathsContext.Provider value={searchExpandPaths}>
 			<ExpandedFoldersContext.Provider value={expandedFoldersStore}>
 				<aside
 					data-open={notesSheetOpen}
@@ -2023,7 +2220,7 @@ export function AppSidebar({
 											activeNotePath={activeNotePath}
 											onDeleteItem={() => {}}
 											onMoveItem={() => {}}
-											onOpenNote={onOpenNote}
+											onOpenNote={handleOpenNote}
 											spaces={spaces}
 											spaceIcons={spaceIcons}
 											spaceColors={spaceColors}
@@ -2045,80 +2242,101 @@ export function AppSidebar({
 											</EmptyHeader>
 										</Empty>
 									)
-								) : activeSpace && sortedVisibleChildren.length > 0 ? (
-									viewMode === "grid" && activeSpacePath === "Inbox" ? (
-										<NoteGrid
-											items={sortedVisibleChildren}
-											activeNotePath={activeNotePath}
-											onDeleteItem={onDeleteItem}
-											onMoveItem={onMoveItem}
-											onOpenNote={onOpenNote}
-											spaces={spaces}
-											spaceIcons={spaceIcons}
-											spaceColors={spaceColors}
-											showPreview={resolvedShowPreview}
-										/>
-									) : (
-										<MemoizedNoteTree
-											activeNotePath={activeNotePath}
-											canDragItems={canDragItems}
-											items={sortedVisibleChildren}
-											onCreateFolder={onCreateFolder}
-											onCreateNote={onCreateNote}
-											onDeleteItem={onDeleteItem}
-											onMoveItem={onMoveItem}
-											onOpenNote={onOpenNote}
-											onRenameItem={onRenameItem}
-											onToggleFolder={handleToggleFolder}
-											parentPath={activeSpacePath}
-											spaces={spaces}
-											spaceIcons={spaceIcons}
-											spaceColors={spaceColors}
-											showPreview={resolvedShowPreview}
-											isInbox={activeSpacePath === "Inbox"}
-											newlyCreatedFolderPath={newlyCreatedFolderPath}
-											onRenameComplete={onRenameComplete}
-										/>
-									)
 								) : (
-									<Empty>
-										<EmptyHeader>
-											<EmptyMedia variant="icon">
-												<FileTextIcon />
-											</EmptyMedia>
-											<EmptyTitle>No notes yet</EmptyTitle>
-											<EmptyDescription>
-												Create a note or drop one into this space.
-											</EmptyDescription>
-										</EmptyHeader>
-										<EmptyContent className="flex-row justify-center">
-											{activeSpacePath !== "Inbox" && (
-												<Button
-													type="button"
-													size="sm"
-													variant="outline"
-													onClick={() => onCreateFolder(activeSpacePath)}
-												>
-													<FolderPlusIcon />
-													New folder
-												</Button>
-											)}
-											<Button
-												type="button"
-												size="sm"
-												onClick={() => onCreateNote(activeSpacePath)}
+									mountedSpacePaths.map((spacePath) => {
+										const entry = mountedSpaceItems.get(spacePath);
+										if (!entry) return null;
+										const isActive = spacePath === activeSpacePath;
+										const { items: spaceItems } = entry;
+										return (
+											<div
+												key={spacePath}
+												className={isActive ? undefined : "hidden"}
+												hidden={!isActive}
+												aria-hidden={!isActive}
 											>
-												<StickyNotePlusIcon />
-												New note
-											</Button>
-										</EmptyContent>
-									</Empty>
+												{spaceItems.length > 0 ? (
+													viewMode === "grid" && spacePath === "Inbox" ? (
+														<NoteGrid
+															items={spaceItems}
+															activeNotePath={activeNotePath}
+															onDeleteItem={onDeleteItem}
+															onMoveItem={onMoveItem}
+															onOpenNote={handleOpenNote}
+															spaces={spaces}
+															spaceIcons={spaceIcons}
+															spaceColors={spaceColors}
+															showPreview={showPreviewForSpace(spacePath)}
+														/>
+													) : (
+														<MemoizedNoteTree
+															activeNotePath={activeNotePath}
+															canDragItems={canDragItems}
+															items={spaceItems}
+															onCreateFolder={onCreateFolder}
+															onCreateNote={onCreateNote}
+															onDeleteItem={onDeleteItem}
+															onMoveItem={onMoveItem}
+															onOpenNote={handleOpenNote}
+															onRenameItem={onRenameItem}
+															onToggleFolder={handleToggleFolder}
+															parentPath={spacePath}
+															spaces={spaces}
+															spaceIcons={spaceIcons}
+															spaceColors={spaceColors}
+															showPreview={showPreviewForSpace(spacePath)}
+															isInbox={spacePath === "Inbox"}
+															newlyCreatedFolderPath={
+																isActive ? newlyCreatedFolderPath : null
+															}
+															onRenameComplete={onRenameComplete}
+														/>
+													)
+												) : isActive ? (
+													<Empty>
+														<EmptyHeader>
+															<EmptyMedia variant="icon">
+																<FileTextIcon />
+															</EmptyMedia>
+															<EmptyTitle>No notes yet</EmptyTitle>
+															<EmptyDescription>
+																Create a note or drop one into this space.
+															</EmptyDescription>
+														</EmptyHeader>
+														<EmptyContent className="flex-row justify-center">
+															{spacePath !== "Inbox" && (
+																<Button
+																	type="button"
+																	size="sm"
+																	variant="outline"
+																	onClick={() => onCreateFolder(spacePath)}
+																>
+																	<FolderPlusIcon />
+																	New folder
+																</Button>
+															)}
+															<Button
+																type="button"
+																size="sm"
+																onClick={() => onCreateNote(spacePath)}
+															>
+																<StickyNotePlusIcon />
+																New note
+															</Button>
+														</EmptyContent>
+													</Empty>
+												) : null}
+											</div>
+										);
+									})
 								)}
 							</SidebarGroupContent>
 						</SidebarGroup>
 					</SidebarContent>
 				</aside>
 			</ExpandedFoldersContext.Provider>
+			</SearchExpandPathsContext.Provider>
+			</SearchQueryContext.Provider>
 			<DragOverlay dropAnimation={null}>
 				{dragPreviewItem ? <DragItemPreview item={dragPreviewItem} /> : null}
 			</DragOverlay>

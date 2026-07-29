@@ -1,6 +1,14 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+
+/*
+ * Tailwind's universal reset sets --tw-animation-duration: initial on every
+ * element. tw-animate's animate-in/out resolves
+ *   var(--tw-animation-duration, var(--tw-duration, .15s))
+ * and treats \`initial\` as a real value — so duration becomes 0s and all
+ * shadcn open/close animations look like they vanished.
+ */
 @import "@fontsource-variable/geist";
 @import "@fontsource/courgette";
 
@@ -494,5 +502,123 @@
 
 	.paperite-emoji-menu button[data-active="true"] {
 		@apply bg-muted text-foreground;
+	}
+}
+/* Restore shadcn enter/exit animations (tw-animate + Tailwind reset). */
+@layer base {
+	*,
+	::before,
+	::after,
+	::backdrop {
+		--tw-animation-duration: var(--tw-duration, 0.15s);
+		--tw-animation-fill-mode: both;
+	}
+}
+
+/*
+ * Radix portals mount already open. Enter must grow from the trigger origin
+ * (--radix-*-content-transform-origin). Plain center scale looks wrong next to
+ * exit, which already respects that origin. @starting-style runs after layout
+ * so the origin var is set before the transition starts.
+ */
+:is(
+	[data-slot="dropdown-menu-content"],
+	[data-slot="dropdown-menu-sub-content"]
+) {
+	transform-origin: var(--radix-dropdown-menu-content-transform-origin);
+}
+
+:is(
+	[data-slot="context-menu-content"],
+	[data-slot="context-menu-sub-content"]
+) {
+	transform-origin: var(--radix-context-menu-content-transform-origin);
+}
+
+[data-slot="popover-content"] {
+	transform-origin: var(--radix-popover-content-transform-origin);
+}
+
+[data-slot="select-content"] {
+	transform-origin: var(--radix-select-content-transform-origin);
+}
+
+:is(
+	[data-slot="menubar-content"],
+	[data-slot="menubar-sub-content"]
+) {
+	transform-origin: var(--radix-menubar-content-transform-origin);
+}
+
+[data-slot="hover-card-content"] {
+	transform-origin: var(--radix-hover-card-content-transform-origin);
+}
+
+[data-slot="tooltip-content"] {
+	transform-origin: var(--radix-tooltip-content-transform-origin);
+}
+
+:is(
+	[data-slot="dropdown-menu-content"],
+	[data-slot="dropdown-menu-sub-content"],
+	[data-slot="context-menu-content"],
+	[data-slot="context-menu-sub-content"],
+	[data-slot="popover-content"],
+	[data-slot="select-content"],
+	[data-slot="menubar-content"],
+	[data-slot="menubar-sub-content"],
+	[data-slot="hover-card-content"],
+	[data-slot="tooltip-content"],
+	[data-slot="dialog-content"],
+	[data-slot="alert-dialog-content"],
+	[data-slot="sheet-content"]
+)[data-state="open"] {
+	/* kill center-origin keyframe enter from tw-animate */
+	animation: none;
+	opacity: 1;
+	transform: scale(1);
+	transition:
+		opacity var(--tw-duration, 0.2s) ease,
+		transform var(--tw-duration, 0.2s) ease;
+}
+
+@starting-style {
+	:is(
+			[data-slot="dropdown-menu-content"],
+			[data-slot="dropdown-menu-sub-content"],
+			[data-slot="context-menu-content"],
+			[data-slot="context-menu-sub-content"],
+			[data-slot="popover-content"],
+			[data-slot="select-content"],
+			[data-slot="menubar-content"],
+			[data-slot="menubar-sub-content"],
+			[data-slot="hover-card-content"],
+			[data-slot="tooltip-content"],
+			[data-slot="dialog-content"],
+			[data-slot="alert-dialog-content"],
+			[data-slot="sheet-content"]
+	)[data-state="open"] {
+		opacity: 0;
+		transform: scale(0.96);
+	}
+}
+
+:is(
+	[data-slot="dialog-overlay"],
+	[data-slot="alert-dialog-overlay"],
+	[data-slot="sheet-overlay"]
+)[data-state="open"] {
+	animation: none;
+	opacity: 1;
+	transition: opacity var(--tw-duration, 0.2s) ease;
+}
+
+@starting-style {
+	:is(
+			[data-slot="dialog-overlay"],
+			[data-slot="alert-dialog-overlay"],
+			[data-slot="sheet-overlay"]
+	)[data-state="open"] {
+		opacity: 0;
 	}
 }
