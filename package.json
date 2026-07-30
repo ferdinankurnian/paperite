@@ -46,7 +46,7 @@
     "dev:web": "vite",
     "dev:server": "PAPERITE_WEB=1 concurrently -k \"bun run dev:web\" \"wait-on http://localhost:5173 && node server/index.js --dev\"",
     "web": "node server/index.js",
-    "build": "tsc -b && vite build && electron-builder",
+    "build": "tsc -b && vite build && electron-builder --publish never",
     "lint": "biome check .",
     "preview": "vite preview",
     "format": "biome format --write .",
