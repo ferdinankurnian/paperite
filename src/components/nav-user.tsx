@@ -647,7 +647,7 @@ function KeyboardSettings({
 	);
 }
 
-function SyncSettings() {
+export function SyncSettings() {
 	const [status, setStatus] = useState<SyncStatus | null>(null);
 	const [busyAction, setBusyAction] = useState<
 		"toggle" | "connect" | "sync" | "disconnect" | "create-shared-space" | null
