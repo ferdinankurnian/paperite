@@ -33,5 +33,5 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Paperite-*.AppImage
+          files: dist/Paperite-*.AppImage,dist/paperite-*.tar.gz
           generate_release_notes: true
