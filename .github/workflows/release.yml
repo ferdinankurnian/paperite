@@ -29,7 +29,6 @@ jobs:
         env:
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
           VITE_CLERK_AUTH_CALLBACK_URL: ${{ secrets.VITE_CLERK_AUTH_CALLBACK_URL }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
