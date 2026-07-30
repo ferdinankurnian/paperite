@@ -29,10 +29,6 @@ jobs:
         env:
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
           VITE_CLERK_AUTH_CALLBACK_URL: ${{ secrets.VITE_CLERK_AUTH_CALLBACK_URL }}
-
-      - name: Package
-        run: ./node_modules/.bin/electron-builder --linux AppImage
-        env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create Release
