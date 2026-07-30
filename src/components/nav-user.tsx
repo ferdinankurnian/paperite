@@ -231,7 +231,7 @@ export function NavUser({
 								<KeyboardIcon className="size-4" />
 								Keyboard
 							</Button>
-							<Button
+							{/* <Button
 								type="button"
 								variant={activeTab === "sync" ? "secondary" : "ghost"}
 								onClick={() => setActiveTab("sync")}
@@ -239,7 +239,7 @@ export function NavUser({
 							>
 								<CloudIcon className="size-4" />
 								Sync
-							</Button>
+							</Button> */}
 							{betaEnabled ? (
 								<Button
 									type="button"
@@ -403,7 +403,7 @@ export function NavUser({
 							{activeTab === "keyboard" && (
 								<KeyboardSettings shortcutSettings={shortcutSettings} />
 							)}
-							{activeTab === "sync" && <SyncSettings />}
+							{/* {activeTab === "sync" && <SyncSettings />} */}
 						</div>
 					</div>
 				</DialogContent>
