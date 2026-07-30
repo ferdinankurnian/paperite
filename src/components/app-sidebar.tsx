@@ -1783,19 +1783,38 @@ export function AppSidebar({
 				? [activeSpacePath]
 				: ["Inbox"],
 	);
-	React.useEffect(() => {
-		if (!activeSpacePath || activeSpacePath === "Trash") return;
-		setMountedSpacePaths((prev) =>
-			prev.includes(activeSpacePath) ? prev : [...prev, activeSpacePath],
-		);
-	}, [activeSpacePath]);
+	// One effect owns both "mount active space" and "prune dead paths".
+	// Splitting them races on first hydrate: spaces starts [], the prune
+	// effect wipes mountedSpacePaths to [], then activeSpacePath never
+	// changes so the mount effect never re-adds Inbox — empty note list
+	// forever even though notes are on disk.
 	React.useEffect(() => {
 		const valid = new Set(spaces.map((space) => space.path));
+
 		setMountedSpacePaths((prev) => {
-			const next = prev.filter((path) => valid.has(path));
-			return next.length === prev.length ? prev : next;
+			// Workspace not hydrated yet — don't prune against an empty set.
+			if (valid.size === 0) return prev;
+
+			let next = prev.filter((path) => valid.has(path));
+
+			if (
+				activeSpacePath &&
+				activeSpacePath !== "Trash" &&
+				valid.has(activeSpacePath) &&
+				!next.includes(activeSpacePath)
+			) {
+				next = [...next, activeSpacePath];
+			}
+
+			if (
+				next.length === prev.length &&
+				next.every((path, index) => path === prev[index])
+			) {
+				return prev;
+			}
+			return next;
 		});
-	}, [spaces]);
+	}, [spaces, activeSpacePath]);
 	const activeSpace = spaces.find((space) => space.path === activeSpacePath);
 	const visibleChildren = React.useMemo(
 		() => filterWorkspaceItems(activeSpace?.children ?? [], searchQuery),
