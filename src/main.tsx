@@ -10,6 +10,10 @@ import "./index.css";
 // Import the generated route tree
 import { routeTree } from "./routeTree.gen";
 
+if (import.meta.env.DEV) {
+	import("react-scan").then((mod) => mod.scan());
+}
+
 // Create a new router instance
 const router = createRouter({
 	routeTree,
