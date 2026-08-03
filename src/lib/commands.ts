@@ -50,7 +50,7 @@ export const commands = [
 		id: "note.setup",
 		label: "Open note setup",
 		category: "Notes",
-		defaultShortcut: "Mod+Shift+,",
+		defaultShortcut: "Mod+.",
 		editable: true,
 	},
 	{

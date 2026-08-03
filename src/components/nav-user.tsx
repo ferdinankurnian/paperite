@@ -1,10 +1,11 @@
 import {
-	ChevronsUpDownIcon,
 	CloudIcon,
 	FileTextIcon,
+	IndentIcon,
 	KeyboardIcon,
 	LaptopIcon,
 	LogOutIcon,
+	MenuIcon,
 	MoonIcon,
 	PaletteIcon,
 	PanelTopIcon,
@@ -22,6 +23,7 @@ import {
 	useState,
 } from "react";
 import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
+import { useAppStore } from "@/lib/stores/app-store";
 import { useTheme } from "@/components/theme-provider";
 import {
 	AlertDialog,
@@ -71,6 +73,7 @@ import {
 	normalizeShortcut,
 } from "@/lib/shortcuts";
 import { getSyncEngine, onSyncChanged } from "@/lib/sync-engine";
+import type { PageFormat } from "@/lib/storage/types";
 import { cn } from "@/lib/utils";
 import driveSvg from "/drive.svg";
 
@@ -101,6 +104,8 @@ export function NavUser({
 	const { isMobile } = useSidebar();
 	const { theme, setTheme } = useTheme();
 	const shortcutSettings = useKeyboardShortcuts();
+	const defaultPageFormat = useAppStore((s) => s.defaultPageFormat);
+	const setDefaultPageFormat = useAppStore((s) => s.setDefaultPageFormat);
 	const betaEnabled = import.meta.env.BETA_PAPERITE;
 	const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -110,7 +115,7 @@ export function NavUser({
 
 	useEffect(() => {
 		const openSettings = () => {
-			setActiveTab("sync");
+			setActiveTab("general");
 			setIsSettingsOpen(true);
 		};
 
@@ -121,20 +126,15 @@ export function NavUser({
 
 	return (
 		<>
-			<SidebarMenu>
+			<SidebarMenu className="gap-1">
 				<SidebarMenuItem>
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild>
 							<SidebarMenuButton
-								size="lg"
-								className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground"
+								className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground text-sidebar-foreground/80"
 							>
-								<UserAvatar user={user} />
-								<div className="grid flex-1 text-left text-sm leading-tight">
-									<span className="truncate font-medium">{user.name}</span>
-									<span className="truncate text-xs">Free Plan</span>
-								</div>
-								<ChevronsUpDownIcon className="ml-auto size-4" />
+								<MenuIcon className="size-4 shrink-0" />
+								<span className="min-w-0 flex-1 truncate text-left">Menu</span>
 							</SidebarMenuButton>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent
@@ -325,6 +325,78 @@ export function NavUser({
 												checked={closeButtonOnly}
 												onCheckedChange={onSetCloseButtonOnly}
 											/>
+										</div>
+									</section>
+									<section className="mt-4 rounded-xl bg-muted/45 p-4">
+										<div className="mb-3 flex items-center gap-2">
+											<IndentIcon className="size-4 text-muted-foreground" />
+											<div>
+												<h3 className="text-sm font-medium">Note defaults</h3>
+												<p className="text-xs text-muted-foreground">
+													Applied to new notes. Per-note setup can still override.
+												</p>
+											</div>
+										</div>
+										<div className="space-y-3">
+											<div>
+												<p className="mb-1.5 text-xs font-medium text-muted-foreground">
+													Line height
+												</p>
+												<Tabs
+													value={defaultPageFormat.lineHeight}
+													onValueChange={(value) =>
+														setDefaultPageFormat({
+															lineHeight: value as PageFormat["lineHeight"],
+														})
+													}
+												>
+													<TabsList className="grid h-9 w-full grid-cols-2">
+														<TabsTrigger value="normal" className="h-full">
+															Normal
+														</TabsTrigger>
+														<TabsTrigger value="1.5" className="h-full">
+															1.5
+														</TabsTrigger>
+													</TabsList>
+												</Tabs>
+											</div>
+											<div>
+												<p className="mb-1.5 text-xs font-medium text-muted-foreground">
+													Paragraph spacing
+												</p>
+												<Tabs
+													value={defaultPageFormat.paragraphSpacing}
+													onValueChange={(value) =>
+														setDefaultPageFormat({
+															paragraphSpacing:
+																value as PageFormat["paragraphSpacing"],
+														})
+													}
+												>
+													<TabsList className="grid h-9 w-full grid-cols-2">
+														<TabsTrigger value="default" className="h-full">
+															Default
+														</TabsTrigger>
+														<TabsTrigger value="compact" className="h-full">
+															Compact
+														</TabsTrigger>
+													</TabsList>
+												</Tabs>
+											</div>
+											<div className="flex items-center justify-between gap-4">
+												<div>
+													<p className="text-sm font-medium">First-line indent</p>
+													<p className="text-xs text-muted-foreground">
+														Indent the first line of each paragraph.
+													</p>
+												</div>
+												<Switch
+													checked={defaultPageFormat.firstLineIndent}
+													onCheckedChange={(checked) =>
+														setDefaultPageFormat({ firstLineIndent: checked })
+													}
+												/>
+											</div>
 										</div>
 									</section>
 								</>

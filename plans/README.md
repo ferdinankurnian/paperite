@@ -16,6 +16,10 @@
 | 008 | [Finish re-render/performance pass](./008-finish-rerender-optimization.md) | DONE | P0 |
 | 009 | [Cache loaded YDocs per tab](./009-cache-loaded-ynotes-per-tab.md) | DONE | P1 |
 | 010 | [Fix build errors and Edit Space bug](./010-fix-build-errors-and-edit-space-bug.md) | DONE | P0 |
+| 011 | [Paperite Mobile (TenTap + Expo)](./011-paperite-mobile-tentap.md) | TODO | P1 |
+| 012 | [TenTap Advanced + Text Align (RN)](./012-tentap-advanced-text-align.md) | TODO | P1 |
+| 013 | [Optimize it 100x — Obsidian-level speed](./013-optimize-100x.md) | TODO | P0 |
+| 014 | [Notion-style drag handle](./014-notion-style-drag-handle.md) | TODO | P2 |
 
 > Note (2026-07-28): the three `001-*` plans were marked TODO/missing from
 > this table despite being fully implemented in the codebase — verified by
@@ -92,6 +96,16 @@
 > `304b844` (web-storage.ts cast), `37bd65c` (CI gate). Not yet pushed to
 > `origin/v0.2.0`.
 
+> Plan 011 (2026-07-30): Paperite Mobile — fresh React Native (Expo) app using
+> TenTap (`@10play/tentap-editor`) for the rich text editor. TenTap is a
+> Tiptap/ProseMirror-based editor for React Native with native bridge extensions.
+> Built-in support for images, checkboxes (TaskList), bold/italic/underline,
+> headings, links, code, colors, highlights, undo/redo — full feature parity
+> with desktop. Separate project at `../paperite-mobile/`, talks to the same
+> Express server REST API. 14-step plan: Expo setup, TenTap integration, API
+> client, note list, editor, image picker, search, dark mode. Deferred: offline
+> SQLite, Yjs sync, image upload to server, HTML→TipTap JSON save converter.
+
 > Also flagged during the plan-010 investigation, **not** covered by that
 > plan and with no plan written yet: thin test coverage (only 3 test files
 > — file I/O and Yjs; no coverage for the sidebar, export queue, Google
@@ -102,6 +116,17 @@
 > noted above, and 11 stray `_fix_*.py` files (~1659 lines) at the repo
 > root that look like uncommitted-cleanup debugging scripts. Any of these
 > would need their own plan before being worked on.
+
+> Plan 013 (2026-08-03): **Optimize it 100x**. User still reports lag after
+> 008/009. Goal: Obsidian-level instant feel. Phases: measure baseline →
+> extract Zustand stores (kill god `appState`) → finish memo walls →
+> virtualize note tree → prefetch/LRU warm cache → search/first-paint polish
+> + perf budgets. Highest-priority desktop work remaining.
+
+> Plan 014 (2026-08-03): **Notion-style drag handle**. Free TipTap Drag Handle
+> + Node Range extensions. Toggleable per note (Note setup) and as a global
+> default (Settings → Note defaults), same pattern as page format defaults.
+> Desktop only; default off. Not the paid Notion-like template.
 
 ## Execution Order
 
@@ -114,3 +139,14 @@
 - **010** (build errors + Edit Space bug) — standalone, P0, zero
   dependencies. Do this before starting any new sidebar/tab work, since a
   broken build makes it hard to tell whether a new regression is yours.
+- **011** (Paperite Mobile with TenTap) — standalone, P1. New Expo project
+  at `../paperite-mobile/`, separate from the Electron codebase. Talks to the
+  same Express server REST API. Requires Android Studio or Xcode for native
+  builds. Can run in parallel with any desktop work.
+- **012** (TenTap Advanced + Text Align) — paperite-rn only, can run in parallel.
+- **013** (Optimize 100x) — **P0 desktop**. Depends on 008+009 (already DONE).
+  Do this before more feature work on desktop shell; performance is currently
+  the product-limiting factor.
+- **014** (Notion-style drag handle) — **P2 desktop**. Independent of 013 but
+  prefer landing 013 first if both are in flight; pure editor UX, free TipTap
+  extensions only.

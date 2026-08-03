@@ -1986,7 +1986,7 @@ const createApplicationMenu = () => {
 				{ type: "separator" },
 				{
 					label: "Note setup...",
-					accelerator: "CommandOrControl+,",
+					accelerator: "CommandOrControl+.",
 					click: () => sendToFocusedWindow("app-menu:action", "note-setup"),
 				},
 				{ type: "separator" },

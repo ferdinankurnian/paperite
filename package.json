@@ -62,6 +62,7 @@
     "@fontsource-variable/geist": "^5.2.9",
     "@fontsource/courgette": "^5.2.7",
     "@tanstack/react-router": "^1.170.4",
+    "@tanstack/react-virtual": "^3.14.9",
     "@tiptap/core": "3.26.0",
     "@tiptap/extension-collaboration": "3.26.0",
     "@tiptap/extension-color": "^3.26.0",
@@ -92,7 +93,8 @@
     "tw-animate-css": "^1.4.0",
     "ws": "^8.21.0",
     "yjs": "^13.6.31",
-    "zod": "latest"
+    "zod": "latest",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@biomejs/biome": "latest",

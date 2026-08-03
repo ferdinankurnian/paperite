@@ -111,6 +111,16 @@ import { isShortcutEditableInput, shortcutMatchesEvent } from "@/lib/shortcuts";
 import { getSyncEngine } from "@/lib/sync-engine";
 import { getTrashEngine } from "@/lib/trash-engine";
 import { type LoadedYNote, loadYNote } from "@/lib/y-note-store";
+import { useShallow } from "zustand/react/shallow";
+import {
+	defaultAppState,
+	getAppStateSnapshot,
+	useAppStore,
+} from "@/lib/stores/app-store";
+import {
+	saveStatusLabel,
+	useEditorUiStore,
+} from "@/lib/stores/editor-ui-store";
 
 export const Route = createFileRoute("/_main/")({
 	beforeLoad: async () => {
@@ -125,25 +135,6 @@ export const Route = createFileRoute("/_main/")({
 	component: Index,
 });
 
-const defaultAppState: PaperiteAppState = {
-	activeNotePath: null,
-	activeSpacePath: "Inbox",
-	expandedFolders: [],
-	openTabs: [],
-	spaceColors: {},
-	spaceIcons: {},
-	spaceOrder: [],
-	spaceSortOrders: {},
-	spacePreviewModes: {},
-	customItemOrders: {},
-	readOnlyNotes: {},
-	sidebarOpen: true,
-	inboxViewMode: "list",
-	showNotePreview: true,
-	closeButtonOnly: false,
-};
-
-type SaveStatus = "idle" | "saving" | "saved" | "error";
 type FloatingPanelMode = "find" | "format" | "info" | "replace" | null;
 
 type NoteInfoTarget = {
@@ -151,7 +142,7 @@ type NoteInfoTarget = {
 	title: string;
 };
 
-const defaultPageFormat: PageFormat = {
+const FALLBACK_PAGE_FORMAT: PageFormat = {
 	firstLineIndent: false,
 	lineHeight: "normal",
 	paragraphSpacing: "default",
@@ -203,7 +194,10 @@ function SortableTab({
 		opacity: isSortableDragging ? "1" : undefined,
 	};
 
-	const title = displayTitle(note.title);
+	const titleDraft = useEditorUiStore((s) => s.titleDrafts[note.path]);
+	const title = displayTitle(
+		titleDraft !== undefined ? titleDraft : note.title,
+	);
 	const customIcon =
 		spaceIcon?.startsWith("custom:") ? spaceIcon.slice("custom:".length) : null;
 
@@ -225,7 +219,7 @@ function SortableTab({
 							data-preview={note.preview}
 							data-pinned={note.pinned}
 							data-dragging={isSortableDragging}
-							className="group relative z-10 my-2 w-28 shrink-0 cursor-grab rounded-md text-[13px] text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:bg-muted data-[dragging=true]:opacity-100 active:cursor-grabbing sm:w-36 lg:w-44 !opacity-100"
+							className="group relative z-10 my-2 w-28 shrink-0 cursor-grab rounded-md text-[13px] text-muted-foreground transition-[color,background-color,transform] duration-150 hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:bg-muted data-[dragging=true]:opacity-100 active:scale-[0.98] active:cursor-grabbing sm:w-36 lg:w-44 !opacity-100"
 							{...attributes}
 							{...listeners}
 						>
@@ -317,43 +311,32 @@ function Index() {
 	const { getShortcut } = useKeyboardShortcuts();
 	const workspaceRef = useRef<WorkspaceSnapshot | null>(null);
 	const [workspace, setWorkspace] = useState<WorkspaceSnapshot | null>(null);
-	const [appState, setAppState] = useState<PaperiteAppState>(defaultAppState);
-	const inboxViewMode = appState.inboxViewMode;
-	const setInboxViewMode = useCallback(
-		(mode: "list" | "grid") =>
-			setAppState((prev) => ({ ...prev, inboxViewMode: mode })),
-		[],
+	const appState = useAppStore(
+		useShallow((s) => ({
+			openTabs: s.openTabs,
+			activeNotePath: s.activeNotePath,
+			activeSpacePath: s.activeSpacePath,
+			spaceColors: s.spaceColors,
+			spaceIcons: s.spaceIcons,
+			spaceOrder: s.spaceOrder,
+			readOnlyNotes: s.readOnlyNotes,
+			sidebarOpen: s.sidebarOpen,
+			closeButtonOnly: s.closeButtonOnly,
+			defaultPageFormat: s.defaultPageFormat,
+		})),
 	);
-	const setShowNotePreview = useCallback(
-		(show: boolean) =>
-			setAppState((prev) => ({ ...prev, showNotePreview: show })),
-		[],
-	);
-	const setCloseButtonOnly = useCallback(
-		(closeButtonOnly: boolean) =>
-			setAppState((prev) => ({ ...prev, closeButtonOnly })),
-		[],
-	);
-	const setSpacePreviewMode = useCallback(
-		(spacePath: string, mode: SpacePreviewMode) =>
-			setAppState((prev) => ({
-				...prev,
-				spacePreviewModes: {
-					...prev.spacePreviewModes,
-					[spacePath]: mode,
-				},
-			})),
-		[],
-	);
-	const setSpaceSortOrder = useCallback(
-		(spacePath: string, order: SidebarSortOrder) =>
-			setAppState((prev) => ({
-				...prev,
-				spaceSortOrders: {
-					...prev.spaceSortOrders,
-					[spacePath]: normalizeSortOrder(order, spacePath),
-				},
-			})),
+	const setAppState = useCallback(
+		(
+			updater:
+				| PaperiteAppState
+				| ((prev: PaperiteAppState) => PaperiteAppState),
+		) => {
+			if (typeof updater === "function") {
+				useAppStore.getState().update(updater);
+			} else {
+				useAppStore.getState().replace(updater);
+			}
+		},
 		[],
 	);
 	const [noteContent, setNoteContent] = useState<NoteContent>(() =>
@@ -378,7 +361,7 @@ function Index() {
 	const [pageFormats, setPageFormats] = useState<Record<string, PageFormat>>(
 		{},
 	);
-	const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+	const setSaveStatus = useEditorUiStore((s) => s.setSaveStatus);
 	const didHydrate = useRef(false);
 	const findInputRef = useRef<HTMLInputElement>(null);
 	const lastLoadedNote = useRef<string | null>(null);
@@ -409,6 +392,10 @@ function Index() {
 	>(null);
 	const noteContentCache = useRef(new Map<string, NoteContent>());
 	const loadedYNoteCache = useRef(new Map<string, LoadedYNote>());
+	/** LRU order for non-open-tab warm entries (most-recent last). */
+	const warmOrderRef = useRef<string[]>([]);
+	const prefetchInFlightRef = useRef(new Set<string>());
+	const MAX_WARM_EXTRA = 16;
 	const notePersistedCache = useRef(new Map<string, NoteContent>());
 	const noteWriteQueue = useRef(new Map<string, Promise<void>>());
 	const noteAutosaveTimers = useRef(new Map<string, number>());
@@ -764,9 +751,11 @@ function Index() {
 			: undefined) ??
 		(activeTab?.title || "Untitled");
 
+	const resolvedDefaultPageFormat =
+		appState.defaultPageFormat ?? FALLBACK_PAGE_FORMAT;
 	const activePageFormat = appState.activeNotePath
-		? (pageFormats[appState.activeNotePath] ?? defaultPageFormat)
-		: defaultPageFormat;
+		? (pageFormats[appState.activeNotePath] ?? resolvedDefaultPageFormat)
+		: resolvedDefaultPageFormat;
 
 	const openTabPaths = useMemo(
 		() => appState.openTabs.map((t) => t.path),
@@ -796,6 +785,86 @@ function Index() {
 			return next;
 		});
 	}, []);
+
+	const touchWarm = useCallback((notePath: string) => {
+		const order = warmOrderRef.current.filter((p) => p !== notePath);
+		order.push(notePath);
+		warmOrderRef.current = order;
+	}, []);
+
+	/** Keep all open-tab docs; LRU-evict other warm yDocs beyond MAX_WARM_EXTRA. */
+	const pruneWarmCaches = useCallback((openPaths: Set<string>) => {
+		const order = warmOrderRef.current.filter(
+			(p) => loadedYNoteCache.current.has(p) || noteContentCache.current.has(p),
+		);
+		const extras = order.filter((p) => !openPaths.has(p));
+		const drop = extras.slice(0, Math.max(0, extras.length - MAX_WARM_EXTRA));
+		for (const path of drop) {
+			const y = loadedYNoteCache.current.get(path);
+			if (y) {
+				y.destroy();
+				loadedYNoteCache.current.delete(path);
+			}
+			// Keep plain content cache longer — cheap vs Y.Doc; still bound extras.
+			if (!openPaths.has(path) && drop.includes(path)) {
+				// content can stay; only yDoc is heavy
+			}
+		}
+		warmOrderRef.current = order.filter((p) => !drop.includes(p));
+	}, []);
+
+	const prefetchNote = useCallback(
+		(notePath: string) => {
+			if (!notePath || !notesApi) return;
+			touchWarm(notePath);
+
+			const needContent = !noteContentCache.current.has(notePath);
+			const needY = !loadedYNoteCache.current.has(notePath);
+			if (!needContent && !needY) {
+				const openPaths = new Set(
+					useAppStore.getState().openTabs.map((tab) => tab.path),
+				);
+				pruneWarmCaches(openPaths);
+				return;
+			}
+			if (prefetchInFlightRef.current.has(notePath)) return;
+			prefetchInFlightRef.current.add(notePath);
+
+			void (async () => {
+				try {
+					if (needContent) {
+						const content = await notesApi.readNote(notePath);
+						if (!noteContentCache.current.has(notePath)) {
+							noteContentCache.current.set(notePath, content);
+						}
+						if (!notePersistedCache.current.has(notePath)) {
+							notePersistedCache.current.set(notePath, content);
+						}
+					}
+					if (needY) {
+						const note = await loadYNote(notePath);
+						if (note && !loadedYNoteCache.current.has(notePath)) {
+							loadedYNoteCache.current.set(notePath, note);
+						} else if (note) {
+							note.destroy();
+						}
+					}
+					touchWarm(notePath);
+					const openPaths = new Set(
+						useAppStore.getState().openTabs.map((tab) => tab.path),
+					);
+					// Only mark ready when it's an open tab (live editor).
+					if (openPaths.has(notePath)) markEditorReady(notePath);
+					pruneWarmCaches(openPaths);
+				} catch {
+					// Prefetch is best-effort.
+				} finally {
+					prefetchInFlightRef.current.delete(notePath);
+				}
+			})();
+		},
+		[markEditorReady, notesApi, pruneWarmCaches, touchWarm],
+	);
 
 	// Keep yDocs warm for every open tab so switching is hide/show, not remount.
 	useEffect(() => {
@@ -829,6 +898,7 @@ function Index() {
 						return;
 					}
 					loadedYNoteCache.current.set(notePath, note);
+					touchWarm(notePath);
 					markEditorReady(notePath);
 				})
 				.catch(() => {
@@ -874,6 +944,67 @@ function Index() {
 			cancelled = true;
 		};
 	}, [appState.openTabs, notesApi, markEditorReady]);
+
+	// Idle-prefetch first notes in the active space so sidebar opens feel warm.
+	useEffect(() => {
+		if (!workspace || !appState.activeSpacePath) return;
+		if (appState.activeSpacePath === "Trash") return;
+
+		const space = workspace.spaces.find(
+			(entry) => entry.path === appState.activeSpacePath,
+		);
+		if (!space) return;
+
+		const paths: string[] = [];
+		const walk = (items: WorkspaceItem[]) => {
+			for (const item of items) {
+				if (paths.length >= 8) return;
+				if (item.type === "note") paths.push(item.path);
+				else walk(item.children);
+			}
+		};
+		walk(space.children);
+
+		let index = 0;
+		let idleId: number | undefined;
+		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+		let cancelled = false;
+
+		const schedule = (fn: () => void) => {
+			if (typeof requestIdleCallback === "function") {
+				idleId = requestIdleCallback(fn, { timeout: 800 });
+			} else {
+				timeoutId = setTimeout(fn, 32);
+			}
+		};
+
+		const tick = () => {
+			if (cancelled) return;
+			while (index < paths.length) {
+				const path = paths[index++];
+				if (!path) continue;
+				if (
+					loadedYNoteCache.current.has(path) &&
+					noteContentCache.current.has(path)
+				) {
+					continue;
+				}
+				prefetchNote(path);
+				break;
+			}
+			if (index < paths.length) schedule(tick);
+		};
+
+		schedule(tick);
+
+		return () => {
+			cancelled = true;
+			if (idleId !== undefined && typeof cancelIdleCallback === "function") {
+				cancelIdleCallback(idleId);
+			}
+			if (timeoutId !== undefined) clearTimeout(timeoutId);
+		};
+	}, [appState.activeSpacePath, workspace, prefetchNote]);
 
 	useEffect(() => {
 		const title = appState.activeNotePath
@@ -954,7 +1085,8 @@ function Index() {
 				),
 			);
 			didHydrate.current = true;
-			await refreshTrash();
+			// Trash is non-critical for first paint — don't block editor path.
+			void refreshTrash();
 		};
 
 		hydrate().catch((error) => {
@@ -979,7 +1111,7 @@ function Index() {
 		if (!notesApi || !didHydrate.current) return;
 
 		const timer = setTimeout(() => {
-			notesApi.writeAppState(appState);
+			notesApi.writeAppState(getAppStateSnapshot());
 		}, 300);
 		return () => clearTimeout(timer);
 	}, [appState, notesApi]);
@@ -1289,12 +1421,19 @@ function Index() {
 					preview: mode === "preview" && !existing,
 					pinned: false,
 				};
+
+				const noopClick =
+					existing !== undefined &&
+					current.activeNotePath === note.path &&
+					(mode !== "fixed" || existing.preview === false);
+				if (noopClick) return current;
+
 				const openTabs = existing
-					? current.openTabs.map((tab) =>
-							tab.path === note.path
-								? { ...tab, preview: mode === "fixed" ? false : tab.preview }
-								: tab,
-						)
+					? mode === "fixed" && existing.preview
+						? current.openTabs.map((tab) =>
+								tab.path === note.path ? { ...tab, preview: false } : tab,
+							)
+						: current.openTabs
 					: replaceOrAppendPreviewTab(current.openTabs, nextTab, previewIndex);
 
 				return {
@@ -1310,11 +1449,8 @@ function Index() {
 
 	const closeTab = useCallback(
 		(path: string, _options: { flush?: boolean } = {}) => {
-			const cached = loadedYNoteCache.current.get(path);
-			if (cached) {
-				cached.destroy();
-				loadedYNoteCache.current.delete(path);
-			}
+			// Soft-close: keep yDoc warm for fast reopen; LRU prunes later.
+			touchWarm(path);
 			setReadyEditorPaths((current) => {
 				if (!current.has(path)) return current;
 				const next = new Set(current);
@@ -1336,8 +1472,13 @@ function Index() {
 					openTabs,
 				};
 			});
+			const openPaths = new Set(
+				useAppStore.getState().openTabs.map((tab) => tab.path),
+			);
+			openPaths.delete(path);
+			pruneWarmCaches(openPaths);
 		},
-		[],
+		[pruneWarmCaches, touchWarm],
 	);
 
 	const switchTab = useCallback(
@@ -1934,17 +2075,8 @@ function Index() {
 	const updateActiveTitleDraft = useCallback((title: string) => {
 		const notePath = activeNotePathRef.current;
 		if (!notePath) return;
-
-		setNoteTitleDrafts((current) => ({
-			...current,
-			[notePath]: title,
-		}));
-		setAppState((current) => ({
-			...current,
-			openTabs: current.openTabs.map((tab) =>
-				tab.path === notePath ? { ...tab, title } : tab,
-			),
-		}));
+		// Live labels only — do not touch Index state / openTabs / spaces tree.
+		useEditorUiStore.getState().setTitleDraft(notePath, title);
 	}, []);
 
 	const updateActivePageFormat = useCallback(
@@ -1954,12 +2086,12 @@ function Index() {
 			setPageFormats((current) => ({
 				...current,
 				[appState.activeNotePath as string]: {
-					...(current[appState.activeNotePath as string] ?? defaultPageFormat),
+					...(current[appState.activeNotePath as string] ?? resolvedDefaultPageFormat),
 					...patch,
 				},
 			}));
 		},
-		[appState.activeNotePath],
+		[appState.activeNotePath, resolvedDefaultPageFormat],
 	);
 
 	const updateNoteContent = useCallback(
@@ -2034,9 +2166,11 @@ function Index() {
 
 			const zenShortcut = getShortcut("view.toggleZen");
 			const sidebarShortcut = getShortcut("view.toggleSidebar");
+			const noteSetupShortcut = getShortcut("note.setup");
 			const isGlobalViewShortcut =
 				shortcutMatchesEvent(zenShortcut, event) ||
-				shortcutMatchesEvent(sidebarShortcut, event);
+				shortcutMatchesEvent(sidebarShortcut, event) ||
+				shortcutMatchesEvent(noteSetupShortcut, event);
 
 			if (isShortcutEditableInput(event.target) && !isGlobalViewShortcut)
 				return;
@@ -2166,11 +2300,12 @@ function Index() {
 		);
 	}, []);
 
-	const handleSortOrderChange = useCallback(
-		(order: SidebarSortOrder) => {
-			setSpaceSortOrder(currentSpacePath, order);
-		},
-		[currentSpacePath, setSpaceSortOrder],
+	const sidebarProviderStyle = useMemo(
+		() =>
+			({
+				"--sidebar-width": "14.5rem",
+			} as CSSProperties),
+		[],
 	);
 
 	const completeSwitchBenchmark = useCallback((notePath: string) => {
@@ -2201,36 +2336,13 @@ function Index() {
 			className="h-full min-h-0"
 			open={appState.sidebarOpen}
 			onOpenChange={handleSidebarOpenChange}
-			style={
-				{
-					"--sidebar-width": "14.5rem",
-				} as CSSProperties
-			}
+			style={sidebarProviderStyle}
 		>
 			{zenMode ? null : (
 				<>
 					<SidebarHotkeys />
 					<AppSidebar
-						activeNotePath={appState.activeNotePath}
-						activeSpacePath={currentSpacePath}
-						expandedFolders={appState.expandedFolders}
-						spaceColors={appState.spaceColors}
-						spaceIcons={appState.spaceIcons}
-						spacePreviewModes={appState.spacePreviewModes}
-						showNotePreview={appState.showNotePreview}
-						closeButtonOnly={appState.closeButtonOnly}
-						onSetShowNotePreview={setShowNotePreview}
-						onSetCloseButtonOnly={setCloseButtonOnly}
-						onSetSpacePreviewMode={setSpacePreviewMode}
 						spaces={visibleSpaces}
-						viewMode={inboxViewMode}
-						onViewModeChange={setInboxViewMode}
-						sortOrder={sortOrderForSpace(
-							currentSpacePath,
-							appState.spaceSortOrders,
-						)}
-						onSortOrderChange={handleSortOrderChange}
-						customItemOrders={appState.customItemOrders}
 						onReorderItems={reorderItems}
 						onCreateFolder={createFolder}
 						onCreateNote={createNote}
@@ -2240,6 +2352,7 @@ function Index() {
 						onEditSpace={editSpace}
 						onMoveItem={moveItem}
 						onOpenNote={openNote}
+						onPrefetchNote={prefetchNote}
 						onRenameItem={renameItem}
 						onReorderSpaces={reorderSpaces}
 						onSelectSpace={setActiveSpacePath}
@@ -2324,9 +2437,7 @@ function Index() {
 							</DndContext>
 						</div>
 						<div className="flex shrink-0 items-center gap-2">
-							<span className="min-w-12 px-2 text-right text-xs text-muted-foreground">
-								{saveStatusLabel(saveStatus)}
-							</span>
+							<SaveStatusBadge />
 							<Button
 								type="button"
 								variant="ghost"
@@ -2742,7 +2853,7 @@ function Index() {
 										? noteTitleDrafts[tab.path]
 										: tab.title || "Untitled";
 								const tabPageFormat =
-									pageFormats[tab.path] ?? defaultPageFormat;
+									pageFormats[tab.path] ?? resolvedDefaultPageFormat;
 								const tabReadOnly =
 									appState.readOnlyNotes[tab.path] === true;
 
@@ -2788,6 +2899,17 @@ function Index() {
 	);
 }
 
+function normalizePageFormat(
+	format: PageFormat | Partial<PageFormat> | undefined | null,
+): PageFormat {
+	return {
+		firstLineIndent: format?.firstLineIndent === true,
+		lineHeight: format?.lineHeight === "1.5" ? "1.5" : "normal",
+		paragraphSpacing:
+			format?.paragraphSpacing === "compact" ? "compact" : "default",
+	};
+}
+
 function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 	return {
 		activeNotePath: state.activeNotePath ?? null,
@@ -2811,6 +2933,7 @@ function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		inboxViewMode: state.inboxViewMode === "grid" ? "grid" : "list",
 		showNotePreview: state.showNotePreview !== false,
 		closeButtonOnly: state.closeButtonOnly === true,
+		defaultPageFormat: normalizePageFormat(state.defaultPageFormat),
 	};
 }
 
@@ -2859,6 +2982,7 @@ function reconcileAppState(
 		inboxViewMode: state.inboxViewMode,
 		showNotePreview: state.showNotePreview,
 		closeButtonOnly: state.closeButtonOnly,
+		defaultPageFormat: state.defaultPageFormat,
 	};
 }
 
@@ -2922,12 +3046,6 @@ function reconcileSpaceOrder(spaceOrder: string[], spaces: WorkspaceSpace[]) {
 	return reconciled;
 }
 
-function sortOrderForSpace(
-	spacePath: string,
-	spaceSortOrders: Record<string, SidebarSortOrder>,
-) {
-	return normalizeSortOrder(spaceSortOrders[spacePath], spacePath);
-}
 
 function normalizeSortOrder(
 	order: SidebarSortOrder | undefined,
@@ -3072,11 +3190,19 @@ function replaceOrAppendPreviewTab(
 	return openTabs.map((tab, index) => (index === previewIndex ? nextTab : tab));
 }
 
-function saveStatusLabel(status: SaveStatus) {
-	if (status === "saving") return "Saving...";
-	if (status === "saved") return "Saved";
-	if (status === "error") return "Error";
-	return "";
+function SaveStatusBadge() {
+	const saveStatus = useEditorUiStore((s) => s.saveStatus);
+	const label = saveStatusLabel(saveStatus);
+	if (!label) {
+		return (
+			<span className="min-w-12 px-2 text-right text-xs text-muted-foreground" />
+		);
+	}
+	return (
+		<span className="min-w-12 px-2 text-right text-xs text-muted-foreground">
+			{label}
+		</span>
+	);
 }
 
 function FormatPanelButton({

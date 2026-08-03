@@ -72,6 +72,12 @@ export type SidebarSortOrder = "newest" | "oldest" | "a-z" | "z-a" | "custom";
 
 export type SpacePreviewMode = "global" | "show" | "hide";
 
+export type PageFormat = {
+	firstLineIndent: boolean;
+	lineHeight: "normal" | "1.5";
+	paragraphSpacing: "default" | "compact";
+};
+
 export type PaperiteAppState = {
 	openTabs: OpenNoteTab[];
 	activeNotePath: string | null;
@@ -88,6 +94,7 @@ export type PaperiteAppState = {
 	inboxViewMode: "list" | "grid";
 	showNotePreview: boolean;
 	closeButtonOnly: boolean;
+	defaultPageFormat: PageFormat;
 };
 
 export interface NotesEngine {

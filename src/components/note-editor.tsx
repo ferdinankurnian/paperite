@@ -178,11 +178,9 @@ type NoteEditorProps = {
 	onTitleChange: (title: string) => void;
 };
 
-export type PageFormat = {
-	firstLineIndent: boolean;
-	lineHeight: "normal" | "1.5";
-	paragraphSpacing: "default" | "compact";
-};
+import type { PageFormat } from "@/lib/storage/types";
+
+export type { PageFormat };
 
 type TextAlignment = "left" | "center" | "right" | "justify";
 
@@ -615,6 +613,8 @@ export function NoteEditor({
 	const commitTitle = () => {
 		const nextTitle = draftTitle.trim();
 		const committedTitle = lastCommittedTitleRef.current;
+		// Sync chrome (tab label) once on blur — not per keystroke.
+		onTitleChange(nextTitle || noteTitle || "Untitled");
 		if (nextTitle && nextTitle !== committedTitle) {
 			lastCommittedTitleRef.current = nextTitle;
 			onRename(nextTitle);
@@ -649,6 +649,7 @@ export function NoteEditor({
 						}}
 						onChange={(event) => {
 							setDraftTitle(event.target.value);
+							// Live tab/sidebar labels via lightweight draft store (not Index state).
 							onTitleChange(event.target.value);
 							const textarea = event.currentTarget;
 							textarea.style.height = "auto";

@@ -36,13 +36,15 @@ function RootKeyboardShortcuts() {
 	useEffect(() => {
 		const handleKeyDown = (event: KeyboardEvent) => {
 			if (event.repeat) return;
-			if (isShortcutEditableInput(event.target)) return;
 
+			// Settings should work even while typing in the note editor.
 			if (shortcutMatchesEvent(getShortcut("settings.open"), event)) {
 				event.preventDefault();
 				window.dispatchEvent(new Event("paperite:open-settings"));
 				return;
 			}
+
+			if (isShortcutEditableInput(event.target)) return;
 
 			if (shortcutMatchesEvent(getShortcut("window.quit"), event)) {
 				event.preventDefault();
