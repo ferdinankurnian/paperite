@@ -2431,7 +2431,7 @@ function AppSidebarImpl({
 			<ExpandedFoldersContext.Provider value={expandedFoldersStore}>
 				<aside
 					data-open={notesSheetOpen}
-					className="paperite-note-sidebar flex h-full min-h-0 w-80 max-w-80 shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground"
+					className="paperite-note-sidebar flex h-full min-h-0 w-80 max-w-80 shrink-0 flex-col border-r border-border/60 bg-sidebar text-sidebar-foreground"
 				>
 					<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
 						<SpaceDropHeader

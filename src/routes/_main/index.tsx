@@ -1,7 +1,11 @@
 import {
 	closestCenter,
+	defaultDropAnimationSideEffects,
 	DndContext,
 	type DragEndEvent,
+	type DragStartEvent,
+	DragOverlay,
+	type DropAnimation,
 	type Modifier,
 	PointerSensor,
 	useSensor,
@@ -111,12 +115,12 @@ import { isShortcutEditableInput, shortcutMatchesEvent } from "@/lib/shortcuts";
 import { getSyncEngine } from "@/lib/sync-engine";
 import { getTrashEngine } from "@/lib/trash-engine";
 import { type LoadedYNote, loadYNote } from "@/lib/y-note-store";
-import { useShallow } from "zustand/react/shallow";
 import {
 	defaultAppState,
 	getAppStateSnapshot,
 	useAppStore,
 } from "@/lib/stores/app-store";
+import { useStoreWithEqualityFn } from "zustand/traditional";
 import {
 	saveStatusLabel,
 	useEditorUiStore,
@@ -148,6 +152,26 @@ const FALLBACK_PAGE_FORMAT: PageFormat = {
 	paragraphSpacing: "default",
 };
 
+/** True if same tabs (path + fields); order does not matter. */
+function openTabsEqualIgnoringOrder(a: OpenNoteTab[], b: OpenNoteTab[]) {
+	if (a === b) return true;
+	if (a.length !== b.length) return false;
+	const map = new Map(b.map((tab) => [tab.path, tab]));
+	for (const tab of a) {
+		const other = map.get(tab.path);
+		if (
+			!other ||
+			other.title !== tab.title ||
+			other.preview !== tab.preview ||
+			other.pinned !== tab.pinned
+		) {
+			return false;
+		}
+	}
+	return true;
+}
+
+
 type SortableTabProps = {
 	note: OpenNoteTab;
 	isActive: boolean;
@@ -157,14 +181,15 @@ type SortableTabProps = {
 	spaceIcon?: string;
 	spaceColor?: string;
 	openDelay: number;
+	isTabDragging: boolean;
 	onHoverOpen: () => void;
-	onSelect: () => void;
-	onDoubleClick: () => void;
-	onClose: () => void;
-	onTogglePin: () => void;
+	onSelect: (path: string) => void;
+	onDoubleClick: (path: string) => void;
+	onClose: (path: string) => void;
+	onTogglePin: (path: string) => void;
 };
 
-function SortableTab({
+const SortableTab = memo(function SortableTab({
 	note,
 	isActive,
 	displayTitle,
@@ -173,6 +198,7 @@ function SortableTab({
 	spaceIcon,
 	spaceColor,
 	openDelay,
+	isTabDragging,
 	onHoverOpen,
 	onSelect,
 	onDoubleClick,
@@ -186,13 +212,23 @@ function SortableTab({
 		transform,
 		transition,
 		isDragging: isSortableDragging,
-	} = useSortable({ id: note.path });
+	} = useSortable({
+		id: note.path,
+		transition: {
+			duration: 180,
+			easing: "cubic-bezier(0.25, 1, 0.5, 1)",
+		},
+	});
 
-	const style = {
-		transform: CSS.Transform.toString(transform),
-		transition,
-		opacity: isSortableDragging ? "1" : undefined,
+	const style: CSSProperties = {
+		transform: CSS.Translate.toString(transform),
+		// Dragged tab stays put as a ghost; the DragOverlay follows the pointer.
+		transition: isSortableDragging ? undefined : transition,
+		opacity: isSortableDragging ? 0 : undefined,
 	};
+
+	const [hoverOpen, setHoverOpen] = useState(false);
+	const suppressHover = isTabDragging || isSortableDragging;
 
 	const titleDraft = useEditorUiStore((s) => s.titleDrafts[note.path]);
 	const title = displayTitle(
@@ -203,9 +239,15 @@ function SortableTab({
 
 	return (
 		<HoverCard
+			open={hoverOpen && !suppressHover}
 			openDelay={openDelay}
 			closeDelay={100}
 			onOpenChange={(open) => {
+				if (suppressHover) {
+					setHoverOpen(false);
+					return;
+				}
+				setHoverOpen(open);
 				if (open) onHoverOpen();
 			}}
 		>
@@ -219,19 +261,24 @@ function SortableTab({
 							data-preview={note.preview}
 							data-pinned={note.pinned}
 							data-dragging={isSortableDragging}
-							className="group relative z-10 my-2 w-28 shrink-0 cursor-grab rounded-md text-[13px] text-muted-foreground transition-[color,background-color,transform] duration-150 hover:bg-muted/60 hover:text-foreground data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:bg-muted data-[dragging=true]:opacity-100 active:scale-[0.98] active:cursor-grabbing sm:w-36 lg:w-44 !opacity-100"
+							className="group relative z-10 my-2 w-28 shrink-0 cursor-default rounded-md border border-transparent text-[13px] text-muted-foreground transition-[color,background-color,border-color,transform] duration-150 hover:border-border/40 hover:bg-muted/60 hover:text-foreground active:scale-[0.98] data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:border-border/40 data-[dragging=true]:bg-muted/50 data-[dragging=true]:cursor-default sm:w-36 lg:w-44"
 							{...attributes}
 							{...listeners}
 						>
 							<button
 								type="button"
 								className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
-								onClick={onSelect}
-								onDoubleClick={onDoubleClick}
+								onClick={() => {
+									setHoverOpen(false);
+									onSelect(note.path);
+								}}
+								onDoubleClick={() => onDoubleClick(note.path)}
 								onMouseDown={(event) => {
+									// Dismiss hover card on press (click or start of drag).
+									if (event.button === 0) setHoverOpen(false);
 									if (event.button === 1) {
 										event.preventDefault();
-										if (!note.pinned) onClose();
+										if (!note.pinned) onClose(note.path);
 									}
 								}}
 							>
@@ -249,8 +296,8 @@ function SortableTab({
 								}
 								onClick={(event) => {
 									event.stopPropagation();
-									if (note.pinned) onTogglePin();
-									else onClose();
+									if (note.pinned) onTogglePin(note.path);
+									else onClose(note.path);
 								}}
 							>
 								{note.pinned ? (
@@ -263,7 +310,7 @@ function SortableTab({
 					</ContextMenuTrigger>
 				</HoverCardTrigger>
 				<ContextMenuContent>
-					<ContextMenuItem onSelect={onTogglePin}>
+					<ContextMenuItem onSelect={() => onTogglePin(note.path)}>
 						{note.pinned ? "Unpin Tab" : "Pin Tab"}
 					</ContextMenuItem>
 				</ContextMenuContent>
@@ -304,15 +351,217 @@ function SortableTab({
 			</HoverCardContent>
 		</HoverCard>
 	);
-}
+});
+
+type TabBarProps = {
+	spaceTitleFor: (spacePath: string) => string;
+	onSelect: (path: string) => void;
+	onDoubleClick: (path: string) => void;
+	onClose: (path: string) => void;
+	onTogglePin: (path: string) => void;
+};
+
+const TabBar = memo(function TabBar({
+	spaceTitleFor,
+	onSelect,
+	onDoubleClick,
+	onClose,
+	onTogglePin,
+}: TabBarProps) {
+	// Subscribe here so tab reorder does not re-render Index / sidebar / editors.
+	const openTabs = useAppStore((s) => s.openTabs);
+	const activeNotePath = useAppStore((s) => s.activeNotePath);
+	const spaceIcons = useAppStore((s) => s.spaceIcons);
+	const spaceColors = useAppStore((s) => s.spaceColors);
+
+	const tabListRef = useRef<HTMLDivElement>(null);
+	const [tabHoverWarm, setTabHoverWarm] = useState(false);
+	const [isTabDragging, setIsTabDragging] = useState(false);
+	const [activeDragPath, setActiveDragPath] = useState<string | null>(null);
+	const tabHoverCoolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+		null,
+	);
+
+	const markTabHoverWarm = useCallback(() => {
+		if (tabHoverCoolTimerRef.current) {
+			clearTimeout(tabHoverCoolTimerRef.current);
+			tabHoverCoolTimerRef.current = null;
+		}
+		setTabHoverWarm(true);
+	}, []);
+
+	const scheduleTabHoverCool = useCallback(() => {
+		if (tabHoverCoolTimerRef.current) clearTimeout(tabHoverCoolTimerRef.current);
+		tabHoverCoolTimerRef.current = setTimeout(() => {
+			setTabHoverWarm(false);
+			tabHoverCoolTimerRef.current = null;
+		}, 200);
+	}, []);
+
+	useEffect(() => {
+		return () => {
+			if (tabHoverCoolTimerRef.current) clearTimeout(tabHoverCoolTimerRef.current);
+		};
+	}, []);
+
+	const restrictToHorizontalAxis: Modifier = useCallback(
+		({ transform, activeNodeRect }) => {
+			const listRect = tabListRef.current?.getBoundingClientRect();
+			if (!listRect || !activeNodeRect) return { ...transform, y: 0 };
+
+			const minX = listRect.left - activeNodeRect.left;
+			const maxX = listRect.right - activeNodeRect.right;
+
+			return {
+				...transform,
+				x: Math.min(maxX, Math.max(minX, transform.x)),
+				y: 0,
+			};
+		},
+		[],
+	);
+
+	const dndSensors = useSensors(
+		useSensor(PointerSensor, {
+			activationConstraint: { distance: 1 },
+		}),
+	);
+
+	const openTabPaths = useMemo(
+		() => openTabs.map((t) => t.path),
+		[openTabs],
+	);
+
+	const tabDropAnimation: DropAnimation = {
+		duration: 200,
+		easing: "cubic-bezier(0.25, 1, 0.5, 1)",
+		sideEffects: defaultDropAnimationSideEffects({
+			styles: {
+				active: { opacity: "0" },
+			},
+		}),
+	};
+
+	const handleDragEnd = useCallback((event: DragEndEvent) => {
+		const { active, over } = event;
+		if (!over || active.id === over.id) return;
+		const activeId = String(active.id);
+		const overId = String(over.id);
+		useAppStore.getState().update((current) => {
+			const oldIndex = current.openTabs.findIndex((tab) => tab.path === activeId);
+			const newIndex = current.openTabs.findIndex((tab) => tab.path === overId);
+			if (oldIndex === -1 || newIndex === -1) return current;
+			return {
+				...current,
+				openTabs: arrayMove(current.openTabs, oldIndex, newIndex),
+			};
+		});
+	}, []);
+
+	return (
+		<div
+			ref={tabListRef}
+			className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
+			onMouseEnter={() => {
+				if (tabHoverCoolTimerRef.current) {
+					clearTimeout(tabHoverCoolTimerRef.current);
+					tabHoverCoolTimerRef.current = null;
+				}
+			}}
+			onMouseLeave={scheduleTabHoverCool}
+			onWheel={(e) => {
+				if (e.deltaY !== 0) {
+					e.preventDefault();
+					tabListRef.current?.scrollBy({
+						left: e.deltaY,
+						behavior: "auto",
+					});
+				}
+			}}
+		>
+			<DndContext
+				sensors={dndSensors}
+				collisionDetection={closestCenter}
+				modifiers={[restrictToHorizontalAxis]}
+				onDragStart={(event: DragStartEvent) => {
+					setIsTabDragging(true);
+					setActiveDragPath(String(event.active.id));
+				}}
+				onDragEnd={(event) => {
+					// Apply order first so the list commits before overlay unmounts.
+					handleDragEnd(event);
+					setIsTabDragging(false);
+					setActiveDragPath(null);
+				}}
+				onDragCancel={() => {
+					setIsTabDragging(false);
+					setActiveDragPath(null);
+				}}
+			>
+				<SortableContext
+					items={openTabPaths}
+					strategy={horizontalListSortingStrategy}
+				>
+					{openTabs.map((note) => {
+						const spacePath = topLevelPath(note.path);
+						return (
+							<SortableTab
+								key={note.path}
+								note={note}
+								isActive={note.path === activeNotePath}
+								displayTitle={displayNoteTitle}
+								spacePath={spacePath}
+								spaceTitle={spaceTitleFor(spacePath)}
+								spaceIcon={spaceIcons[spacePath]}
+								spaceColor={spaceColors[spacePath]}
+								openDelay={tabHoverWarm ? 0 : 1000}
+								isTabDragging={isTabDragging}
+								onHoverOpen={markTabHoverWarm}
+								onSelect={onSelect}
+								onDoubleClick={onDoubleClick}
+								onClose={onClose}
+								onTogglePin={onTogglePin}
+							/>
+						);
+					})}
+				</SortableContext>
+				<DragOverlay dropAnimation={tabDropAnimation}>
+					{activeDragPath
+						? (() => {
+								const dragNote = openTabs.find(
+									(tab) => tab.path === activeDragPath,
+								);
+								if (!dragNote) return null;
+								const dragTitle = displayNoteTitle(
+									useEditorUiStore.getState().titleDrafts[dragNote.path] ??
+										dragNote.title,
+								);
+								const isActive = dragNote.path === activeNotePath;
+								return (
+									<div
+										data-active={isActive}
+										data-preview={dragNote.preview}
+										className="flex h-8 w-28 scale-[0.98] cursor-default items-center rounded-md border px-2.5 text-[13px] shadow-md transition-transform duration-150 sm:w-36 lg:w-44 data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-border/40 data-[active=false]:bg-muted/60 data-[active=false]:text-muted-foreground data-[preview=true]:italic data-[preview=true]:opacity-70"
+									>
+										<span className="min-w-0 flex-1 truncate">{dragTitle}</span>
+									</div>
+								);
+						  })()
+						: null}
+				</DragOverlay>
+			</DndContext>
+		</div>
+	);
+});
 
 function Index() {
 	const notesApi = getNotesEngine();
 	const { getShortcut } = useKeyboardShortcuts();
 	const workspaceRef = useRef<WorkspaceSnapshot | null>(null);
 	const [workspace, setWorkspace] = useState<WorkspaceSnapshot | null>(null);
-	const appState = useAppStore(
-		useShallow((s) => ({
+	const appState = useStoreWithEqualityFn(
+		useAppStore,
+		(s) => ({
 			openTabs: s.openTabs,
 			activeNotePath: s.activeNotePath,
 			activeSpacePath: s.activeSpacePath,
@@ -323,7 +572,19 @@ function Index() {
 			sidebarOpen: s.sidebarOpen,
 			closeButtonOnly: s.closeButtonOnly,
 			defaultPageFormat: s.defaultPageFormat,
-		})),
+		}),
+		// Reorder-only openTabs changes must not re-render Index (sidebar/editors).
+		(a, b) =>
+			a.activeNotePath === b.activeNotePath &&
+			a.activeSpacePath === b.activeSpacePath &&
+			a.spaceColors === b.spaceColors &&
+			a.spaceIcons === b.spaceIcons &&
+			a.spaceOrder === b.spaceOrder &&
+			a.readOnlyNotes === b.readOnlyNotes &&
+			a.sidebarOpen === b.sidebarOpen &&
+			a.closeButtonOnly === b.closeButtonOnly &&
+			a.defaultPageFormat === b.defaultPageFormat &&
+			openTabsEqualIgnoringOrder(a.openTabs, b.openTabs),
 	);
 	const setAppState = useCallback(
 		(
@@ -368,25 +629,6 @@ function Index() {
 	const lastPersistedContent = useRef("");
 	const activeNotePathRef = useRef<string | null>(null);
 	const noteContentRef = useRef<NoteContent>(createEmptyNoteContent());
-	const tabListRef = useRef<HTMLDivElement>(null);
-	const [tabHoverWarm, setTabHoverWarm] = useState(false);
-	const tabHoverCoolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-		null,
-	);
-	const markTabHoverWarm = useCallback(() => {
-		if (tabHoverCoolTimerRef.current) {
-			clearTimeout(tabHoverCoolTimerRef.current);
-			tabHoverCoolTimerRef.current = null;
-		}
-		setTabHoverWarm(true);
-	}, []);
-	const scheduleTabHoverCool = useCallback(() => {
-		if (tabHoverCoolTimerRef.current) clearTimeout(tabHoverCoolTimerRef.current);
-		tabHoverCoolTimerRef.current = setTimeout(() => {
-			setTabHoverWarm(false);
-			tabHoverCoolTimerRef.current = null;
-		}, 200);
-	}, []);
 	const [newlyCreatedFolderPath, setNewlyCreatedFolderPath] = useState<
 		string | null
 	>(null);
@@ -424,48 +666,6 @@ function Index() {
 		} catch {
 			// Ignore trash read errors
 		}
-	}, []);
-
-	const restrictToHorizontalAxis: Modifier = ({
-		transform,
-		activeNodeRect,
-	}) => {
-		const listRect = tabListRef.current?.getBoundingClientRect();
-		if (!listRect || !activeNodeRect) return { ...transform, y: 0 };
-
-		const minX = listRect.left - activeNodeRect.left;
-		const maxX = listRect.right - activeNodeRect.right;
-
-		return {
-			...transform,
-			x: Math.min(maxX, Math.max(minX, transform.x)),
-			y: 0,
-		};
-	};
-
-	const dndSensors = useSensors(
-		useSensor(PointerSensor, {
-			activationConstraint: { distance: 5 },
-		}),
-	);
-
-	const handleDragEnd = useCallback((event: DragEndEvent) => {
-		const { active, over } = event;
-		if (!over || active.id === over.id) return;
-
-		setAppState((current) => {
-			const oldIndex = current.openTabs.findIndex(
-				(tab) => tab.path === active.id,
-			);
-			const newIndex = current.openTabs.findIndex(
-				(tab) => tab.path === over.id,
-			);
-			if (oldIndex === -1 || newIndex === -1) return current;
-			return {
-				...current,
-				openTabs: arrayMove(current.openTabs, oldIndex, newIndex),
-			};
-		});
 	}, []);
 
 	const enqueueNoteWrite = useCallback(
@@ -757,12 +957,16 @@ function Index() {
 		? (pageFormats[appState.activeNotePath] ?? resolvedDefaultPageFormat)
 		: resolvedDefaultPageFormat;
 
-	const openTabPaths = useMemo(
-		() => appState.openTabs.map((t) => t.path),
-		[appState.openTabs],
-	);
-
 	activeNotePathRef.current = appState.activeNotePath;
+
+	// Path set only — reorder must not re-warm yDocs / re-read notes (that caused ~1s drop lag).
+	const openTabPathsSignature = useMemo(() => {
+		return appState.openTabs
+			.map((t) => t.path)
+			.slice()
+			.sort()
+			.join("\0");
+	}, [appState.openTabs]);
 
 	useEffect(() => {
 		noteContentRef.current = noteContent;
@@ -912,7 +1116,7 @@ function Index() {
 		return () => {
 			cancelled = true;
 		};
-	}, [appState.activeNotePath, appState.openTabs, markEditorReady]);
+	}, [appState.activeNotePath, openTabPathsSignature, markEditorReady]);
 
 	// Warm content cache for open tabs so first switch after restore is instant.
 	useEffect(() => {
@@ -943,7 +1147,7 @@ function Index() {
 		return () => {
 			cancelled = true;
 		};
-	}, [appState.openTabs, notesApi, markEditorReady]);
+	}, [openTabPathsSignature, notesApi, markEditorReady]);
 
 	// Idle-prefetch first notes in the active space so sidebar opens feel warm.
 	useEffect(() => {
@@ -1107,14 +1311,24 @@ function Index() {
 		});
 	}, [notesApi, syncExternalWorkspace]);
 
+	// Persist any app-state change (including tab reorder) without requiring Index to re-render.
 	useEffect(() => {
-		if (!notesApi || !didHydrate.current) return;
+		if (!notesApi) return;
 
-		const timer = setTimeout(() => {
-			notesApi.writeAppState(getAppStateSnapshot());
-		}, 300);
-		return () => clearTimeout(timer);
-	}, [appState, notesApi]);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const unsub = useAppStore.subscribe(() => {
+			if (!didHydrate.current) return;
+			if (timer) clearTimeout(timer);
+			timer = setTimeout(() => {
+				notesApi.writeAppState(getAppStateSnapshot());
+			}, 300);
+		});
+
+		return () => {
+			unsub();
+			if (timer) clearTimeout(timer);
+		};
+	}, [notesApi]);
 
 	useEffect(() => {
 		window.dispatchEvent(
@@ -2292,6 +2506,15 @@ function Index() {
 		});
 	}, []);
 
+	const spaceTitleFor = useCallback(
+		(spacePath: string) => {
+			if (spacePath === "Inbox") return "Inbox";
+			const space = visibleSpaces.find((entry) => entry.path === spacePath);
+			return space?.title ?? spacePath;
+		},
+		[visibleSpaces],
+	);
+
 	const handleSidebarOpenChange = useCallback((sidebarOpen: boolean) => {
 		setAppState((current) =>
 			current.sidebarOpen === sidebarOpen
@@ -2375,67 +2598,13 @@ function Index() {
 								className="text-muted-foreground min-[56.0625rem]:hidden"
 							/>
 						</div>
-						<div
-							ref={tabListRef}
-							className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
-							onMouseEnter={() => {
-								if (tabHoverCoolTimerRef.current) {
-									clearTimeout(tabHoverCoolTimerRef.current);
-									tabHoverCoolTimerRef.current = null;
-								}
-							}}
-							onMouseLeave={scheduleTabHoverCool}
-							onWheel={(e) => {
-								if (e.deltaY !== 0) {
-									e.preventDefault();
-									tabListRef.current?.scrollBy({
-										left: e.deltaY,
-										behavior: "auto",
-									});
-								}
-							}}
-						>
-							<DndContext
-								sensors={dndSensors}
-								collisionDetection={closestCenter}
-								modifiers={[restrictToHorizontalAxis]}
-								onDragEnd={handleDragEnd}
-							>
-								<SortableContext
-									items={openTabPaths}
-									strategy={horizontalListSortingStrategy}
-								>
-									{appState.openTabs.map((note) => {
-										const spacePath = topLevelPath(note.path);
-										const space =
-											visibleSpaces.find((entry) => entry.path === spacePath) ??
-											null;
-										return (
-											<SortableTab
-												key={note.path}
-												note={note}
-												isActive={note.path === appState.activeNotePath}
-												displayTitle={displayNoteTitle}
-												spacePath={spacePath}
-												spaceTitle={
-													spacePath === "Inbox"
-														? "Inbox"
-														: (space?.title ?? spacePath)
-												}
-												spaceIcon={appState.spaceIcons[spacePath]}
-												spaceColor={appState.spaceColors[spacePath]}
-												openDelay={tabHoverWarm ? 0 : 1000}
-												onHoverOpen={markTabHoverWarm}
-												onSelect={() => selectTab(note.path)}
-												onDoubleClick={() => fixTab(note.path)}
-												onClose={() => closeTab(note.path)}
-												onTogglePin={() => togglePinTab(note.path)}
-											/>
-										);
-									})}
-								</SortableContext>
-							</DndContext>
-						</div>
+						<TabBar
+							spaceTitleFor={spaceTitleFor}
+							onSelect={selectTab}
+							onDoubleClick={fixTab}
+							onClose={closeTab}
+							onTogglePin={togglePinTab}
+						/>
 						<div className="flex shrink-0 items-center gap-2">
 							<SaveStatusBadge />
 							<Button
