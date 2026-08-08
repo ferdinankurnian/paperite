@@ -16,9 +16,9 @@ export const defaultAppState: PaperiteAppState = {
 	spaceIcons: {},
 	spaceOrder: [],
 	spaceSortOrders: {},
+	spaceFolderFirst: {},
 	spacePreviewModes: {},
 	customItemOrders: {},
-	readOnlyNotes: {},
 	sidebarOpen: true,
 	inboxViewMode: "list",
 	showNotePreview: true,
@@ -46,6 +46,7 @@ type AppStore = PaperiteAppState & {
 	setDefaultPageFormat: (format: PageFormat | Partial<PageFormat>) => void;
 	setSpacePreviewMode: (spacePath: string, mode: SpacePreviewMode) => void;
 	setSpaceSortOrder: (spacePath: string, order: SidebarSortOrder) => void;
+	setSpaceFolderFirst: (spacePath: string, folderFirst: boolean) => void;
 };
 
 function pickState(s: AppStore): PaperiteAppState {
@@ -58,9 +59,9 @@ function pickState(s: AppStore): PaperiteAppState {
 		spaceIcons: s.spaceIcons,
 		spaceOrder: s.spaceOrder,
 		spaceSortOrders: s.spaceSortOrders,
+		spaceFolderFirst: s.spaceFolderFirst,
 		spacePreviewModes: s.spacePreviewModes,
 		customItemOrders: s.customItemOrders,
-		readOnlyNotes: s.readOnlyNotes,
 		sidebarOpen: s.sidebarOpen,
 		inboxViewMode: s.inboxViewMode,
 		showNotePreview: s.showNotePreview,
@@ -83,7 +84,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	setActiveSpacePath: (path) => set({ activeSpacePath: path }),
 	setOpenTabs: (tabs) => set({ openTabs: tabs }),
 	setExpandedFolders: (paths) => set({ expandedFolders: paths }),
-	setSidebarOpen: (open) => set({ sidebarOpen: open }),
+	setSidebarOpen: (open) =>
+		set((s) => (s.sidebarOpen === open ? s : { sidebarOpen: open })),
 	setInboxViewMode: (mode) => set({ inboxViewMode: mode }),
 	setShowNotePreview: (show) => set({ showNotePreview: show }),
 	setCloseButtonOnly: (only) => set({ closeButtonOnly: only }),
@@ -100,6 +102,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	setSpaceSortOrder: (spacePath, order) =>
 		set((s) => ({
 			spaceSortOrders: { ...s.spaceSortOrders, [spacePath]: order },
+		})),
+
+	setSpaceFolderFirst: (spacePath, folderFirst) =>
+		set((s) => ({
+			spaceFolderFirst: { ...s.spaceFolderFirst, [spacePath]: folderFirst },
 		})),
 }));
 

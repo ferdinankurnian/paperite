@@ -85,9 +85,9 @@ import {
 	HoverCardContent,
 	HoverCardTrigger,
 } from "@/components/ui/hover-card";
+import { useAppStore } from "@/lib/stores/app-store";
 
 export function NavMain({
-	activeSpacePath,
 	onCreateSpace,
 	onDeleteSpace,
 	onEditSpace,
@@ -96,7 +96,6 @@ export function NavMain({
 	spaceIconsByPath,
 	spaces,
 }: {
-	activeSpacePath: string;
 	onCreateSpace: (title: string, color: string, icon: string) => void;
 	onDeleteSpace: (path: string) => void;
 	onEditSpace: (
@@ -115,6 +114,8 @@ export function NavMain({
 		icon?: React.ReactNode;
 	}[];
 }) {
+	// Subscribe here so space switch does not re-render AppSidebar / note trees.
+	const activeSpacePath = useAppStore((s) => s.activeSpacePath);
 	const [isCreateOpen, setIsCreateOpen] = useState(false);
 	const { state: sidebarState, isMobile: sidebarIsMobile } = useSidebar();
 	const [spaceName, setSpaceName] = useState("");
@@ -568,6 +569,7 @@ function SortableSpaceItem({
 	} = useSortable({ id });
 	const { isOver, setNodeRef: setDroppableRef } = useDroppable({
 		id: spaceDropTargetId(id),
+		data: { type: "space", path: id },
 	});
 	const setNodeRef = (node: HTMLDivElement | null) => {
 		setSortableRef(node);
@@ -581,9 +583,10 @@ function SortableSpaceItem({
 				transform: CSS.Transform.toString(transform),
 				transition,
 			}}
-			className="touch-none rounded-md data-[dragging=true]:opacity-70 data-[over=true]:bg-sidebar-accent/70"
+			className="touch-none rounded-md data-[dragging=true]:opacity-70 data-[over=true]:bg-sidebar-accent/70 data-[space-over=true]:bg-sidebar-accent/70"
 			data-dragging={isDragging}
 			data-over={isOver}
+			data-paperite-space-path={id}
 			{...attributes}
 			{...listeners}
 		>
@@ -607,13 +610,18 @@ function SpaceDropMenuItem({
 }) {
 	const { isOver, setNodeRef } = useDroppable({
 		id: spaceDropTargetId(space.path),
+		data: { type: "space", path: space.path },
 	});
 	const { state: sidebarState, isMobile } = useSidebar();
 
 	return (
 		<SidebarGroup>
 			<SidebarMenu>
-				<SidebarMenuItem ref={setNodeRef} data-over={isOver}>
+				<SidebarMenuItem
+					ref={setNodeRef}
+					data-over={isOver}
+					data-paperite-space-path={space.path}
+				>
 					<HoverCard openDelay={200} closeDelay={0}>
 						<HoverCardTrigger asChild>
 							<SidebarMenuButton

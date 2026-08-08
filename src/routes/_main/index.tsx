@@ -1,35 +1,13 @@
-import {
-	closestCenter,
-	defaultDropAnimationSideEffects,
-	DndContext,
-	type DragEndEvent,
-	type DragStartEvent,
-	DragOverlay,
-	type DropAnimation,
-	type Modifier,
-	PointerSensor,
-	useSensor,
-	useSensors,
-} from "@dnd-kit/core";
-import {
-	arrayMove,
-	horizontalListSortingStrategy,
-	SortableContext,
-	useSortable,
-} from "@dnd-kit/sortable";
-import { CSS } from "@dnd-kit/utilities";
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import {
 	BookOpenIcon,
 	CheckIcon,
-	CloudIcon,
+	Loader2Icon,
+	ShieldCheckIcon,
 	ExternalLinkIcon,
-	FolderIcon,
-	InboxIcon,
 	InfoIcon,
 	MoreVerticalIcon,
 	PencilIcon,
-	PinIcon,
 	SearchIcon,
 	Trash2Icon,
 	XIcon,
@@ -37,6 +15,7 @@ import {
 import {
 	type CSSProperties,
 	memo,
+	type MouseEvent,
 	type ReactNode,
 	startTransition,
 	useCallback,
@@ -46,25 +25,81 @@ import {
 	useState,
 } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
+import { NoteWorkspace } from "@/components/note-workspace";
+import { PersistedSidebarProvider } from "@/components/persisted-sidebar-provider";
+import { TabBar } from "@/components/tab-bar";
 import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
-import { NoteEditor, type PageFormat } from "@/components/note-editor";
+import {
+	getNoteReadOnlyController,
+	NoteEditor,
+	subscribeNoteReadOnlyRegistry,
+	type PageFormat,
+} from "@/components/note-editor";
 
 const MemoNoteEditor = memo(NoteEditor, (prev, next) => {
 	// Tab switch only toggles visibility in the parent — keep TipTap mounted
 	// and skip re-render unless something the editor actually uses changed.
+	// view/edit is local state inside NoteEditor — toggle must not hit Index.
 	return (
 		prev.content === next.content &&
 		prev.noteTitle === next.noteTitle &&
 		prev.notePath === next.notePath &&
 		prev.pageFormat === next.pageFormat &&
-		prev.readOnly === next.readOnly &&
 		prev.yDoc === next.yDoc &&
 		prev.searchQuery === next.searchQuery &&
 		prev.zenMode === next.zenMode &&
 		prev.onChange === next.onChange &&
 		prev.onContentRendered === next.onContentRendered &&
+		prev.onContentSnapshot === next.onContentSnapshot &&
 		prev.onRename === next.onRename &&
 		prev.onTitleChange === next.onTitleChange
+	);
+});
+
+const ReadOnlyToggleButton = memo(function ReadOnlyToggleButton() {
+	const activeNotePath = useAppStore((s) => s.activeNotePath);
+	const [isReadOnly, setIsReadOnly] = useState(false);
+
+	useEffect(() => {
+		let unsubController: (() => void) | undefined;
+		const attach = () => {
+			unsubController?.();
+			unsubController = undefined;
+			const controller = getNoteReadOnlyController(activeNotePath);
+			if (!controller) {
+				setIsReadOnly(false);
+				return;
+			}
+			setIsReadOnly(controller.get());
+			unsubController = controller.subscribe(setIsReadOnly);
+		};
+		attach();
+		const unsubRegistry = subscribeNoteReadOnlyRegistry(attach);
+		return () => {
+			unsubRegistry();
+			unsubController?.();
+		};
+	}, [activeNotePath]);
+
+	const toggle = useCallback(() => {
+		getNoteReadOnlyController(
+			useAppStore.getState().activeNotePath,
+		)?.toggle();
+	}, []);
+
+	if (!activeNotePath) return null;
+
+	return (
+		<Button
+			type="button"
+			variant="ghost"
+			size="icon-sm"
+			className="text-muted-foreground"
+			aria-label={isReadOnly ? "Edit note" : "Reading view"}
+			onClick={toggle}
+		>
+			{isReadOnly ? <PencilIcon /> : <BookOpenIcon />}
+		</Button>
 	);
 });
 
@@ -77,12 +112,6 @@ import {
 } from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import {
-	ContextMenu,
-	ContextMenuContent,
-	ContextMenuItem,
-	ContextMenuTrigger,
-} from "@/components/ui/context-menu";
-import {
 	DropdownMenu,
 	DropdownMenuContent,
 	DropdownMenuItem,
@@ -94,11 +123,7 @@ import {
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-import {
-	SidebarInset,
-	SidebarProvider,
-	SidebarTrigger,
-} from "@/components/ui/sidebar";
+import { SidebarTrigger } from "@/components/ui/sidebar";
 import { clerk, loadClerk } from "@/lib/clerk";
 import { addExport, updateExport } from "@/lib/export-queue";
 import {
@@ -122,6 +147,8 @@ import {
 } from "@/lib/stores/app-store";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import {
+	formatSavedAt,
+	formatSavedAtAbsolute,
 	saveStatusLabel,
 	useEditorUiStore,
 } from "@/lib/stores/editor-ui-store";
@@ -172,416 +199,32 @@ function openTabsEqualIgnoringOrder(a: OpenNoteTab[], b: OpenNoteTab[]) {
 }
 
 
-type SortableTabProps = {
-	note: OpenNoteTab;
-	isActive: boolean;
-	displayTitle: (title: string) => string;
-	spacePath: string;
-	spaceTitle: string;
-	spaceIcon?: string;
-	spaceColor?: string;
-	openDelay: number;
-	isTabDragging: boolean;
-	onHoverOpen: () => void;
-	onSelect: (path: string) => void;
-	onDoubleClick: (path: string) => void;
-	onClose: (path: string) => void;
-	onTogglePin: (path: string) => void;
-};
-
-const SortableTab = memo(function SortableTab({
-	note,
-	isActive,
-	displayTitle,
-	spacePath,
-	spaceTitle,
-	spaceIcon,
-	spaceColor,
-	openDelay,
-	isTabDragging,
-	onHoverOpen,
-	onSelect,
-	onDoubleClick,
-	onClose,
-	onTogglePin,
-}: SortableTabProps) {
-	const {
-		attributes,
-		listeners,
-		setNodeRef,
-		transform,
-		transition,
-		isDragging: isSortableDragging,
-	} = useSortable({
-		id: note.path,
-		transition: {
-			duration: 180,
-			easing: "cubic-bezier(0.25, 1, 0.5, 1)",
-		},
-	});
-
-	const style: CSSProperties = {
-		transform: CSS.Translate.toString(transform),
-		// Dragged tab stays put as a ghost; the DragOverlay follows the pointer.
-		transition: isSortableDragging ? undefined : transition,
-		opacity: isSortableDragging ? 0 : undefined,
-	};
-
-	const [hoverOpen, setHoverOpen] = useState(false);
-	const suppressHover = isTabDragging || isSortableDragging;
-
-	const titleDraft = useEditorUiStore((s) => s.titleDrafts[note.path]);
-	const title = displayTitle(
-		titleDraft !== undefined ? titleDraft : note.title,
-	);
-	const customIcon =
-		spaceIcon?.startsWith("custom:") ? spaceIcon.slice("custom:".length) : null;
-
-	return (
-		<HoverCard
-			open={hoverOpen && !suppressHover}
-			openDelay={openDelay}
-			closeDelay={100}
-			onOpenChange={(open) => {
-				if (suppressHover) {
-					setHoverOpen(false);
-					return;
-				}
-				setHoverOpen(open);
-				if (open) onHoverOpen();
-			}}
-		>
-			<ContextMenu>
-				<HoverCardTrigger asChild>
-					<ContextMenuTrigger asChild>
-						<div
-							ref={setNodeRef}
-							style={style}
-							data-active={isActive}
-							data-preview={note.preview}
-							data-pinned={note.pinned}
-							data-dragging={isSortableDragging}
-							className="group relative z-10 my-2 w-28 shrink-0 cursor-default rounded-md border border-transparent text-[13px] text-muted-foreground transition-[color,background-color,border-color,transform] duration-150 hover:border-border/40 hover:bg-muted/60 hover:text-foreground active:scale-[0.98] data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:border-border/40 data-[dragging=true]:bg-muted/50 data-[dragging=true]:cursor-default sm:w-36 lg:w-44"
-							{...attributes}
-							{...listeners}
-						>
-							<button
-								type="button"
-								className="flex h-full w-full items-center rounded-md pr-7 pl-2.5 text-left outline-none"
-								onClick={() => {
-									setHoverOpen(false);
-									onSelect(note.path);
-								}}
-								onDoubleClick={() => onDoubleClick(note.path)}
-								onMouseDown={(event) => {
-									// Dismiss hover card on press (click or start of drag).
-									if (event.button === 0) setHoverOpen(false);
-									if (event.button === 1) {
-										event.preventDefault();
-										if (!note.pinned) onClose(note.path);
-									}
-								}}
-							>
-								<span className="min-w-0 flex-1 truncate">{title}</span>
-							</button>
-							<button
-								type="button"
-								aria-label={
-									note.pinned ? `Unpin ${title}` : `Close ${title}`
-								}
-								className={
-									note.pinned
-										? "-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-65 hover:opacity-100"
-										: "-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-0 transition-opacity group-hover:opacity-65 group-data-[active=true]:opacity-65 hover:opacity-100"
-								}
-								onClick={(event) => {
-									event.stopPropagation();
-									if (note.pinned) onTogglePin(note.path);
-									else onClose(note.path);
-								}}
-							>
-								{note.pinned ? (
-									<PinIcon className="size-3.5" />
-								) : (
-									<XIcon className="size-3.5" />
-								)}
-							</button>
-						</div>
-					</ContextMenuTrigger>
-				</HoverCardTrigger>
-				<ContextMenuContent>
-					<ContextMenuItem onSelect={() => onTogglePin(note.path)}>
-						{note.pinned ? "Unpin Tab" : "Pin Tab"}
-					</ContextMenuItem>
-				</ContextMenuContent>
-			</ContextMenu>
-			<HoverCardContent
-				side="bottom"
-				align="start"
-				sideOffset={6}
-				className="w-48 gap-0 overflow-hidden p-0"
-			>
-				<div className="px-3 py-2.5">
-					<p className="font-medium text-sm leading-snug text-popover-foreground">
-						{title}
-					</p>
-				</div>
-				<div className="flex items-center gap-2 border-border/60 border-t bg-muted/40 px-3 py-2 text-muted-foreground text-xs">
-					{spacePath === "Inbox" ? (
-						<InboxIcon className="size-3.5 shrink-0" />
-					) : customIcon ? (
-						<img
-							src={customIcon}
-							alt=""
-							className="size-3.5 shrink-0 rounded-sm object-cover"
-						/>
-					) : spaceIcon === "folder" ? (
-						<FolderIcon
-							className="size-3.5 shrink-0"
-							style={spaceColor ? { color: spaceColor } : undefined}
-						/>
-					) : (
-						<CloudIcon
-							className="size-3.5 shrink-0"
-							style={spaceColor ? { color: spaceColor } : undefined}
-						/>
-					)}
-					<span className="min-w-0 truncate">{spaceTitle}</span>
-				</div>
-			</HoverCardContent>
-		</HoverCard>
-	);
-});
-
-type TabBarProps = {
-	spaceTitleFor: (spacePath: string) => string;
-	onSelect: (path: string) => void;
-	onDoubleClick: (path: string) => void;
-	onClose: (path: string) => void;
-	onTogglePin: (path: string) => void;
-};
-
-const TabBar = memo(function TabBar({
-	spaceTitleFor,
-	onSelect,
-	onDoubleClick,
-	onClose,
-	onTogglePin,
-}: TabBarProps) {
-	// Subscribe here so tab reorder does not re-render Index / sidebar / editors.
-	const openTabs = useAppStore((s) => s.openTabs);
-	const activeNotePath = useAppStore((s) => s.activeNotePath);
-	const spaceIcons = useAppStore((s) => s.spaceIcons);
-	const spaceColors = useAppStore((s) => s.spaceColors);
-
-	const tabListRef = useRef<HTMLDivElement>(null);
-	const [tabHoverWarm, setTabHoverWarm] = useState(false);
-	const [isTabDragging, setIsTabDragging] = useState(false);
-	const [activeDragPath, setActiveDragPath] = useState<string | null>(null);
-	const tabHoverCoolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-		null,
-	);
-
-	const markTabHoverWarm = useCallback(() => {
-		if (tabHoverCoolTimerRef.current) {
-			clearTimeout(tabHoverCoolTimerRef.current);
-			tabHoverCoolTimerRef.current = null;
-		}
-		setTabHoverWarm(true);
-	}, []);
-
-	const scheduleTabHoverCool = useCallback(() => {
-		if (tabHoverCoolTimerRef.current) clearTimeout(tabHoverCoolTimerRef.current);
-		tabHoverCoolTimerRef.current = setTimeout(() => {
-			setTabHoverWarm(false);
-			tabHoverCoolTimerRef.current = null;
-		}, 200);
-	}, []);
-
-	useEffect(() => {
-		return () => {
-			if (tabHoverCoolTimerRef.current) clearTimeout(tabHoverCoolTimerRef.current);
-		};
-	}, []);
-
-	const restrictToHorizontalAxis: Modifier = useCallback(
-		({ transform, activeNodeRect }) => {
-			const listRect = tabListRef.current?.getBoundingClientRect();
-			if (!listRect || !activeNodeRect) return { ...transform, y: 0 };
-
-			const minX = listRect.left - activeNodeRect.left;
-			const maxX = listRect.right - activeNodeRect.right;
-
-			return {
-				...transform,
-				x: Math.min(maxX, Math.max(minX, transform.x)),
-				y: 0,
-			};
-		},
-		[],
-	);
-
-	const dndSensors = useSensors(
-		useSensor(PointerSensor, {
-			activationConstraint: { distance: 1 },
-		}),
-	);
-
-	const openTabPaths = useMemo(
-		() => openTabs.map((t) => t.path),
-		[openTabs],
-	);
-
-	const tabDropAnimation: DropAnimation = {
-		duration: 200,
-		easing: "cubic-bezier(0.25, 1, 0.5, 1)",
-		sideEffects: defaultDropAnimationSideEffects({
-			styles: {
-				active: { opacity: "0" },
-			},
-		}),
-	};
-
-	const handleDragEnd = useCallback((event: DragEndEvent) => {
-		const { active, over } = event;
-		if (!over || active.id === over.id) return;
-		const activeId = String(active.id);
-		const overId = String(over.id);
-		useAppStore.getState().update((current) => {
-			const oldIndex = current.openTabs.findIndex((tab) => tab.path === activeId);
-			const newIndex = current.openTabs.findIndex((tab) => tab.path === overId);
-			if (oldIndex === -1 || newIndex === -1) return current;
-			return {
-				...current,
-				openTabs: arrayMove(current.openTabs, oldIndex, newIndex),
-			};
-		});
-	}, []);
-
-	return (
-		<div
-			ref={tabListRef}
-			className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
-			onMouseEnter={() => {
-				if (tabHoverCoolTimerRef.current) {
-					clearTimeout(tabHoverCoolTimerRef.current);
-					tabHoverCoolTimerRef.current = null;
-				}
-			}}
-			onMouseLeave={scheduleTabHoverCool}
-			onWheel={(e) => {
-				if (e.deltaY !== 0) {
-					e.preventDefault();
-					tabListRef.current?.scrollBy({
-						left: e.deltaY,
-						behavior: "auto",
-					});
-				}
-			}}
-		>
-			<DndContext
-				sensors={dndSensors}
-				collisionDetection={closestCenter}
-				modifiers={[restrictToHorizontalAxis]}
-				onDragStart={(event: DragStartEvent) => {
-					setIsTabDragging(true);
-					setActiveDragPath(String(event.active.id));
-				}}
-				onDragEnd={(event) => {
-					// Apply order first so the list commits before overlay unmounts.
-					handleDragEnd(event);
-					setIsTabDragging(false);
-					setActiveDragPath(null);
-				}}
-				onDragCancel={() => {
-					setIsTabDragging(false);
-					setActiveDragPath(null);
-				}}
-			>
-				<SortableContext
-					items={openTabPaths}
-					strategy={horizontalListSortingStrategy}
-				>
-					{openTabs.map((note) => {
-						const spacePath = topLevelPath(note.path);
-						return (
-							<SortableTab
-								key={note.path}
-								note={note}
-								isActive={note.path === activeNotePath}
-								displayTitle={displayNoteTitle}
-								spacePath={spacePath}
-								spaceTitle={spaceTitleFor(spacePath)}
-								spaceIcon={spaceIcons[spacePath]}
-								spaceColor={spaceColors[spacePath]}
-								openDelay={tabHoverWarm ? 0 : 1000}
-								isTabDragging={isTabDragging}
-								onHoverOpen={markTabHoverWarm}
-								onSelect={onSelect}
-								onDoubleClick={onDoubleClick}
-								onClose={onClose}
-								onTogglePin={onTogglePin}
-							/>
-						);
-					})}
-				</SortableContext>
-				<DragOverlay dropAnimation={tabDropAnimation}>
-					{activeDragPath
-						? (() => {
-								const dragNote = openTabs.find(
-									(tab) => tab.path === activeDragPath,
-								);
-								if (!dragNote) return null;
-								const dragTitle = displayNoteTitle(
-									useEditorUiStore.getState().titleDrafts[dragNote.path] ??
-										dragNote.title,
-								);
-								const isActive = dragNote.path === activeNotePath;
-								return (
-									<div
-										data-active={isActive}
-										data-preview={dragNote.preview}
-										className="flex h-8 w-28 scale-[0.98] cursor-default items-center rounded-md border px-2.5 text-[13px] shadow-md transition-transform duration-150 sm:w-36 lg:w-44 data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-border/40 data-[active=false]:bg-muted/60 data-[active=false]:text-muted-foreground data-[preview=true]:italic data-[preview=true]:opacity-70"
-									>
-										<span className="min-w-0 flex-1 truncate">{dragTitle}</span>
-									</div>
-								);
-						  })()
-						: null}
-				</DragOverlay>
-			</DndContext>
-		</div>
-	);
-});
-
 function Index() {
 	const notesApi = getNotesEngine();
 	const { getShortcut } = useKeyboardShortcuts();
 	const workspaceRef = useRef<WorkspaceSnapshot | null>(null);
 	const [workspace, setWorkspace] = useState<WorkspaceSnapshot | null>(null);
+	// Do NOT subscribe to activeSpacePath here — space switch must re-render
+	// sidebar only (AppSidebar already reads it from the store). See plan 015.
 	const appState = useStoreWithEqualityFn(
 		useAppStore,
 		(s) => ({
 			openTabs: s.openTabs,
 			activeNotePath: s.activeNotePath,
-			activeSpacePath: s.activeSpacePath,
 			spaceColors: s.spaceColors,
 			spaceIcons: s.spaceIcons,
 			spaceOrder: s.spaceOrder,
-			readOnlyNotes: s.readOnlyNotes,
-			sidebarOpen: s.sidebarOpen,
 			closeButtonOnly: s.closeButtonOnly,
 			defaultPageFormat: s.defaultPageFormat,
 		}),
 		// Reorder-only openTabs changes must not re-render Index (sidebar/editors).
+		// sidebarOpen lives in PersistedSidebarProvider — toggle must not hit Index.
+		// view/edit mode is local to each NoteEditor instance — never hits Index.
 		(a, b) =>
 			a.activeNotePath === b.activeNotePath &&
-			a.activeSpacePath === b.activeSpacePath &&
 			a.spaceColors === b.spaceColors &&
 			a.spaceIcons === b.spaceIcons &&
 			a.spaceOrder === b.spaceOrder &&
-			a.readOnlyNotes === b.readOnlyNotes &&
-			a.sidebarOpen === b.sidebarOpen &&
 			a.closeButtonOnly === b.closeButtonOnly &&
 			a.defaultPageFormat === b.defaultPageFormat &&
 			openTabsEqualIgnoringOrder(a.openTabs, b.openTabs),
@@ -633,6 +276,10 @@ function Index() {
 		string | null
 	>(null);
 	const noteContentCache = useRef(new Map<string, NoteContent>());
+	/** Live TipTap getters so force-save never misses in-flight keystrokes. */
+	const noteLiveContentGetters = useRef(
+		new Map<string, () => NoteContent>(),
+	);
 	const loadedYNoteCache = useRef(new Map<string, LoadedYNote>());
 	/** LRU order for non-open-tab warm entries (most-recent last). */
 	const warmOrderRef = useRef<string[]>([]);
@@ -849,11 +496,31 @@ function Index() {
 		[notesApi],
 	);
 
+	const registerNoteContentSnapshot = useCallback(
+		(notePath: string | null, getContent: (() => NoteContent) | null) => {
+			if (!notePath) return;
+			if (getContent) noteLiveContentGetters.current.set(notePath, getContent);
+			else noteLiveContentGetters.current.delete(notePath);
+		},
+		[],
+	);
+
 	const flushSaveAndSync = useCallback(async () => {
 		const notePath = activeNotePathRef.current;
 		if (!notePath) return;
 
-		const latestContent = noteContentCache.current.get(notePath);
+		// Prefer live TipTap state so a keystroke between cache update and save is not lost.
+		const liveGetter = noteLiveContentGetters.current.get(notePath);
+		let latestContent = noteContentCache.current.get(notePath);
+		if (liveGetter) {
+			try {
+				const live = liveGetter();
+				noteContentCache.current.set(notePath, live);
+				latestContent = live;
+			} catch {
+				// fall back to cache
+			}
+		}
 		const latestBody = latestContent
 			? serializeNoteContentBody(latestContent)
 			: null;
@@ -862,7 +529,10 @@ function Index() {
 			? serializeNoteContentBody(persistedContent)
 			: null;
 
-		if (latestBody && latestBody !== persistedBody && latestContent) {
+		const isDirty =
+			Boolean(latestBody && latestBody !== persistedBody && latestContent);
+
+		if (isDirty && latestContent && latestBody) {
 			setSaveStatus("saving");
 			clearNoteAutosaveTimer(notePath);
 			clearAutosavesForPath(notePath);
@@ -875,7 +545,7 @@ function Index() {
 				}
 				notePersistedCache.current.set(notePath, latestContent);
 				lastPersistedContent.current = latestBody;
-				setSaveStatus("saved");
+				useEditorUiStore.getState().markSaved();
 
 				setWorkspace((current) =>
 					current
@@ -889,6 +559,9 @@ function Index() {
 				setSaveStatus("error");
 				return;
 			}
+		} else {
+			// Already clean — still give Ctrl+S feedback + refresh timestamp.
+			useEditorUiStore.getState().markSaved();
 		}
 
 		const syncEngine = getSyncEngine();
@@ -901,6 +574,64 @@ function Index() {
 		enqueueNoteWrite,
 		notesApi,
 	]);
+
+	const verifyNoteSave = useCallback(async (): Promise<{
+		ok: boolean;
+		message: string;
+		detail?: string;
+	}> => {
+		const notePath = activeNotePathRef.current;
+		if (!notePath) {
+			return { ok: false, message: "No note open" };
+		}
+		if (!notesApi) {
+			return { ok: false, message: "Storage unavailable" };
+		}
+
+		const liveGetter = noteLiveContentGetters.current.get(notePath);
+		let liveContent = noteContentCache.current.get(notePath);
+		if (liveGetter) {
+			try {
+				liveContent = liveGetter();
+				noteContentCache.current.set(notePath, liveContent);
+			} catch {
+				// keep cache
+			}
+		}
+		if (!liveContent) {
+			return { ok: false, message: "No editor content to verify" };
+		}
+
+		try {
+			const diskContent = await notesApi.readNote(notePath);
+			const liveBody = serializeNoteContentBody(liveContent);
+			const diskBody = serializeNoteContentBody(diskContent);
+
+			if (liveBody === diskBody) {
+				notePersistedCache.current.set(notePath, liveContent);
+				lastPersistedContent.current = liveBody;
+				useEditorUiStore.getState().markSaved();
+				return {
+					ok: true,
+					message: "Verified — matches disk",
+					detail: "Editor and saved file are identical.",
+				};
+			}
+
+			return {
+				ok: false,
+				message: "Mismatch — not fully saved",
+				detail:
+					"Editor content differs from the file on disk. Press Ctrl+S to force save.",
+			};
+		} catch {
+			return {
+				ok: false,
+				message: "Could not read note from disk",
+				detail: "File may be missing or unreadable.",
+			};
+		}
+	}, [notesApi]);
 
 	const moveNoteRuntimeState = useCallback(
 		(fromPath: string, toPath: string) => {
@@ -1149,66 +880,102 @@ function Index() {
 		};
 	}, [openTabPathsSignature, notesApi, markEditorReady]);
 
-	// Idle-prefetch first notes in the active space so sidebar opens feel warm.
+	// Keep workspaceRef in sync for non-React space lookups (plan 015).
 	useEffect(() => {
-		if (!workspace || !appState.activeSpacePath) return;
-		if (appState.activeSpacePath === "Trash") return;
+		workspaceRef.current = workspace;
+	}, [workspace]);
 
-		const space = workspace.spaces.find(
-			(entry) => entry.path === appState.activeSpacePath,
-		);
-		if (!space) return;
-
-		const paths: string[] = [];
-		const walk = (items: WorkspaceItem[]) => {
-			for (const item of items) {
-				if (paths.length >= 8) return;
-				if (item.type === "note") paths.push(item.path);
-				else walk(item.children);
-			}
-		};
-		walk(space.children);
-
-		let index = 0;
+	// Idle-prefetch + active-space event without subscribing Index to
+	// activeSpacePath (space switch must not re-render the editor tree).
+	useEffect(() => {
 		let idleId: number | undefined;
 		let timeoutId: ReturnType<typeof setTimeout> | undefined;
 		let cancelled = false;
+		let lastSpacePath: string | null = null;
 
-		const schedule = (fn: () => void) => {
-			if (typeof requestIdleCallback === "function") {
-				idleId = requestIdleCallback(fn, { timeout: 800 });
-			} else {
-				timeoutId = setTimeout(fn, 32);
+		const clearScheduled = () => {
+			if (idleId !== undefined && typeof cancelIdleCallback === "function") {
+				cancelIdleCallback(idleId);
+				idleId = undefined;
+			}
+			if (timeoutId !== undefined) {
+				clearTimeout(timeoutId);
+				timeoutId = undefined;
 			}
 		};
 
-		const tick = () => {
-			if (cancelled) return;
-			while (index < paths.length) {
-				const path = paths[index++];
-				if (!path) continue;
-				if (
-					loadedYNoteCache.current.has(path) &&
-					noteContentCache.current.has(path)
-				) {
-					continue;
+		const runForSpace = (activeSpacePath: string) => {
+			clearScheduled();
+			cancelled = false;
+
+			const resolved = resolveSpacePath(
+				activeSpacePath,
+				workspaceRef.current,
+			);
+			window.dispatchEvent(
+				new CustomEvent("paperite:active-space-change", {
+					detail: { path: resolved },
+				}),
+			);
+
+			if (resolved === "Trash") return;
+			const snap = workspaceRef.current;
+			if (!snap) return;
+			const space = snap.spaces.find((entry) => entry.path === resolved);
+			if (!space) return;
+
+			const paths: string[] = [];
+			const walk = (items: WorkspaceItem[]) => {
+				for (const item of items) {
+					if (paths.length >= 8) return;
+					if (item.type === "note") paths.push(item.path);
+					else walk(item.children);
 				}
-				prefetchNote(path);
-				break;
-			}
-			if (index < paths.length) schedule(tick);
+			};
+			walk(space.children);
+
+			let index = 0;
+			const schedule = (fn: () => void) => {
+				if (typeof requestIdleCallback === "function") {
+					idleId = requestIdleCallback(fn, { timeout: 800 });
+				} else {
+					timeoutId = setTimeout(fn, 32);
+				}
+			};
+			const tick = () => {
+				if (cancelled) return;
+				while (index < paths.length) {
+					const path = paths[index++];
+					if (!path) continue;
+					if (
+						loadedYNoteCache.current.has(path) &&
+						noteContentCache.current.has(path)
+					) {
+						continue;
+					}
+					prefetchNote(path);
+					break;
+				}
+				if (index < paths.length) schedule(tick);
+			};
+			schedule(tick);
 		};
 
-		schedule(tick);
+		lastSpacePath = useAppStore.getState().activeSpacePath;
+		runForSpace(lastSpacePath);
+
+		const unsub = useAppStore.subscribe((state) => {
+			if (state.activeSpacePath === lastSpacePath) return;
+			lastSpacePath = state.activeSpacePath;
+			runForSpace(state.activeSpacePath);
+		});
 
 		return () => {
 			cancelled = true;
-			if (idleId !== undefined && typeof cancelIdleCallback === "function") {
-				cancelIdleCallback(idleId);
-			}
-			if (timeoutId !== undefined) clearTimeout(timeoutId);
+			clearScheduled();
+			unsub();
 		};
-	}, [appState.activeSpacePath, workspace, prefetchNote]);
+	}, [workspace, prefetchNote]);
 
 	useEffect(() => {
 		const title = appState.activeNotePath
@@ -1519,6 +1286,8 @@ function Index() {
 			setLoadedNotePath(notePath);
 			setSaveStatus("saved");
 			markEditorReady(notePath);
+			// Safety net: drop assets not referenced on disk (crash / force-quit orphans).
+			void notesApi.pruneAssets?.(notePath).catch(() => undefined);
 
 			if (readDuration > 16) {
 				console.info(
@@ -1572,20 +1341,6 @@ function Index() {
 			collect(space.children);
 		}
 	}, [workspace]);
-
-	const currentSpacePath = useMemo(() => {
-		if (appState.activeSpacePath === "Trash") return "Trash";
-
-		if (
-			!workspace?.spaces.some(
-				(space) => space.path === appState.activeSpacePath,
-			)
-		) {
-			return workspace?.spaces[0]?.path ?? "Inbox";
-		}
-
-		return appState.activeSpacePath;
-	}, [appState.activeSpacePath, workspace]);
 
 	const visibleSpaces = useMemo(() => {
 		const decoratedSpaces = applyNoteDecorations(
@@ -1691,8 +1446,10 @@ function Index() {
 			);
 			openPaths.delete(path);
 			pruneWarmCaches(openPaths);
+			// Drop orphan assets once the tab session ends (undo stack is gone).
+			void notesApi?.pruneAssets?.(path).catch(() => undefined);
 		},
-		[pruneWarmCaches, touchWarm],
+		[notesApi, pruneWarmCaches, touchWarm],
 	);
 
 	const switchTab = useCallback(
@@ -1780,23 +1537,21 @@ function Index() {
 		[],
 	);
 
-	useEffect(() => {
-		window.dispatchEvent(
-			new CustomEvent("paperite:active-space-change", {
-				detail: { path: currentSpacePath },
-			}),
-		);
-	}, [currentSpacePath]);
-
 	const openNoteInfo = useCallback((target: NoteInfoTarget) => {
 		setNoteInfoTarget(target);
 		setFloatingPanelMode("info");
 	}, []);
 
 	useEffect(() => {
-		const createNoteFromMenu = () => createNote(currentSpacePath);
+		const spaceAtEvent = () =>
+			resolveSpacePath(
+				useAppStore.getState().activeSpacePath,
+				workspaceRef.current,
+			);
+		const createNoteFromMenu = () => createNote(spaceAtEvent());
 		const createFolderFromMenu = () => {
-			if (currentSpacePath !== "Inbox") createFolder(currentSpacePath);
+			const space = spaceAtEvent();
+			if (space !== "Inbox") createFolder(space);
 		};
 		const openNoteSetup = () => setFloatingPanelMode("format");
 		const openNoteInfoFromEvent = (event: CustomEvent<NoteInfoTarget>) => {
@@ -1835,13 +1590,7 @@ function Index() {
 				openNoteInfoFromEvent as EventListener,
 			);
 		};
-	}, [
-		currentSpacePath,
-		createNote,
-		createFolder,
-		openNoteInfo,
-		refreshWorkspace,
-	]);
+	}, [createNote, createFolder, openNoteInfo, refreshWorkspace]);
 
 	const createSpace = async (title: string, color: string, icon: string) => {
 		if (!notesApi) return;
@@ -1909,6 +1658,11 @@ function Index() {
 					path,
 					renamed.path,
 				),
+				spaceFolderFirst: moveDecorations(
+					current.spaceFolderFirst,
+					path,
+					renamed.path,
+				),
 				spacePreviewModes: moveDecorations(
 					current.spacePreviewModes,
 					path,
@@ -1916,11 +1670,6 @@ function Index() {
 				),
 				customItemOrders: moveCustomItemOrders(
 					current.customItemOrders,
-					path,
-					renamed.path,
-				),
-				readOnlyNotes: moveDecorations(
-					current.readOnlyNotes,
 					path,
 					renamed.path,
 				),
@@ -1962,9 +1711,9 @@ function Index() {
 				spaceColors: omitDecoration(current.spaceColors, path),
 				spaceIcons: omitDecoration(current.spaceIcons, path),
 				spaceSortOrders: omitDecoration(current.spaceSortOrders, path),
+				spaceFolderFirst: omitDecoration(current.spaceFolderFirst, path),
 				spacePreviewModes: omitDecoration(current.spacePreviewModes, path),
 				customItemOrders: omitCustomItemOrders(current.customItemOrders, path),
-				readOnlyNotes: omitDecoration(current.readOnlyNotes, path),
 			}));
 			setNotePreviews((current) => omitDecoration(current, path));
 			setNoteTitleDrafts((current) => omitDecoration(current, path));
@@ -2031,14 +1780,6 @@ function Index() {
 			setPageFormats((current) =>
 				moveDecorations(current, itemPath, moved.path),
 			);
-			setAppState((current) => ({
-				...current,
-				readOnlyNotes: moveDecorations(
-					current.readOnlyNotes,
-					itemPath,
-					moved.path,
-				),
-			}));
 			await refreshWorkspace();
 		} catch {
 			setSaveStatus("error");
@@ -2180,11 +1921,6 @@ function Index() {
 							}
 						: tab,
 				),
-				readOnlyNotes: moveDecorations(
-					current.readOnlyNotes,
-					path,
-					renamed.path,
-				),
 				customItemOrders: moveCustomItemOrders(
 					current.customItemOrders,
 					path,
@@ -2223,7 +1959,6 @@ function Index() {
 				openTabs: current.openTabs.filter(
 					(tab) => !isSameOrChildPath(path, tab.path),
 				),
-				readOnlyNotes: omitDecoration(current.readOnlyNotes, path),
 				customItemOrders: omitCustomItemOrders(current.customItemOrders, path),
 			}));
 			setNotePreviews((current) => omitDecoration(current, path));
@@ -2351,29 +2086,7 @@ function Index() {
 		[scheduleNoteAutosave, scheduleYjsDerivedAutosave],
 	);
 
-	const activeNoteReadOnly = appState.activeNotePath
-		? appState.readOnlyNotes[appState.activeNotePath] === true
-		: false;
-
-	const toggleReadOnly = useCallback(() => {
-		const notePath = activeNotePathRef.current;
-		if (!notePath) return;
-
-		setAppState((current) => {
-			const nextReadOnly = !(current.readOnlyNotes[notePath] === true);
-			if ((current.readOnlyNotes[notePath] === true) === nextReadOnly) {
-				return current;
-			}
-			return {
-				...current,
-				readOnlyNotes: {
-					...current.readOnlyNotes,
-					[notePath]: nextReadOnly,
-				},
-			};
-		});
-	}, []);
-
+	
 	useEffect(() => {
 		const handleShortcut = (event: KeyboardEvent) => {
 			if (event.repeat) return;
@@ -2381,29 +2094,41 @@ function Index() {
 			const zenShortcut = getShortcut("view.toggleZen");
 			const sidebarShortcut = getShortcut("view.toggleSidebar");
 			const noteSetupShortcut = getShortcut("note.setup");
+			const saveShortcut = getShortcut("note.saveAndSync");
 			const isGlobalViewShortcut =
 				shortcutMatchesEvent(zenShortcut, event) ||
 				shortcutMatchesEvent(sidebarShortcut, event) ||
 				shortcutMatchesEvent(noteSetupShortcut, event);
+			const isSaveShortcut = shortcutMatchesEvent(saveShortcut, event);
 
-			if (isShortcutEditableInput(event.target) && !isGlobalViewShortcut)
+			// Force-save must work while typing in the editor / title.
+			if (isShortcutEditableInput(event.target) && !isGlobalViewShortcut && !isSaveShortcut)
 				return;
 
-			if (shortcutMatchesEvent(getShortcut("note.saveAndSync"), event)) {
+			if (isSaveShortcut) {
 				event.preventDefault();
-				flushSaveAndSync();
+				void flushSaveAndSync();
 				return;
 			}
 
 			if (shortcutMatchesEvent(getShortcut("note.create"), event)) {
 				event.preventDefault();
-				createNote(currentSpacePath);
+				createNote(
+					resolveSpacePath(
+						useAppStore.getState().activeSpacePath,
+						workspaceRef.current,
+					),
+				);
 				return;
 			}
 
 			if (shortcutMatchesEvent(getShortcut("folder.create"), event)) {
 				event.preventDefault();
-				if (currentSpacePath !== "Inbox") createFolder(currentSpacePath);
+				const space = resolveSpacePath(
+					useAppStore.getState().activeSpacePath,
+					workspaceRef.current,
+				);
+				if (space !== "Inbox") createFolder(space);
 				return;
 			}
 
@@ -2462,7 +2187,6 @@ function Index() {
 		closeTab,
 		createFolder,
 		createNote,
-		currentSpacePath,
 		flushSaveAndSync,
 		getShortcut,
 		switchTab,
@@ -2515,14 +2239,6 @@ function Index() {
 		[visibleSpaces],
 	);
 
-	const handleSidebarOpenChange = useCallback((sidebarOpen: boolean) => {
-		setAppState((current) =>
-			current.sidebarOpen === sidebarOpen
-				? current
-				: { ...current, sidebarOpen },
-		);
-	}, []);
-
 	const sidebarProviderStyle = useMemo(
 		() =>
 			({
@@ -2555,10 +2271,8 @@ function Index() {
 	}
 
 	return (
-		<SidebarProvider
+		<PersistedSidebarProvider
 			className="h-full min-h-0"
-			open={appState.sidebarOpen}
-			onOpenChange={handleSidebarOpenChange}
 			style={sidebarProviderStyle}
 		>
 			{zenMode ? null : (
@@ -2589,7 +2303,7 @@ function Index() {
 					/>
 				</>
 			)}
-			<SidebarInset className="min-w-0 overflow-hidden">
+			<NoteWorkspace>
 				{zenMode || !appState.activeNotePath ? null : (
 					<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 px-3 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
 						<div className="flex shrink-0 items-center min-[56.0625rem]:hidden">
@@ -2606,17 +2320,8 @@ function Index() {
 							onTogglePin={togglePinTab}
 						/>
 						<div className="flex shrink-0 items-center gap-2">
-							<SaveStatusBadge />
-							<Button
-								type="button"
-								variant="ghost"
-								size="icon-sm"
-								className="text-muted-foreground"
-								aria-label={activeNoteReadOnly ? "Edit note" : "Reading view"}
-								onClick={toggleReadOnly}
-							>
-								{activeNoteReadOnly ? <PencilIcon /> : <BookOpenIcon />}
-							</Button>
+							<SaveStatusBadge onVerify={verifyNoteSave} />
+							<ReadOnlyToggleButton />
 							<DropdownMenu>
 								<DropdownMenuTrigger asChild>
 									<Button
@@ -3023,8 +2728,6 @@ function Index() {
 										: tab.title || "Untitled";
 								const tabPageFormat =
 									pageFormats[tab.path] ?? resolvedDefaultPageFormat;
-								const tabReadOnly =
-									appState.readOnlyNotes[tab.path] === true;
 
 								return (
 									<div
@@ -3042,7 +2745,6 @@ function Index() {
 											noteTitle={tabTitle}
 											notePath={tab.path}
 											pageFormat={tabPageFormat}
-											readOnly={tabReadOnly}
 											yDoc={yNote.doc}
 											searchQuery={
 												isActive &&
@@ -3054,6 +2756,7 @@ function Index() {
 											zenMode={zenMode}
 											onChange={updateNoteContent}
 											onContentRendered={completeSwitchBenchmark}
+											onContentSnapshot={registerNoteContentSnapshot}
 											onRename={renameActiveNote}
 											onTitleChange={updateActiveTitleDraft}
 										/>
@@ -3063,8 +2766,8 @@ function Index() {
 						</>
 					)}
 				</section>
-			</SidebarInset>
-		</SidebarProvider>
+			</NoteWorkspace>
+		</PersistedSidebarProvider>
 	);
 }
 
@@ -3095,9 +2798,9 @@ function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		spaceIcons: state.spaceIcons ?? {},
 		spaceOrder: unique(state.spaceOrder ?? []),
 		spaceSortOrders: normalizeSpaceSortOrders(state.spaceSortOrders ?? {}),
+		spaceFolderFirst: state.spaceFolderFirst ?? {},
 		spacePreviewModes: state.spacePreviewModes ?? {},
 		customItemOrders: normalizeCustomItemOrders(state.customItemOrders ?? {}),
-		readOnlyNotes: state.readOnlyNotes ?? {},
 		sidebarOpen: state.sidebarOpen ?? true,
 		inboxViewMode: state.inboxViewMode === "grid" ? "grid" : "list",
 		showNotePreview: state.showNotePreview !== false,
@@ -3141,12 +2844,12 @@ function reconcileAppState(
 			state.spaceSortOrders,
 			workspace.spaces,
 		),
+		spaceFolderFirst: state.spaceFolderFirst,
 		spacePreviewModes: state.spacePreviewModes,
 		customItemOrders: reconcileCustomItemOrders(
 			state.customItemOrders,
 			workspace.spaces,
 		),
-		readOnlyNotes: state.readOnlyNotes,
 		sidebarOpen: state.sidebarOpen,
 		inboxViewMode: state.inboxViewMode,
 		showNotePreview: state.showNotePreview,
@@ -3359,18 +3062,141 @@ function replaceOrAppendPreviewTab(
 	return openTabs.map((tab, index) => (index === previewIndex ? nextTab : tab));
 }
 
-function SaveStatusBadge() {
+function SaveStatusBadge({
+	onVerify,
+}: {
+	onVerify: () => Promise<{ ok: boolean; message: string; detail?: string }>;
+}) {
 	const saveStatus = useEditorUiStore((s) => s.saveStatus);
+	const lastSavedAt = useEditorUiStore((s) => s.lastSavedAt);
 	const label = saveStatusLabel(saveStatus);
-	if (!label) {
+	const relative = formatSavedAt(lastSavedAt);
+	const absolute = formatSavedAtAbsolute(lastSavedAt);
+	const [verifying, setVerifying] = useState(false);
+	const [verifyResult, setVerifyResult] = useState<{
+		ok: boolean;
+		message: string;
+		detail?: string;
+	} | null>(null);
+
+	useEffect(() => {
+		if (!verifyResult) return;
+		const timer = window.setTimeout(() => setVerifyResult(null), 10_000);
+		return () => window.clearTimeout(timer);
+	}, [verifyResult]);
+
+	const statusColor =
+		saveStatus === "error"
+			? "text-destructive"
+			: "text-muted-foreground";
+
+	const displayLabel =
+		saveStatus === "saving"
+			? "Saving..."
+			: saveStatus === "error"
+				? "Error"
+				: saveStatus === "saved"
+					? "Saved"
+					: label;
+
+	const handleVerify = async (event: MouseEvent) => {
+		event.preventDefault();
+		event.stopPropagation();
+		if (verifying) return;
+		setVerifying(true);
+		setVerifyResult(null);
+		try {
+			const result = await onVerify();
+			setVerifyResult(result);
+		} catch {
+			setVerifyResult({
+				ok: false,
+				message: "Verify failed",
+				detail: "Unexpected error while checking the file.",
+			});
+		} finally {
+			setVerifying(false);
+		}
+	};
+
+	if (!displayLabel) {
 		return (
-			<span className="min-w-12 px-2 text-right text-xs text-muted-foreground" />
+			<span className="min-w-14 px-2 text-right text-xs text-muted-foreground" />
 		);
 	}
+
 	return (
-		<span className="min-w-12 px-2 text-right text-xs text-muted-foreground">
-			{label}
-		</span>
+		<HoverCard openDelay={500} closeDelay={120}>
+			<HoverCardTrigger asChild>
+				<button
+					type="button"
+					className={`min-w-14 max-w-28 truncate px-2 text-right text-xs transition-colors hover:text-foreground ${statusColor}`}
+					aria-label={saveStatus === "saved" ? `Saved ${absolute}` : displayLabel}
+				>
+					{displayLabel}
+				</button>
+			</HoverCardTrigger>
+			<HoverCardContent
+				side="bottom"
+				align="end"
+				className="w-64 space-y-2 p-3 text-xs"
+				onPointerDownOutside={(e) => {
+					// Keep card open while interacting with the verify button path
+					if (verifying) e.preventDefault();
+				}}
+			>
+				<div className="font-medium text-foreground">
+					{saveStatus === "saving"
+						? "Saving note…"
+						: saveStatus === "error"
+							? "Save failed"
+							: "Note saved"}
+				</div>
+				{lastSavedAt != null ? (
+					<>
+						<div className="text-muted-foreground">
+							Last saved {relative}
+						</div>
+						<div className="text-muted-foreground/80 tabular-nums">{absolute}</div>
+					</>
+				) : (
+					<div className="text-muted-foreground">No local save yet</div>
+				)}
+				<div className="text-muted-foreground/70">Ctrl+S force save</div>
+				<div className="border-t border-border/60 pt-2">
+					<Button
+						type="button"
+						variant="outline"
+						size="xs"
+						className="w-full justify-center gap-1.5"
+						disabled={verifying}
+						onClick={handleVerify}
+						onMouseDown={(event) => event.preventDefault()}
+					>
+						{verifying ? (
+							<Loader2Icon className="size-3.5 animate-spin" />
+						) : (
+							<ShieldCheckIcon className="size-3.5" />
+						)}
+						{verifying ? "Verifying…" : "Verify save note"}
+					</Button>
+					{verifyResult ? (
+						<div
+							className={
+								verifyResult.ok
+									? "mt-2 space-y-0.5 text-emerald-600 dark:text-emerald-400"
+									: "mt-2 space-y-0.5 text-destructive"
+							}
+						>
+							<div className="font-medium">{verifyResult.message}</div>
+							{verifyResult.detail ? (
+								<div className="text-[11px] opacity-90">{verifyResult.detail}</div>
+							) : null}
+						</div>
+					) : null}
+				</div>
+			</HoverCardContent>
+		</HoverCard>
 	);
 }
 
@@ -3419,6 +3245,20 @@ function displayNoteTitle(title: string) {
 
 function topLevelPath(notePath: string) {
 	return notePath.split("/")[0] || "Inbox";
+}
+
+/** Resolve active space without React subscription (plan 015). */
+function resolveSpacePath(
+	activeSpacePath: string,
+	workspace: WorkspaceSnapshot | null | undefined,
+): string {
+	if (activeSpacePath === "Trash") return "Trash";
+	if (
+		!workspace?.spaces.some((space) => space.path === activeSpacePath)
+	) {
+		return workspace?.spaces[0]?.path ?? "Inbox";
+	}
+	return activeSpacePath;
 }
 
 function parentPath(itemPath: string) {

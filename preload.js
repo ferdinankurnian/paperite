@@ -76,6 +76,8 @@ contextBridge.exposeInMainWorld("electron", {
 			ipcRenderer.invoke("notes:save-image", notePath, imageDataUrl, filename),
 		getAssetUrl: (notePath, assetPath) =>
 			ipcRenderer.invoke("notes:get-asset-url", notePath, assetPath),
+		pruneAssets: (notePath) =>
+			ipcRenderer.invoke("notes:prune-assets", notePath),
 		setPinned: (notePath, pinned) =>
 			ipcRenderer.invoke("notes:set-pinned", notePath, pinned),
 		createNote: (parentPath, title) =>

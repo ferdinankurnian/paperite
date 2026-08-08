@@ -69,12 +69,49 @@ import {
 	SelectValue,
 } from "@/components/ui/select";
 import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@/components/ui/tooltip";
+	HoverCard,
+	HoverCardContent,
+	HoverCardTrigger,
+} from "@/components/ui/hover-card";
+import {
+	ContextMenu,
+	ContextMenuContent,
+	ContextMenuItem,
+	ContextMenuSeparator,
+	ContextMenuShortcut,
+	ContextMenuTrigger,
+} from "@/components/ui/context-menu";
 import { normalizeNoteContent, serializeNoteContent } from "@/lib/note-content";
 import { cn } from "@/lib/utils";
+
+/** Per-mounted-editor view/edit controllers. Not persisted — lives with the tab instance. */
+type NoteReadOnlyController = {
+	get: () => boolean;
+	toggle: () => void;
+	subscribe: (listener: (readOnly: boolean) => void) => () => void;
+};
+
+const noteReadOnlyControllers = new Map<string, NoteReadOnlyController>();
+const noteReadOnlyRegistryListeners = new Set<() => void>();
+
+function notifyNoteReadOnlyRegistry() {
+	for (const listener of noteReadOnlyRegistryListeners) listener();
+}
+
+export function getNoteReadOnlyController(
+	path: string | null | undefined,
+): NoteReadOnlyController | null {
+	if (!path) return null;
+	return noteReadOnlyControllers.get(path) ?? null;
+}
+
+/** Fires when any editor registers/unregisters its view/edit controller. */
+export function subscribeNoteReadOnlyRegistry(listener: () => void): () => void {
+	noteReadOnlyRegistryListeners.add(listener);
+	return () => {
+		noteReadOnlyRegistryListeners.delete(listener);
+	};
+}
 
 function isRelativeAssetSrc(src: string): boolean {
 	return (
@@ -135,6 +172,7 @@ function denormalizeImagePaths(node: NoteContent): NoteContent {
 	return node;
 }
 
+/** Save image to assets/ and return a displayable file:// URL (falls back to data URL). */
 async function saveImageToNote(
 	notePath: string,
 	dataUrl: string,
@@ -146,7 +184,14 @@ async function saveImageToNote(
 			dataUrl,
 			filename,
 		);
-		if (result?.path) return result.path;
+		if (result?.path) {
+			const displayUrl = await window.electron?.notes.getAssetUrl(
+				notePath,
+				result.path,
+			);
+			if (displayUrl) return displayUrl;
+			return result.path;
+		}
 	} catch {
 		// fall through to base64
 	}
@@ -160,7 +205,8 @@ type NoteEditorProps = {
 	noteTitle: string;
 	notePath: string | null;
 	pageFormat?: PageFormat;
-	readOnly: boolean;
+	/** Optional override (e.g. popout always editable). When set, local toggle is ignored. */
+	readOnly?: boolean;
 	searchQuery: string;
 	yDoc?: Y.Doc | null;
 	zenMode?: boolean;
@@ -351,7 +397,7 @@ export function NoteEditor({
 	notePath,
 	noteTitle,
 	pageFormat = defaultPageFormat,
-	readOnly,
+	readOnly: readOnlyProp,
 	searchQuery,
 	yDoc,
 	zenMode,
@@ -361,6 +407,9 @@ export function NoteEditor({
 	onRename,
 	onTitleChange,
 }: NoteEditorProps) {
+	// View/edit is per mounted editor instance — not global app state.
+	const [localReadOnly, setLocalReadOnly] = useState(false);
+	const readOnly = readOnlyProp ?? localReadOnly;
 	const [draftTitle, setDraftTitle] = useState(editableTitle(noteTitle));
 	const [linkHover, setLinkHover] = useState<LinkHover | null>(null);
 	const titleInputRef = useRef<HTMLTextAreaElement>(null);
@@ -368,6 +417,38 @@ export function NoteEditor({
 	const editorRef = useRef<TiptapEditor | null>(null);
 	const onChangeRef = useRef(onChange);
 	const readOnlyRef = useRef(readOnly);
+	const localReadOnlyRef = useRef(localReadOnly);
+	localReadOnlyRef.current = localReadOnly;
+
+	// Header toggle lives outside this tree — register so it can flip this instance only.
+	useEffect(() => {
+		if (!notePath || readOnlyProp !== undefined) return;
+		const listeners = new Set<(v: boolean) => void>();
+		const controller: NoteReadOnlyController = {
+			get: () => localReadOnlyRef.current,
+			toggle: () => {
+				setLocalReadOnly((prev) => {
+					const next = !prev;
+					for (const listener of listeners) listener(next);
+					return next;
+				});
+			},
+			subscribe: (listener) => {
+				listeners.add(listener);
+				return () => {
+					listeners.delete(listener);
+				};
+			},
+		};
+		noteReadOnlyControllers.set(notePath, controller);
+		notifyNoteReadOnlyRegistry();
+		return () => {
+			if (noteReadOnlyControllers.get(notePath) === controller) {
+				noteReadOnlyControllers.delete(notePath);
+				notifyNoteReadOnlyRegistry();
+			}
+		};
+	}, [notePath, readOnlyProp]);
 	const searchQueryRef = useRef(searchQuery);
 	const syncingExternalDocRef = useRef(false);
 	const hasUserInteractedRef = useRef(false);
@@ -550,7 +631,7 @@ export function NoteEditor({
 			return;
 		}
 
-		const getContent = () => editor.getJSON() as NoteContent;
+		const getContent = () => denormalizeImagePaths(editor.getJSON() as NoteContent);
 		onContentSnapshot?.(notePath, getContent);
 
 		return () => onContentSnapshot?.(notePath, null);
@@ -633,69 +714,164 @@ export function NoteEditor({
 		<div className="relative flex min-h-0 flex-1 overflow-hidden">
 			<div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto overscroll-contain">
 				<div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
-					<textarea
-						ref={titleInputRef}
-						value={draftTitle}
-						aria-label="Note title"
-						className={`mx-8 mb-4 w-[calc(100%-4rem)] resize-none bg-transparent text-3xl font-semibold leading-tight tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
-						rows={1}
-						readOnly={readOnly}
-						placeholder="Untitled"
-						onBlur={commitTitle}
-						onInput={(event) => {
-							const textarea = event.currentTarget;
-							textarea.style.height = "auto";
-							textarea.style.height = `${textarea.scrollHeight}px`;
-						}}
-						onChange={(event) => {
-							setDraftTitle(event.target.value);
-							// Live tab/sidebar labels via lightweight draft store (not Index state).
-							onTitleChange(event.target.value);
-							const textarea = event.currentTarget;
-							textarea.style.height = "auto";
-							textarea.style.height = `${textarea.scrollHeight}px`;
-						}}
-						onKeyDown={(event) => {
-							if (event.key === "Enter") {
-								event.preventDefault();
-								event.currentTarget.blur();
-							}
-							if (event.key === "ArrowDown") {
-								event.preventDefault();
-								editor?.commands.focus();
-							}
-							if (event.key === "Escape") {
-								const currentFileTitle = noteTitle || "Untitled";
-								setDraftTitle(editableTitle(currentFileTitle));
-								onTitleChange(currentFileTitle);
-								event.currentTarget.blur();
-							}
-						}}
-					/>
-					<div
-						role="application"
-						tabIndex={readOnly ? -1 : 0}
-						className={cn(
-							"paperite-tiptap flex min-h-0 flex-1 px-8 pb-44 md:px-14 lg:px-20",
-							pageFormat.lineHeight === "1.5" &&
-								"paperite-tiptap-leading-compact",
-							pageFormat.paragraphSpacing === "compact" &&
-								"paperite-tiptap-spacing-compact",
-							pageFormat.firstLineIndent && "paperite-tiptap-indent",
-						)}
-						onClick={focusEditorCanvas}
-						onKeyDown={() => editor?.commands.focus()}
-					>
-						<EditorContent editor={editor} className="min-h-full flex-1" />
-					</div>
+					{readOnly ? (
+						<h1
+							aria-label="Note title"
+							className={`mx-8 mb-4 w-[calc(100%-4rem)] select-text text-3xl font-semibold leading-tight tracking-normal md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
+						>
+							{draftTitle.trim() || "Untitled"}
+						</h1>
+					) : (
+						<textarea
+							ref={titleInputRef}
+							value={draftTitle}
+							aria-label="Note title"
+							className={`mx-8 mb-4 w-[calc(100%-4rem)] resize-none bg-transparent text-3xl font-semibold leading-tight tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
+							rows={1}
+							placeholder="Untitled"
+							onBlur={commitTitle}
+							onInput={(event) => {
+								const textarea = event.currentTarget;
+								textarea.style.height = "auto";
+								textarea.style.height = `${textarea.scrollHeight}px`;
+							}}
+							onChange={(event) => {
+								setDraftTitle(event.target.value);
+								// Live tab/sidebar labels via lightweight draft store (not Index state).
+								onTitleChange(event.target.value);
+								const textarea = event.currentTarget;
+								textarea.style.height = "auto";
+								textarea.style.height = `${textarea.scrollHeight}px`;
+							}}
+							onKeyDown={(event) => {
+								if (event.key === "Enter") {
+									event.preventDefault();
+									event.currentTarget.blur();
+								}
+								if (event.key === "ArrowDown") {
+									event.preventDefault();
+									editor?.commands.focus();
+								}
+								if (event.key === "Escape") {
+									const currentFileTitle = noteTitle || "Untitled";
+									setDraftTitle(editableTitle(currentFileTitle));
+									onTitleChange(currentFileTitle);
+									event.currentTarget.blur();
+								}
+							}}
+						/>
+					)}
+					<ContextMenu>
+						<ContextMenuTrigger asChild>
+							<div
+								role="application"
+								tabIndex={0}
+								className={cn(
+									"paperite-tiptap flex min-h-0 flex-1 select-text px-8 pb-44 md:px-14 lg:px-20",
+									pageFormat.lineHeight === "1.5" &&
+										"paperite-tiptap-leading-compact",
+									pageFormat.paragraphSpacing === "compact" &&
+										"paperite-tiptap-spacing-compact",
+									pageFormat.firstLineIndent && "paperite-tiptap-indent",
+								)}
+								onClick={readOnly ? undefined : focusEditorCanvas}
+								onKeyDown={
+									readOnly ? undefined : () => editor?.commands.focus()
+								}
+							>
+								<EditorContent editor={editor} className="min-h-full flex-1" />
+							</div>
+						</ContextMenuTrigger>
+						<ContextMenuContent className="w-52">
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleBold().run()}
+							>
+								Bold
+								<ContextMenuShortcut>⌘B</ContextMenuShortcut>
+							</ContextMenuItem>
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleItalic().run()}
+							>
+								Italic
+								<ContextMenuShortcut>⌘I</ContextMenuShortcut>
+							</ContextMenuItem>
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleUnderline().run()}
+							>
+								Underline
+								<ContextMenuShortcut>⌘U</ContextMenuShortcut>
+							</ContextMenuItem>
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleStrike().run()}
+							>
+								Strikethrough
+							</ContextMenuItem>
+							<ContextMenuSeparator />
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleHighlight().run()}
+							>
+								Highlight
+							</ContextMenuItem>
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleBlockquote().run()}
+							>
+								Quote
+							</ContextMenuItem>
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleCodeBlock().run()}
+							>
+								Code block
+							</ContextMenuItem>
+							<ContextMenuSeparator />
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => {
+									editor?.commands.focus();
+									document.execCommand("cut");
+								}}
+							>
+								Cut
+								<ContextMenuShortcut>⌘X</ContextMenuShortcut>
+							</ContextMenuItem>
+							<ContextMenuItem
+								onSelect={() => {
+									editor?.commands.focus();
+									document.execCommand("copy");
+								}}
+							>
+								Copy
+								<ContextMenuShortcut>⌘C</ContextMenuShortcut>
+							</ContextMenuItem>
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => {
+									editor?.commands.focus();
+									document.execCommand("paste");
+								}}
+							>
+								Paste
+								<ContextMenuShortcut>⌘V</ContextMenuShortcut>
+							</ContextMenuItem>
+							<ContextMenuSeparator />
+							<ContextMenuItem
+								onSelect={() => editor?.chain().focus().selectAll().run()}
+							>
+								Select all
+								<ContextMenuShortcut>⌘A</ContextMenuShortcut>
+							</ContextMenuItem>
+						</ContextMenuContent>
+					</ContextMenu>
 				</div>
 				<div className="pointer-events-none absolute right-0 bottom-0 left-0 z-20 h-24 bg-gradient-to-t from-background via-background/80 to-transparent" />
-				{editor ? (
-					<FormatMenu
-						editor={editor}
-						notePath={notePath}
-						readOnly={readOnly}
-					/>
+				{editor && !readOnly ? (
+					<FormatMenu editor={editor} notePath={notePath} />
 				) : null}
 			</div>
 			{linkHover ? (
@@ -708,11 +884,9 @@ export function NoteEditor({
 function FormatMenu({
 	editor,
 	notePath,
-	readOnly,
 }: {
 	editor: TiptapEditor;
 	notePath: string | null;
-	readOnly: boolean;
 }) {
 	const imageInputRef = useRef<HTMLInputElement>(null);
 	const savedTextSelectionRef = useRef<{ from: number; to: number } | null>(
@@ -859,7 +1033,6 @@ function FormatMenu({
 			>
 				<BlockStyleSelect
 					editor={editor}
-					disabled={readOnly}
 					toolbarState={toolbarState}
 				/>
 				<span className="mx-0.5 h-5 w-px bg-border" />
@@ -868,7 +1041,6 @@ function FormatMenu({
 					icon={BoldIcon}
 					command="bold"
 					editor={editor}
-					disabled={readOnly}
 					active={toolbarState.bold}
 				/>
 				<FormatButton
@@ -876,7 +1048,6 @@ function FormatMenu({
 					icon={ItalicIcon}
 					command="italic"
 					editor={editor}
-					disabled={readOnly}
 					active={toolbarState.italic}
 				/>
 				<FormatButton
@@ -884,7 +1055,6 @@ function FormatMenu({
 					icon={UnderlineIcon}
 					command="underline"
 					editor={editor}
-					disabled={readOnly}
 					active={toolbarState.underline}
 				/>
 				<FormatButton
@@ -892,13 +1062,11 @@ function FormatMenu({
 					icon={StrikethroughIcon}
 					command="strike"
 					editor={editor}
-					disabled={readOnly}
 					active={toolbarState.strike}
 				/>
 				<span className="mx-0.5 h-5 w-px bg-border" />
 				<ColorMenu
 					editor={editor}
-					disabled={readOnly}
 					label="Highlight"
 					icon={HighlighterIcon}
 					mode="highlight"
@@ -908,7 +1076,6 @@ function FormatMenu({
 				/>
 				<ColorMenu
 					editor={editor}
-					disabled={readOnly}
 					label="Text color"
 					mode="text-color"
 					colors={textColors}
@@ -921,7 +1088,6 @@ function FormatMenu({
 					icon={QuoteIcon}
 					command="quote"
 					editor={editor}
-					disabled={readOnly}
 					active={toolbarState.blockquote}
 				/>
 				<FormatButton
@@ -929,7 +1095,6 @@ function FormatMenu({
 					icon={Code2Icon}
 					command="code-block"
 					editor={editor}
-					disabled={readOnly}
 					active={toolbarState.codeBlock}
 				/>
 				<Popover open={imagePopoverOpen} onOpenChange={setImagePopoverOpen}>
@@ -938,7 +1103,6 @@ function FormatMenu({
 							<button
 								type="button"
 								aria-label="Upload image"
-								disabled={readOnly}
 								className="flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-[background-color,color,scale] active:scale-[0.96] hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
 								onMouseDown={(event) => event.preventDefault()}
 							>
@@ -1020,7 +1184,6 @@ function FormatMenu({
 							icon={icon}
 							command={command}
 							editor={editor}
-							disabled={readOnly}
 							active={active}
 						/>
 					);
@@ -1031,7 +1194,6 @@ function FormatMenu({
 					icon={ListIcon}
 					command="bullet-list"
 					editor={editor}
-					disabled={readOnly}
 					active={toolbarState.bulletList}
 				/>
 				<FormatButton
@@ -1039,7 +1201,6 @@ function FormatMenu({
 					icon={ListOrderedIcon}
 					command="ordered-list"
 					editor={editor}
-					disabled={readOnly}
 					active={toolbarState.orderedList}
 				/>
 				<FormatButton
@@ -1047,7 +1208,6 @@ function FormatMenu({
 					icon={ListTodoIcon}
 					command="task-list"
 					editor={editor}
-					disabled={readOnly}
 					active={toolbarState.taskList}
 				/>
 			</div>
@@ -1057,7 +1217,7 @@ function FormatMenu({
 
 function ColorMenu({
 	colors,
-	disabled,
+	disabled = false,
 	editor,
 	icon: Icon,
 	label,
@@ -1066,7 +1226,7 @@ function ColorMenu({
 	active,
 }: {
 	colors: string[];
-	disabled: boolean;
+	disabled?: boolean;
 	editor: TiptapEditor;
 	icon?: ComponentType<{ className?: string }>;
 	label: string;
@@ -1242,11 +1402,11 @@ function ColorMenu({
 
 function BlockStyleSelect({
 	editor,
-	disabled,
+	disabled = false,
 	toolbarState,
 }: {
 	editor: TiptapEditor;
-	disabled: boolean;
+	disabled?: boolean;
 	toolbarState: {
 		heading1: boolean;
 		heading2: boolean;
@@ -1293,14 +1453,14 @@ function FormatButton({
 	icon: Icon,
 	command,
 	editor,
-	disabled,
+	disabled = false,
 	active,
 }: {
 	label: string;
 	icon: ComponentType<{ className?: string }>;
 	command: EditorFormatCommand;
 	editor: TiptapEditor;
-	disabled: boolean;
+	disabled?: boolean;
 	active: boolean;
 }) {
 
@@ -1329,12 +1489,16 @@ function ToolbarTooltip({
 	label: string;
 }) {
 	return (
-		<Tooltip>
-			<TooltipTrigger asChild>{children}</TooltipTrigger>
-			<TooltipContent side="top" sideOffset={8}>
+		<HoverCard openDelay={400} closeDelay={100}>
+			<HoverCardTrigger asChild>{children}</HoverCardTrigger>
+			<HoverCardContent
+				side="top"
+				sideOffset={8}
+				className="w-auto px-2 py-1 text-xs font-medium"
+			>
 				{label}
-			</TooltipContent>
-		</Tooltip>
+			</HoverCardContent>
+		</HoverCard>
 	);
 }
 

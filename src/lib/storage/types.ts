@@ -87,9 +87,9 @@ export type PaperiteAppState = {
 	spaceIcons: Record<string, string>;
 	spaceOrder: string[];
 	spaceSortOrders: Record<string, SidebarSortOrder>;
+	spaceFolderFirst: Record<string, boolean>;
 	spacePreviewModes: Record<string, SpacePreviewMode>;
 	customItemOrders: Record<string, string[]>;
-	readOnlyNotes: Record<string, boolean>;
 	sidebarOpen: boolean;
 	inboxViewMode: "list" | "grid";
 	showNotePreview: boolean;
@@ -108,6 +108,7 @@ export interface NotesEngine {
 	): Promise<{ ok: true; noteId: string; updatedAt: number }>;
 	writeDerivedNote(path: string, content: NoteContent): Promise<{ ok: true }>;
 	writeNote(path: string, content: NoteContent): Promise<{ ok: true }>;
+	pruneAssets?(path: string): Promise<{ ok: true; deleted: number; skipped?: string }>;
 	createNote(
 		parentPath: string,
 		title: string,

@@ -61,6 +61,10 @@ export class ElectronNotesEngine implements NotesEngine {
 		return requireElectron().notes.writeNote(path, content);
 	}
 
+	async pruneAssets(path: string): Promise<{ ok: true; deleted: number; skipped?: string }> {
+		return requireElectron().notes.pruneAssets(path);
+	}
+
 	async createNote(
 		parentPath: string,
 		title: string,

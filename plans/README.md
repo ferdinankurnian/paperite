@@ -20,6 +20,7 @@
 | 012 | [TenTap Advanced + Text Align (RN)](./012-tentap-advanced-text-align.md) | TODO | P1 |
 | 013 | [Optimize it 100x — Obsidian-level speed](./013-optimize-100x.md) | TODO | P0 |
 | 014 | [Notion-style drag handle](./014-notion-style-drag-handle.md) | TODO | P2 |
+| 015 | [Split Index — per-component re-render](./015-split-index-per-component-rerender.md) | DONE | P0 |
 
 > Note (2026-07-28): the three `001-*` plans were marked TODO/missing from
 > this table despite being fully implemented in the codebase — verified by
@@ -128,6 +129,14 @@
 > default (Settings → Note defaults), same pattern as page format defaults.
 > Desktop only; default off. Not the paid Notion-like template.
 
+> Plan 015 (2026-08-08): **Split Index — per-component re-render**. Space
+> switch still re-renders the whole page because Index bulk-subscribes to
+> `activeSpacePath`. Zustand app-store already exists (013 Phase B partial);
+> sidebar already reads space from the store. 015 ships the focused fix:
+> drop space from Index selector, move space-only effects off Index, extract
+> `NoteWorkspace`, memo walls so re-renders stay per-component. Land before
+> more 013 phases so isolation is real.
+
 ## Execution Order
 
 - **004** (error boundary) — standalone, P0, zero dependencies.
@@ -144,9 +153,13 @@
   same Express server REST API. Requires Android Studio or Xcode for native
   builds. Can run in parallel with any desktop work.
 - **012** (TenTap Advanced + Text Align) — paperite-rn only, can run in parallel.
-- **013** (Optimize 100x) — **P0 desktop**. Depends on 008+009 (already DONE).
-  Do this before more feature work on desktop shell; performance is currently
-  the product-limiting factor.
-- **014** (Notion-style drag handle) — **P2 desktop**. Independent of 013 but
-  prefer landing 013 first if both are in flight; pure editor UX, free TipTap
-  extensions only.
+- **015** (Split Index / per-component re-render) — **P0 desktop**. Concrete
+  slice of 013 Phase B/C. Do this **before** broader 013 work. Fixes space-
+  switch full-page re-render; starts file split (NoteWorkspace). Depends on
+  008+009 and existing `app-store`.
+- **013** (Optimize 100x) — **P0 desktop**. Depends on 008+009 (DONE); prefer
+  015 first so store subscriptions are already isolated. Then virtualize,
+  budgets, deeper session extract.
+- **014** (Notion-style drag handle) — **P2 desktop**. Independent of 013/015
+  but prefer landing isolation work first if both are in flight; pure editor
+  UX, free TipTap extensions only.

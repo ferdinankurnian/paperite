@@ -3,6 +3,7 @@ const fs = require("node:fs/promises");
 const http = require("node:http");
 const nodeCrypto = require("node:crypto");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
 const { DatabaseSync } = require("node:sqlite");
 const {
 	app,
@@ -1939,10 +1940,12 @@ const createWindowOptions = ({ width, height, minWidth, minHeight }) => ({
 	height,
 	minWidth,
 	minHeight,
+	show: false,
 	...(shouldUseMacChrome ? { titleBarStyle: "hiddenInset" } : { frame: false }),
 	title: "Paperite",
 	backgroundColor: "#171717",
 	webPreferences: {
+		webSecurity: false,
 		preload: require("node:path").join(__dirname, "preload.js"),
 		additionalArguments: [
 			`--paperite-macos-layout=${shouldUseMacLayout ? "1" : "0"}`,
@@ -2088,6 +2091,8 @@ const createWindow = () => {
 			minHeight: 520,
 		}),
 	);
+
+	mainWindow.once("ready-to-show", () => mainWindow.show());
 
 	mainWindow.webContents.on("will-navigate", (event, url) => {
 		if (isAppUrl(url)) return;
@@ -2368,6 +2373,60 @@ ipcMain.handle("notes:set-pinned", async (_event, notePath, pinned) => {
 	return { pinned: content.pinned };
 });
 
+
+const collectReferencedAssetPaths = (node, out = new Set()) => {
+	if (node?.type === "image" && typeof node.attrs?.src === "string") {
+		const srcPath = node.attrs.src;
+		if (
+			srcPath.startsWith(noteAssetsDirectoryName + "/") ||
+			srcPath.startsWith("assets/")
+		) {
+			out.add(srcPath.replace(/^\/+/, ""));
+		} else if (srcPath.startsWith("file://")) {
+			const assetsIdx = srcPath.indexOf("/assets/");
+			if (assetsIdx !== -1) out.add(srcPath.slice(assetsIdx + 1));
+		}
+	}
+	for (const child of node?.content ?? []) collectReferencedAssetPaths(child, out);
+	return out;
+};
+
+const pruneNoteAssets = async (notePath) => {
+	const normalizedPath = currentNotePath(notePath);
+	if (popoutWindows.has(normalizedPath)) {
+		return { ok: true, deleted: 0, skipped: "popout-open" };
+	}
+
+	const assetDir = resolveWorkspacePath(noteAssetsPath(normalizedPath));
+	let entries;
+	try {
+		entries = await fs.readdir(assetDir, { withFileTypes: true });
+	} catch (error) {
+		if (error?.code === "ENOENT") return { ok: true, deleted: 0 };
+		throw error;
+	}
+
+	let content;
+	try {
+		content = await readNoteContent(normalizedPath);
+	} catch (error) {
+		if (error?.code === "ENOENT") return { ok: true, deleted: 0 };
+		throw error;
+	}
+
+	const referenced = collectReferencedAssetPaths(content);
+	let deleted = 0;
+
+	for (const entry of entries) {
+		if (!entry.isFile() || entry.name.startsWith(".")) continue;
+		const relative = noteAssetsDirectoryName + "/" + entry.name;
+		if (referenced.has(relative)) continue;
+		await fs.rm(path.join(assetDir, entry.name), { force: true }).catch(() => undefined);
+		deleted += 1;
+	}
+
+	return { ok: true, deleted };
+};
 ipcMain.handle(
 	"notes:save-image",
 	async (_event, notePath, imageDataUrl, filename) => {
@@ -2403,9 +2462,14 @@ ipcMain.handle(
 			resolveWorkspacePath(toPosixRelativePath(normalizedPath)),
 			assetRelativePath,
 		);
-		return `file://${absolutePath}`;
+		return pathToFileURL(absolutePath).href;
 	},
 );
+ipcMain.handle("notes:prune-assets", async (_event, notePath) => {
+	await ensureWorkspace();
+	return pruneNoteAssets(notePath);
+});
+
 
 ipcMain.handle("notes:create-note", async (_event, parentPath, title) => {
 	await ensureWorkspace();
@@ -2708,6 +2772,8 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 	);
 
 	popoutWindows.set(normalizedPath, popout);
+
+	popout.once("ready-to-show", () => popout.show());
 
 	popout.on("closed", () => {
 		popoutWindows.delete(normalizedPath);

@@ -131,6 +131,9 @@ declare global {
 					filename: string,
 				) => Promise<{ path: string }>;
 				getAssetUrl: (notePath: string, assetPath: string) => Promise<string>;
+				pruneAssets: (
+					notePath: string,
+				) => Promise<{ ok: true; deleted: number; skipped?: string }>;
 				setPinned: (
 					notePath: string,
 					pinned: boolean,

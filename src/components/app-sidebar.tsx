@@ -2,10 +2,14 @@
 
 import {
 	DndContext,
+	type CollisionDetection,
 	type DragEndEvent,
+	type DragOverEvent,
 	DragOverlay,
 	type DragStartEvent,
 	PointerSensor,
+	pointerWithin,
+	rectIntersection,
 	useDraggable,
 	useDroppable,
 	useSensor,
@@ -38,7 +42,6 @@ import {
 	LightbulbIcon,
 	ListIcon,
 	MusicIcon,
-	PaletteIcon,
 	PencilIcon,
 	PinIcon,
 	RotateCcwIcon,
@@ -83,6 +86,7 @@ import {
 } from "@/components/ui/context-menu";
 import {
 	DropdownMenu,
+	DropdownMenuCheckboxItem,
 	DropdownMenuContent,
 	DropdownMenuItem,
 	DropdownMenuRadioGroup,
@@ -187,6 +191,49 @@ function useIsFolderExpanded(path: string) {
 	return expanded || forceExpandPaths.has(path);
 }
 
+/** Show/hide a mounted space tree without re-rendering sibling trees. */
+const SpaceVisibility = React.memo(function SpaceVisibility({
+	path,
+	children,
+}: {
+	path: string;
+	children: React.ReactNode;
+}) {
+	const isActive = useAppStore((s) => s.activeSpacePath === path);
+	return (
+		<div
+			className={isActive ? undefined : "hidden"}
+			hidden={!isActive}
+			aria-hidden={!isActive}
+		>
+			{children}
+		</div>
+	);
+});
+
+const TrashNavButton = React.memo(function TrashNavButton({
+	onSelectSpace,
+}: {
+	onSelectSpace: (path: string) => void;
+}) {
+	const isActive = useAppStore((s) => s.activeSpacePath === "Trash");
+	return (
+		<button
+			type="button"
+			onClick={() => onSelectSpace("Trash")}
+			className={cn(
+				"flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none transition-colors",
+				isActive
+					? "bg-sidebar-accent text-sidebar-accent-foreground"
+					: "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+			)}
+		>
+			<Trash2Icon className="size-4 shrink-0" />
+			<span className="min-w-0 flex-1 truncate text-left">Trash</span>
+		</button>
+	);
+});
+
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	spaces: WorkspaceSpace[];
 	spaceColors?: Record<string, string>;
@@ -204,6 +251,8 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	onViewModeChange?: (mode: "list" | "grid") => void;
 	sortOrder?: SidebarSortOrder;
 	onSortOrderChange?: (order: SidebarSortOrder) => void;
+	folderFirst?: boolean;
+	onFolderFirstChange?: (folderFirst: boolean) => void;
 	customItemOrders?: Record<string, string[]>;
 	onReorderItems: (parentPath: string, itemOrder: string[]) => void;
 	onCreateFolder: (parentPath: string) => void;
@@ -325,6 +374,7 @@ function sortWorkspaceItems(
 	sortOrder: SidebarSortOrder,
 	customItemOrders: Record<string, string[]>,
 	parentPath: string,
+	folderFirst = false,
 ): WorkspaceItem[] {
 	const withSortedChildren = items.map((item) =>
 		item.type === "folder"
@@ -335,6 +385,7 @@ function sortWorkspaceItems(
 						sortOrder,
 						customItemOrders,
 						item.path,
+						folderFirst,
 					),
 				}
 			: item,
@@ -350,11 +401,20 @@ function sortWorkspaceItems(
 		return [...pinned, ...rest];
 	};
 
+	const foldersFirst = (list: WorkspaceItem[]) => {
+		if (!folderFirst) return list;
+		const folders = list.filter((item) => item.type === "folder");
+		const notes = list.filter((item) => item.type !== "folder");
+		return [...folders, ...notes];
+	};
+
 	if (sortOrder === "custom") {
-		return pinFirst(
-			orderItemsByCustomOrder(
-				withSortedChildren,
-				customItemOrders[parentPath],
+		return foldersFirst(
+			pinFirst(
+				orderItemsByCustomOrder(
+					withSortedChildren,
+					customItemOrders[parentPath],
+				),
 			),
 		);
 	}
@@ -369,7 +429,7 @@ function sortWorkspaceItems(
 
 			return sortOrder === "a-z" ? comparison : -comparison;
 		});
-		return pinFirst(sorted);
+		return foldersFirst(pinFirst(sorted));
 	}
 
 	const sortedNotes = withSortedChildren
@@ -384,7 +444,7 @@ function sortWorkspaceItems(
 	const dateSorted = withSortedChildren.map((item) =>
 		item.type === "note" ? sortedNotes[noteIndex++] : item,
 	);
-	return pinFirst(dateSorted);
+	return foldersFirst(pinFirst(dateSorted));
 }
 
 function orderItemsByCustomOrder(
@@ -431,18 +491,20 @@ const useFolderRenameStore = create<FolderRenameStore>((set) => ({
 	stop: () => set({ path: null, draft: "" }),
 }));
 
+const EMPTY_SEARCH_EXPAND_PATHS: ReadonlySet<string> = new Set();
+
 const SearchExpandPathsContext = React.createContext<ReadonlySet<string>>(
-	new Set(),
+	EMPTY_SEARCH_EXPAND_PATHS,
 );
 
 /** Folder paths that must stay open so search hits inside them are visible. */
 function collectSearchExpandPaths(
 	items: WorkspaceItem[],
 	query: string,
-): Set<string> {
+): ReadonlySet<string> {
 	const normalizedQuery = query.trim().toLocaleLowerCase();
+	if (!normalizedQuery) return EMPTY_SEARCH_EXPAND_PATHS;
 	const paths = new Set<string>();
-	if (!normalizedQuery) return paths;
 
 	const walk = (nodes: WorkspaceItem[]): boolean => {
 		let anyMatch = false;
@@ -1304,10 +1366,6 @@ function NoteFolderItem({
 						</ContextMenuItem>
 					)}
 					<ContextMenuSeparator />
-					<ContextMenuItem disabled>
-						<PaletteIcon />
-						Change icon
-					</ContextMenuItem>
 					<ContextMenuItem
 						onSelect={() => {
 							beginRename();
@@ -1563,40 +1621,57 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 });
 
 function SpaceDropHeader({
-	activeSpacePath,
+	spaces,
+	spaceColors,
+	spaceIcons,
 	onCreateFolder,
 	onCreateNote,
 	onDeleteSpace,
 	spacePreviewModes,
 	showNotePreview,
 	onSetSpacePreviewMode,
-	spaceColor,
-	spaceIcon,
-	spaceTitle,
 	viewMode,
 	onViewModeChange,
-	sortOrder,
 	onSortOrderChange,
-	isTrash,
+	onFolderFirstChange,
 	onEmptyTrash,
 }: {
-	activeSpacePath: string;
+	spaces: WorkspaceSpace[];
+	spaceColors: Record<string, string>;
+	spaceIcons: Record<string, string>;
 	onCreateFolder: (parentPath: string) => void;
 	onCreateNote: (parentPath: string) => void;
 	onDeleteSpace: (path: string) => void;
 	spacePreviewModes: Record<string, SpacePreviewMode>;
 	showNotePreview: boolean;
 	onSetSpacePreviewMode: (spacePath: string, mode: SpacePreviewMode) => void;
-	spaceColor?: string;
-	spaceIcon?: string;
-	spaceTitle: string;
 	viewMode: "list" | "grid";
 	onViewModeChange: (mode: "list" | "grid") => void;
-	sortOrder: SidebarSortOrder;
 	onSortOrderChange: (order: SidebarSortOrder) => void;
-	isTrash?: boolean;
+	onFolderFirstChange: (folderFirst: boolean) => void;
 	onEmptyTrash?: () => void;
 }) {
+	const activeSpacePath = useAppStore((s) => s.activeSpacePath);
+	const spaceSortOrders = useAppStore((s) => s.spaceSortOrders);
+	const spaceFolderFirst = useAppStore((s) => s.spaceFolderFirst);
+	const activeSpace = spaces.find((space) => space.path === activeSpacePath);
+	const spaceTitle =
+		activeSpacePath === "Trash" ? "Trash" : (activeSpace?.title ?? "Inbox");
+	const spaceColor = spaceColors[activeSpacePath];
+	const spaceIcon = spaceIcons[activeSpacePath];
+	const isTrash = activeSpacePath === "Trash";
+	const rawSort = spaceSortOrders[activeSpacePath];
+	const sortOrder: SidebarSortOrder =
+		rawSort === "newest" ||
+		rawSort === "oldest" ||
+		rawSort === "a-z" ||
+		rawSort === "z-a" ||
+		rawSort === "custom"
+			? activeSpacePath === "Inbox" && rawSort === "custom"
+				? "newest"
+				: rawSort
+			: "newest";
+	const folderFirst = spaceFolderFirst[activeSpacePath] ?? false;
 	const { isOver, setNodeRef } = useDroppable({
 		id: dropTargetId(activeSpacePath),
 	});
@@ -1716,6 +1791,15 @@ function SpaceDropHeader({
 												<span>Z to A</span>
 											</DropdownMenuRadioItem>
 										</DropdownMenuRadioGroup>
+										<DropdownMenuSeparator />
+										<DropdownMenuCheckboxItem
+											checked={folderFirst}
+											onCheckedChange={(checked) =>
+												onFolderFirstChange(checked === true)
+											}
+										>
+											<span>Folder first</span>
+										</DropdownMenuCheckboxItem>
 									</DropdownMenuSubContent>
 								</DropdownMenuSub>
 							</>
@@ -1749,6 +1833,15 @@ function SpaceDropHeader({
 												<span>Custom</span>
 											</DropdownMenuRadioItem>
 										</DropdownMenuRadioGroup>
+										<DropdownMenuSeparator />
+										<DropdownMenuCheckboxItem
+											checked={folderFirst}
+											onCheckedChange={(checked) =>
+												onFolderFirstChange(checked === true)
+											}
+										>
+											<span>Folder first</span>
+										</DropdownMenuCheckboxItem>
 									</DropdownMenuSubContent>
 								</DropdownMenuSub>
 								<DropdownMenuSub>
@@ -1893,6 +1986,8 @@ function AppSidebarImpl({
 	onViewModeChange: onViewModeChangeProp,
 	sortOrder: sortOrderProp,
 	onSortOrderChange: onSortOrderChangeProp,
+	folderFirst: folderFirstProp,
+	onFolderFirstChange: onFolderFirstChangeProp,
 	customItemOrders: customItemOrdersProp,
 	onReorderItems,
 	trashNotes,
@@ -1916,11 +2011,12 @@ function AppSidebarImpl({
 		return () => window.clearTimeout(handle);
 	}, [searchQuery]);
 
+	// Do NOT select expandedFolders or activeSpacePath here — either forces the
+	// whole sidebar (every ContextMenu row) to re-render. Space switch only
+	// flips SpaceVisibility panels; folder expand uses ExpandedFoldersStore.
 	const storeUi = useAppStore(
 		useShallow((st) => ({
 			activeNotePath: st.activeNotePath,
-			activeSpacePath: st.activeSpacePath,
-			expandedFolders: st.expandedFolders,
 			spaceColors: st.spaceColors,
 			spaceIcons: st.spaceIcons,
 			spacePreviewModes: st.spacePreviewModes,
@@ -1929,13 +2025,13 @@ function AppSidebarImpl({
 			customItemOrders: st.customItemOrders,
 			inboxViewMode: st.inboxViewMode,
 			spaceSortOrders: st.spaceSortOrders,
+			spaceFolderFirst: st.spaceFolderFirst,
 		})),
 	);
 	const activeNotePath = storeUi.activeNotePath ?? activeNotePathProp ?? null;
-	const activeSpacePath =
-		storeUi.activeSpacePath ?? activeSpacePathProp ?? "Inbox";
-	const expandedFolders =
-		storeUi.expandedFolders ?? expandedFoldersProp ?? [];
+	// activeSpacePath is intentionally NOT read here — NavMain, SpaceDropHeader,
+	// SpaceVisibility, and TrashNav each subscribe so switching spaces does not
+	// re-render this shell or every note ContextMenu.
 	const spaceColors = storeUi.spaceColors ?? spaceColorsProp ?? {};
 	const spaceIcons = storeUi.spaceIcons ?? spaceIconsProp ?? {};
 	const spacePreviewModes =
@@ -1947,21 +2043,8 @@ function AppSidebarImpl({
 	const customItemOrders =
 		storeUi.customItemOrders ?? customItemOrdersProp ?? {};
 	const viewMode = storeUi.inboxViewMode ?? viewModeProp ?? "list";
-	const sortOrder: SidebarSortOrder = (() => {
-		if (sortOrderProp) return sortOrderProp;
-		const raw = storeUi.spaceSortOrders[activeSpacePath];
-		const normalized =
-			raw === "newest" ||
-			raw === "oldest" ||
-			raw === "a-z" ||
-			raw === "z-a" ||
-			raw === "custom"
-				? raw
-				: "newest";
-		return activeSpacePath === "Inbox" && normalized === "custom"
-			? "newest"
-			: normalized;
-	})();
+	const spaceSortOrders = storeUi.spaceSortOrders;
+	const spaceFolderFirstMap = storeUi.spaceFolderFirst;
 	const onSetShowNotePreview =
 		onSetShowNotePreviewProp ??
 		((show: boolean) => useAppStore.getState().setShowNotePreview(show));
@@ -1977,8 +2060,16 @@ function AppSidebarImpl({
 		((mode: "list" | "grid") => useAppStore.getState().setInboxViewMode(mode));
 	const onSortOrderChange =
 		onSortOrderChangeProp ??
-		((order: SidebarSortOrder) =>
-			useAppStore.getState().setSpaceSortOrder(activeSpacePath, order));
+		((order: SidebarSortOrder) => {
+			const path = useAppStore.getState().activeSpacePath;
+			useAppStore.getState().setSpaceSortOrder(path, order);
+		});
+	const onFolderFirstChange =
+		onFolderFirstChangeProp ??
+		((value: boolean) => {
+			const path = useAppStore.getState().activeSpacePath;
+			useAppStore.getState().setSpaceFolderFirst(path, value);
+		});
 
 	const [ftsResults, setFtsResults] = React.useState<NoteSearchResult[] | null>(
 		null,
@@ -2020,68 +2111,83 @@ function AppSidebarImpl({
 	const [tabletLayout, setTabletLayout] = React.useState(false);
 	const [dragPreviewItem, setDragPreviewItem] =
 		React.useState<DragPreviewItem | null>(null);
+	// Hover-open while dragging: hold over a space → switch to its note list;
+	// hold over a collapsed folder → expand it so you can drop inside.
+	const hoverOpenTimerRef = React.useRef<number | null>(null);
+	const hoverOpenTargetRef = React.useRef<string | null>(null);
+	const dragPointerRef = React.useRef<{ x: number; y: number } | null>(null);
+	const isNoteDragRef = React.useRef(false);
+	const clearHoverOpen = React.useCallback(() => {
+		if (hoverOpenTimerRef.current !== null) {
+			window.clearTimeout(hoverOpenTimerRef.current);
+			hoverOpenTimerRef.current = null;
+		}
+		hoverOpenTargetRef.current = null;
+	}, []);
+	const spacePathUnderPointer = React.useCallback((x: number, y: number) => {
+		const stack = document.elementsFromPoint(x, y);
+		for (const el of stack) {
+			if (!(el instanceof HTMLElement)) continue;
+			// Skip the drag overlay itself.
+			if (el.closest("[data-dnd-kit-drag-overlay]")) continue;
+			const host = el.closest("[data-paperite-space-path]");
+			if (host instanceof HTMLElement) {
+				const path = host.dataset.paperiteSpacePath;
+				if (path) return path;
+			}
+		}
+		return null;
+	}, []);
 	// Keep previously visited space lists mounted (hide/show) so switching
-	// spaces is instant — same idea as browser tabs / editor tabs.
+	// spaces is instant. Only setState when a *new* path must mount — switching
+	// between already-mounted spaces must not re-render this shell.
 	const [mountedSpacePaths, setMountedSpacePaths] = React.useState<string[]>(
-		() =>
-			activeSpacePath && activeSpacePath !== "Trash"
-				? [activeSpacePath]
-				: ["Inbox"],
+		() => {
+			const path = useAppStore.getState().activeSpacePath;
+			return path && path !== "Trash" ? [path] : ["Inbox"];
+		},
 	);
-	// One effect owns both "mount active space" and "prune dead paths".
-	// Splitting them races on first hydrate: spaces starts [], the prune
-	// effect wipes mountedSpacePaths to [], then activeSpacePath never
-	// changes so the mount effect never re-adds Inbox — empty note list
-	// forever even though notes are on disk.
 	React.useEffect(() => {
-		const valid = new Set(spaces.map((space) => space.path));
-
-		setMountedSpacePaths((prev) => {
-			// Workspace not hydrated yet — don't prune against an empty set.
-			if (valid.size === 0) return prev;
-
-			let next = prev.filter((path) => valid.has(path));
-
-			if (
-				activeSpacePath &&
-				activeSpacePath !== "Trash" &&
-				valid.has(activeSpacePath) &&
-				!next.includes(activeSpacePath)
-			) {
-				next = [...next, activeSpacePath];
-			}
-
-			if (
-				next.length === prev.length &&
-				next.every((path, index) => path === prev[index])
-			) {
-				return prev;
-			}
-			return next;
+		const syncMounts = (activePath: string) => {
+			const valid = new Set(spaces.map((space) => space.path));
+			setMountedSpacePaths((prev) => {
+				if (valid.size === 0) return prev;
+				let next = prev.filter((path) => valid.has(path));
+				if (
+					activePath &&
+					activePath !== "Trash" &&
+					valid.has(activePath) &&
+					!next.includes(activePath)
+				) {
+					next = [...next, activePath];
+				}
+				if (
+					next.length === prev.length &&
+					next.every((path, index) => path === prev[index])
+				) {
+					return prev;
+				}
+				return next;
+			});
+		};
+		syncMounts(useAppStore.getState().activeSpacePath);
+		let prevPath = useAppStore.getState().activeSpacePath;
+		const unsub = useAppStore.subscribe((state) => {
+			if (state.activeSpacePath === prevPath) return;
+			prevPath = state.activeSpacePath;
+			syncMounts(prevPath);
 		});
-	}, [spaces, activeSpacePath]);
-	const activeSpace = spaces.find((space) => space.path === activeSpacePath);
-	const visibleChildren = React.useMemo(
-		() => filterWorkspaceItems(activeSpace?.children ?? [], debouncedSearchQuery),
-		[activeSpace?.children, debouncedSearchQuery],
-	);
+		return unsub;
+	}, [spaces]);
 
-	const searchExpandPaths = React.useMemo(
-		() => collectSearchExpandPaths(activeSpace?.children ?? [], debouncedSearchQuery),
-		[activeSpace?.children, debouncedSearchQuery],
-	);
-	const sortedVisibleChildren = React.useMemo(
-		() =>
-			sortWorkspaceItems(
-				visibleChildren,
-				activeSpacePath === "Inbox" && sortOrder === "custom"
-					? "newest"
-					: sortOrder,
-				customItemOrders,
-				activeSpacePath,
-			),
-		[activeSpacePath, customItemOrders, visibleChildren, sortOrder],
-	);
+	const searchExpandPaths = React.useMemo(() => {
+		const q = debouncedSearchQuery.trim();
+		if (!q) return EMPTY_SEARCH_EXPAND_PATHS;
+		const activePath = useAppStore.getState().activeSpacePath;
+		const activeSpace = spaces.find((space) => space.path === activePath);
+		return collectSearchExpandPaths(activeSpace?.children ?? [], debouncedSearchQuery);
+	}, [spaces, debouncedSearchQuery]);
+
 	const spaceItemsCacheRef = React.useRef(
 		new Map<
 			string,
@@ -2089,26 +2195,33 @@ function AppSidebarImpl({
 				children: unknown;
 				searchQuery: string;
 				sortOrder: string;
+				folderFirst: boolean;
 				customOrder: unknown;
-				items: typeof sortedVisibleChildren;
+				items: WorkspaceItem[];
 			}
 		>(),
 	);
-	const sortOrderByPathRef = React.useRef<Record<string, typeof sortOrder>>({});
-	if (activeSpacePath && activeSpacePath !== "Trash") {
-		sortOrderByPathRef.current[activeSpacePath] = sortOrder;
-	}
 	const mountedSpaceItems = React.useMemo(() => {
 		const map = new Map<
 			string,
-			{ space: (typeof spaces)[number]; items: typeof sortedVisibleChildren }
+			{ space: (typeof spaces)[number]; items: WorkspaceItem[] }
 		>();
 		for (const path of mountedSpacePaths) {
 			const space = spaces.find((entry) => entry.path === path);
 			if (!space) continue;
-			const pathSort = sortOrderByPathRef.current[path] ?? sortOrder;
+			const rawSort = sortOrderProp ?? spaceSortOrders[path];
+			const pathSort: SidebarSortOrder =
+				rawSort === "newest" ||
+				rawSort === "oldest" ||
+				rawSort === "a-z" ||
+				rawSort === "z-a" ||
+				rawSort === "custom"
+					? rawSort
+					: "newest";
 			const effectiveSort =
 				path === "Inbox" && pathSort === "custom" ? "newest" : pathSort;
+			const pathFolderFirst =
+				folderFirstProp ?? spaceFolderFirstMap[path] ?? false;
 			const customOrder = customItemOrders[path];
 			const cached = spaceItemsCacheRef.current.get(path);
 			if (
@@ -2116,6 +2229,7 @@ function AppSidebarImpl({
 				cached.children === space.children &&
 				cached.searchQuery === debouncedSearchQuery &&
 				cached.sortOrder === effectiveSort &&
+				cached.folderFirst === pathFolderFirst &&
 				cached.customOrder === customOrder
 			) {
 				map.set(path, { space, items: cached.items });
@@ -2126,11 +2240,13 @@ function AppSidebarImpl({
 				effectiveSort,
 				customItemOrders,
 				path,
+				pathFolderFirst,
 			);
 			spaceItemsCacheRef.current.set(path, {
 				children: space.children,
 				searchQuery: debouncedSearchQuery,
 				sortOrder: effectiveSort,
+				folderFirst: pathFolderFirst,
 				customOrder,
 				items,
 			});
@@ -2140,30 +2256,41 @@ function AppSidebarImpl({
 	}, [
 		mountedSpacePaths,
 		spaces,
-		activeSpacePath,
-		sortOrder,
+		spaceSortOrders,
+		spaceFolderFirstMap,
+		sortOrderProp,
+		folderFirstProp,
 		customItemOrders,
 		debouncedSearchQuery,
 	]);
 	const canDragItems = true;
-	const canReorderItems = activeSpacePath !== "Inbox" && sortOrder === "custom";
 	// Keep expand/collapse state in a per-path store so the sidebar paints
 	// immediately AND toggling one folder doesn't re-render every other
-	// mounted folder. Parent appState updates are deferred via startTransition
-	// to avoid freezing the whole Electron window (TipTap editor re-render).
+	// mounted folder. Persist to app store in a transition; do not select
+	// expandedFolders in React state (that was re-rendering the whole tree).
 	const expandedFoldersStoreRef = React.useRef<ExpandedFoldersStore | null>(
 		null,
 	);
 	if (!expandedFoldersStoreRef.current) {
 		expandedFoldersStoreRef.current = new ExpandedFoldersStore(
-			expandedFolders,
+			expandedFoldersProp ??
+				useAppStore.getState().expandedFolders ??
+				[],
 		);
 	}
 	const expandedFoldersStore = expandedFoldersStoreRef.current;
 
 	React.useEffect(() => {
-		expandedFoldersStore.replaceAll(expandedFolders);
-	}, [expandedFoldersStore, expandedFolders]);
+		let prev =
+			expandedFoldersProp ?? useAppStore.getState().expandedFolders;
+		expandedFoldersStore.replaceAll(prev);
+		const unsub = useAppStore.subscribe((state) => {
+			if (state.expandedFolders === prev) return;
+			prev = state.expandedFolders;
+			expandedFoldersStore.replaceAll(prev);
+		});
+		return unsub;
+	}, [expandedFoldersStore, expandedFoldersProp]);
 
 	const handleToggleFolder = React.useCallback(
 		(path: string, isOpen: boolean) => {
@@ -2189,11 +2316,11 @@ function AppSidebarImpl({
 		[handleToggleFolder, onOpenNote],
 	);
 	const resolvedShowPreview = React.useMemo(() => {
-		const mode = spacePreviewModes[activeSpacePath] ?? "global";
+		const mode = spacePreviewModes.Trash ?? "global";
 		if (mode === "show") return true;
 		if (mode === "hide") return false;
 		return showNotePreview;
-	}, [activeSpacePath, spacePreviewModes, showNotePreview]);
+	}, [spacePreviewModes, showNotePreview]);
 	const showPreviewForSpace = React.useCallback(
 		(spacePath: string) => {
 			const mode = spacePreviewModes[spacePath] ?? "global";
@@ -2264,21 +2391,178 @@ function AppSidebarImpl({
 		await navigate({ to: "/login" });
 	};
 
-	const startDraggingItem = ({ active }: DragStartEvent) => {
+	const scheduleHoverOpen = React.useCallback(
+		(hoverTarget: { kind: "space" | "folder"; path: string }) => {
+			const key = `${hoverTarget.kind}:${hoverTarget.path}`;
+			if (hoverOpenTargetRef.current === key) return;
+			clearHoverOpen();
+			hoverOpenTargetRef.current = key;
+			hoverOpenTimerRef.current = window.setTimeout(() => {
+				hoverOpenTimerRef.current = null;
+				if (hoverTarget.kind === "space") {
+					onSelectSpace(hoverTarget.path);
+				} else {
+					expandedFoldersStore.toggle(hoverTarget.path, true);
+					React.startTransition(() => {
+						onToggleFolder(hoverTarget.path, true);
+					});
+				}
+			}, 400);
+		},
+		[clearHoverOpen, expandedFoldersStore, onSelectSpace, onToggleFolder],
+	);
+
+	const startDraggingItem = ({ active, activatorEvent }: DragStartEvent) => {
 		const data = active.data.current as DragPreviewItem | undefined;
 		setDragPreviewItem(data?.title ? data : null);
+		const itemPath = String(active.id);
+		isNoteDragRef.current = !spaces.some((space) => space.path === itemPath);
+		if (activatorEvent && "clientX" in activatorEvent) {
+			const ev = activatorEvent as PointerEvent | MouseEvent;
+			dragPointerRef.current = { x: ev.clientX, y: ev.clientY };
+		}
+	};
+
+	React.useEffect(() => {
+		if (!dragPreviewItem) return;
+		const onMove = (event: PointerEvent) => {
+			dragPointerRef.current = { x: event.clientX, y: event.clientY };
+			if (!isNoteDragRef.current) return;
+			const spacePath = spacePathUnderPointer(event.clientX, event.clientY);
+			const currentSpace = useAppStore.getState().activeSpacePath;
+			if (
+				spacePath &&
+				spacePath !== currentSpace &&
+				spacePath !== "Trash" &&
+				spaces.some((s) => s.path === spacePath)
+			) {
+				scheduleHoverOpen({ kind: "space", path: spacePath });
+			} else if (!spacePath) {
+				// Only clear space-hover timers when not over a space; folder
+				// hover still comes from handleDragOver / dnd-kit.
+				if (hoverOpenTargetRef.current?.startsWith("space:")) {
+					clearHoverOpen();
+				}
+			}
+		};
+		window.addEventListener("pointermove", onMove);
+		return () => window.removeEventListener("pointermove", onMove);
+	}, [
+		dragPreviewItem,
+		spaces,
+		spacePathUnderPointer,
+		scheduleHoverOpen,
+		clearHoverOpen,
+	]);
+
+	const handleDragOver = ({ active, over }: DragOverEvent) => {
+		const itemPath = String(active.id);
+		// Don't hover-open while reordering spaces.
+		if (spaces.some((space) => space.path === itemPath)) {
+			clearHoverOpen();
+			return;
+		}
+
+		let hoverTarget: { kind: "space" | "folder"; path: string } | null = null;
+
+		// Prefer dnd-kit over target when available.
+		const currentSpace = useAppStore.getState().activeSpacePath;
+		if (over) {
+			const overId = String(over.id);
+			const overData = over.data.current as
+				| { type?: string; path?: string }
+				| undefined;
+			if (overData?.type === "space" && overData.path) {
+				if (overData.path !== currentSpace && overData.path !== "Trash") {
+					hoverTarget = { kind: "space", path: overData.path };
+				}
+			} else {
+				const maybeSpace =
+					overId.startsWith("drop:") &&
+					!overId.startsWith("drop-list:") &&
+					!overId.startsWith("drop-note:")
+						? overId.slice("drop:".length)
+						: spaces.some((s) => s.path === overId)
+							? overId
+							: null;
+
+				if (maybeSpace && spaces.some((s) => s.path === maybeSpace)) {
+					if (maybeSpace !== currentSpace && maybeSpace !== "Trash") {
+						hoverTarget = { kind: "space", path: maybeSpace };
+					}
+				} else if (
+					overId.startsWith("drop:") &&
+					!overId.startsWith("drop-list:") &&
+					!overId.startsWith("drop-note:")
+				) {
+					const folderPath = overId.slice("drop:".length);
+					if (
+						folderPath &&
+						!spaces.some((s) => s.path === folderPath) &&
+						folderPath !== "Trash" &&
+						!expandedFoldersStore.isExpanded(folderPath)
+					) {
+						hoverTarget = { kind: "folder", path: folderPath };
+					}
+				}
+			}
+		}
+
+		// Fallback: hit-test under pointer (works when dnd-kit misses space nodes).
+		if (!hoverTarget && dragPointerRef.current) {
+			const spacePath = spacePathUnderPointer(
+				dragPointerRef.current.x,
+				dragPointerRef.current.y,
+			);
+			if (
+				spacePath &&
+				spacePath !== currentSpace &&
+				spacePath !== "Trash" &&
+				spaces.some((s) => s.path === spacePath)
+			) {
+				hoverTarget = { kind: "space", path: spacePath };
+			}
+		}
+
+		if (!hoverTarget) {
+			clearHoverOpen();
+			return;
+		}
+
+		scheduleHoverOpen(hoverTarget);
 	};
 
 	const moveDroppedItem = ({ active, over }: DragEndEvent) => {
+		clearHoverOpen();
 		setDragPreviewItem(null);
-		if (!over) return;
-
 		const itemPath = String(active.id);
+		const pointer = dragPointerRef.current;
+		dragPointerRef.current = null;
+		isNoteDragRef.current = false;
+
+		// Resolve over id; fall back to space under pointer if dnd-kit missed it.
+		let overId = over ? String(over.id) : null;
+		if (!overId && pointer) {
+			const spacePath = spacePathUnderPointer(pointer.x, pointer.y);
+			if (spacePath && spaces.some((s) => s.path === spacePath)) {
+				overId = `drop:${spacePath}`;
+			}
+		} else if (overId && pointer && !spaces.some((s) => s.path === itemPath)) {
+			// Prefer explicit space under pointer when dropping notes onto the rail.
+			const spacePath = spacePathUnderPointer(pointer.x, pointer.y);
+			if (spacePath && spaces.some((s) => s.path === spacePath)) {
+				overId = `drop:${spacePath}`;
+			}
+		}
+		if (!overId) return;
 		const draggedSpaceIndex = spaces.findIndex(
 			(space) => space.path === itemPath,
 		);
 		if (draggedSpaceIndex !== -1) {
-			const overSpacePath = String(over.id);
+			// Space reorder: over can be plain space path (sortable) or drop:path.
+			const overSpacePath = overId.startsWith("drop:")
+				? overId.slice("drop:".length)
+				: overId;
 			const otherSpaces = spaces.filter((space) => space.path !== "Inbox");
 			const activeIndex = otherSpaces.findIndex(
 				(space) => space.path === itemPath,
@@ -2297,11 +2581,28 @@ function AppSidebarImpl({
 			return;
 		}
 
-		const dropTarget = dropTargetFromId(String(over.id));
+		// Note/folder drop: prefer explicit drop targets, but also accept
+		// plain space path ids from SortableSpaceItem (sortable id === path).
+		let dropTarget = dropTargetFromId(overId);
+		if (!dropTarget) {
+			const spaceHit = spaces.find((space) => space.path === overId);
+			if (spaceHit) {
+				dropTarget = {
+					type: "container" as const,
+					parentPath: spaceHit.path,
+				};
+			}
+		}
 		if (!dropTarget) return;
+
+		const activeSpacePath = useAppStore.getState().activeSpacePath;
+		const activeSpace = spaces.find((space) => space.path === activeSpacePath);
+		const canReorderItems =
+			activeSpacePath !== "Inbox" && spaceSortOrders[activeSpacePath] === "custom";
 
 		if (
 			canReorderItems &&
+			activeSpace &&
 			dropTarget.type === "note" &&
 			parentPath(itemPath) === dropTarget.parentPath &&
 			itemPath !== dropTarget.itemPath
@@ -2319,6 +2620,7 @@ function AppSidebarImpl({
 
 		if (
 			canReorderItems &&
+			activeSpace &&
 			dropTarget.type === "list" &&
 			parentPath(itemPath) === dropTarget.parentPath
 		) {
@@ -2341,12 +2643,25 @@ function AppSidebarImpl({
 		onMoveItem(itemPath, nextParentPath);
 	};
 
+	const collisionDetection = React.useCallback<CollisionDetection>((args) => {
+		const pointerHits = pointerWithin(args);
+		if (pointerHits.length > 0) return pointerHits;
+		return rectIntersection(args);
+	}, []);
+
 	return (
 		<DndContext
 			sensors={sensors}
+			collisionDetection={collisionDetection}
 			onDragStart={startDraggingItem}
+			onDragOver={handleDragOver}
 			onDragEnd={moveDroppedItem}
-			onDragCancel={() => setDragPreviewItem(null)}
+			onDragCancel={() => {
+				clearHoverOpen();
+				setDragPreviewItem(null);
+				dragPointerRef.current = null;
+				isNoteDragRef.current = false;
+			}}
 		>
 			<Sidebar
 				collapsible="icon"
@@ -2372,7 +2687,6 @@ function AppSidebarImpl({
 				</SidebarHeader>
 				<SidebarContent>
 					<NavMain
-						activeSpacePath={activeSpacePath}
 						spaces={spaces.map((space) => ({
 							title: space.title,
 							url: "#",
@@ -2394,19 +2708,7 @@ function AppSidebarImpl({
 					/>
 				</SidebarContent>
 				<SidebarFooter className="gap-1">
-					<button
-						type="button"
-						onClick={() => onSelectSpace("Trash")}
-						className={cn(
-							"flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none transition-colors",
-							activeSpacePath === "Trash"
-								? "bg-sidebar-accent text-sidebar-accent-foreground"
-								: "text-sidebar-foreground/80 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
-						)}
-					>
-						<Trash2Icon className="size-4 shrink-0" />
-						<span className="min-w-0 flex-1 truncate text-left">Trash</span>
-					</button>
+					<TrashNavButton onSelectSpace={onSelectSpace} />
 					<NavUser
 						onLogOut={logOut}
 						user={user}
@@ -2435,14 +2737,9 @@ function AppSidebarImpl({
 				>
 					<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
 						<SpaceDropHeader
-							activeSpacePath={activeSpacePath}
-							spaceTitle={
-								activeSpacePath === "Trash"
-									? "Trash"
-									: (activeSpace?.title ?? "Inbox")
-							}
-							spaceColor={spaceColors[activeSpacePath]}
-							spaceIcon={spaceIcons[activeSpacePath]}
+							spaces={spaces}
+							spaceColors={spaceColors}
+							spaceIcons={spaceIcons}
 							spacePreviewModes={spacePreviewModes}
 							showNotePreview={showNotePreview}
 							onCreateFolder={onCreateFolder}
@@ -2451,9 +2748,8 @@ function AppSidebarImpl({
 							onSetSpacePreviewMode={onSetSpacePreviewMode}
 							viewMode={viewMode}
 							onViewModeChange={onViewModeChange}
-							sortOrder={sortOrder}
 							onSortOrderChange={onSortOrderChange}
-							isTrash={activeSpacePath === "Trash"}
+							onFolderFirstChange={onFolderFirstChange}
 							onEmptyTrash={onEmptyTrash}
 						/>
 						<InputGroup className="h-9">
@@ -2513,8 +2809,8 @@ function AppSidebarImpl({
 										))}
 									</div>
 								) : null}
-								{activeSpacePath === "Trash" ? (
-									trashNotes.length > 0 ? (
+								<SpaceVisibility path="Trash">
+									{trashNotes.length > 0 ? (
 										<NoteGrid
 											items={trashNotes.map((n) => ({
 												type: "note" as const,
@@ -2548,20 +2844,14 @@ function AppSidebarImpl({
 												</EmptyDescription>
 											</EmptyHeader>
 										</Empty>
-									)
-								) : (
-									mountedSpacePaths.map((spacePath) => {
+									)}
+								</SpaceVisibility>
+								{mountedSpacePaths.map((spacePath) => {
 										const entry = mountedSpaceItems.get(spacePath);
 										if (!entry) return null;
-										const isActive = spacePath === activeSpacePath;
 										const { items: spaceItems } = entry;
 										return (
-											<div
-												key={spacePath}
-												className={isActive ? undefined : "hidden"}
-												hidden={!isActive}
-												aria-hidden={!isActive}
-											>
+											<SpaceVisibility key={spacePath} path={spacePath}>
 												{spaceItems.length > 0 ? (
 													viewMode === "grid" && spacePath === "Inbox" ? (
 														<NoteGrid
@@ -2594,13 +2884,11 @@ function AppSidebarImpl({
 															spaceColors={spaceColors}
 															showPreview={showPreviewForSpace(spacePath)}
 															isInbox={spacePath === "Inbox"}
-															newlyCreatedFolderPath={
-																isActive ? newlyCreatedFolderPath : null
-															}
+															newlyCreatedFolderPath={newlyCreatedFolderPath}
 															onRenameComplete={onRenameComplete}
 														/>
 													)
-												) : isActive ? (
+												) : (
 													<Empty>
 														<EmptyHeader>
 															<EmptyMedia variant="icon">
@@ -2633,11 +2921,10 @@ function AppSidebarImpl({
 															</Button>
 														</EmptyContent>
 													</Empty>
-												) : null}
-											</div>
+												)}
+											</SpaceVisibility>
 										);
-									})
-								)}
+									})}
 							</SidebarGroupContent>
 						</SidebarGroup>
 					</SidebarContent>

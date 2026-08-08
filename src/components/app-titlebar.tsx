@@ -21,6 +21,7 @@ import {
 	MenubarSubTrigger,
 	MenubarTrigger,
 } from "@/components/ui/menubar";
+import { useTheme } from "@/components/theme-provider";
 import type { CommandId } from "@/lib/commands";
 import { formatShortcut } from "@/lib/shortcuts";
 import { getSyncEngine, onSyncChanged } from "@/lib/sync-engine";
@@ -554,6 +555,14 @@ function WindowControl({
 	label: string;
 	className?: string;
 }) {
+	const { theme } = useTheme();
+	const isDark =
+		theme === "dark" ||
+		(theme === "system" &&
+			window.matchMedia("(prefers-color-scheme: dark)").matches);
+
+	const src = isDark ? icon.replace(".png", "-dark.png") : icon;
+
 	return (
 		<button
 			type="button"
@@ -565,10 +574,9 @@ function WindowControl({
 			onClick={() => window.electron?.window.action(action)}
 		>
 			<img
-				src={icon}
+				src={src}
 				alt=""
 				className="size-3.5 object-contain"
-				style={{ filter: "brightness(0) invert(1)" }}
 				draggable={false}
 			/>
 		</button>

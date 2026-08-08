@@ -93,6 +93,10 @@ export class WebNotesEngine implements NotesEngine {
 		});
 	}
 
+	async pruneAssets(_path: string): Promise<{ ok: true; deleted: number; skipped?: string }> {
+		return { ok: true, deleted: 0 };
+	}
+
 	async writeNote(path: string, content: NoteContent): Promise<{ ok: true }> {
 		return api(`/api/notes/${encodeURIComponent(path)}`, {
 			method: "PUT",
@@ -140,7 +144,8 @@ export class WebNotesEngine implements NotesEngine {
 	): Promise<{ path: string }> {
 		return api("/api/move", {
 			method: "POST",
-			body: JSON.stringify({ path, nextParentPath }),
+			// server expects `parentPath` (not nextParentPath)
+			body: JSON.stringify({ path, parentPath: nextParentPath }),
 		});
 	}
 
