@@ -1,6 +1,6 @@
 import { useRouterState } from "@tanstack/react-router";
 import { CloudAlert, CloudCheck, CloudOff, CloudSync } from "lucide-react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { ExportQueue } from "@/components/export-queue";
 import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
 import {
@@ -409,7 +409,11 @@ function AppMenu() {
 	);
 }
 
-function WindowControls({ closeButtonOnly }: { closeButtonOnly: boolean }) {
+const WindowControls = memo(function WindowControls({
+	closeButtonOnly,
+}: {
+	closeButtonOnly: boolean;
+}) {
 	return (
 		<div className="app-region-no-drag ml-auto flex h-full items-stretch justify-end">
 			<ExportQueue />
@@ -436,7 +440,7 @@ function WindowControls({ closeButtonOnly }: { closeButtonOnly: boolean }) {
 			/>
 		</div>
 	);
-}
+});
 
 function SyncIndicator() {
 	const [status, setStatus] = useState<SyncStatus | null>(null);
@@ -544,7 +548,7 @@ function friendlySyncError(error: string) {
 	return "Google Drive sync failed. Try syncing again.";
 }
 
-function WindowControl({
+const WindowControl = memo(function WindowControl({
 	action,
 	icon,
 	label,
@@ -581,4 +585,4 @@ function WindowControl({
 			/>
 		</button>
 	);
-}
+});

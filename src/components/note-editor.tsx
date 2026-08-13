@@ -204,6 +204,7 @@ type NoteEditorProps = {
 	content: NoteContent;
 	noteTitle: string;
 	notePath: string | null;
+	isActive?: boolean;
 	pageFormat?: PageFormat;
 	/** Optional override (e.g. popout always editable). When set, local toggle is ignored. */
 	readOnly?: boolean;
@@ -395,6 +396,7 @@ const blockStyleOptions = [
 export function NoteEditor({
 	content,
 	notePath,
+	isActive = true,
 	noteTitle,
 	pageFormat = defaultPageFormat,
 	readOnly: readOnlyProp,
@@ -484,13 +486,18 @@ export function NoteEditor({
 	onChangeRef.current = onChange;
 	readOnlyRef.current = readOnly;
 
-	useEffect(() => {
+	const resizeTitleInput = useCallback(() => {
 		const textarea = titleInputRef.current;
 		if (textarea) {
 			textarea.style.height = "auto";
 			textarea.style.height = `${textarea.scrollHeight}px`;
 		}
 	}, []);
+
+	useEffect(() => {
+		if (!isActive) return;
+		requestAnimationFrame(resizeTitleInput);
+	}, [isActive, resizeTitleInput]);
 
 	const baseExtensions = useMemo(() => createBaseExtensions(), []);
 

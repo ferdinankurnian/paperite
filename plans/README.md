@@ -21,6 +21,7 @@
 | 013 | [Optimize it 100x — Obsidian-level speed](./013-optimize-100x.md) | TODO | P0 |
 | 014 | [Notion-style drag handle](./014-notion-style-drag-handle.md) | TODO | P2 |
 | 015 | [Split Index — per-component re-render](./015-split-index-per-component-rerender.md) | DONE | P0 |
+| 016 | [Refactor Index state boundaries](./016-refactor-index-state-boundaries.md) | TODO | P0 |
 
 > Note (2026-07-28): the three `001-*` plans were marked TODO/missing from
 > this table despite being fully implemented in the codebase — verified by
