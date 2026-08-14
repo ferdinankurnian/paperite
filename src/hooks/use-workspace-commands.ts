@@ -11,7 +11,6 @@ import {
 	movePath,
 	omitCustomItemOrders,
 	omitDecoration,
-	parentPath,
 	stripNoteExtension,
 	topLevelPath,
 	unique,
@@ -30,7 +29,7 @@ type Options = {
 	setNotePreviews: React.Dispatch<React.SetStateAction<Record<string, string>>>;
 	setNoteTitleDrafts: React.Dispatch<React.SetStateAction<Record<string, string>>>;
 	setPageFormats: React.Dispatch<React.SetStateAction<Record<string, PageFormat>>>;
-	setNewlyCreatedFolderPath: React.Dispatch<React.SetStateAction<string | null>>;
+	setNewlyCreatedFolderPath: (path: string | null) => void;
 	openNote: (item: WorkspaceNote, mode: "preview" | "fixed") => void;
 };
 

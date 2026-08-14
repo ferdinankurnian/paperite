@@ -5,7 +5,6 @@ import {
 	useEffect,
 	useMemo,
 	useRef,
-	useState,
 	type ReactNode,
 } from "react";
 import { ActiveNotePane } from "@/components/active-note-pane";
@@ -25,7 +24,7 @@ import { useWorkspaceCommands } from "@/hooks/use-workspace-commands";
 import { useActiveNoteActions } from "@/hooks/use-active-note-actions";
 import { useNotePrefetch } from "@/hooks/use-note-prefetch";
 import { useMenuEvents } from "@/hooks/use-menu-events";
-import type { PageFormat } from "@/components/note-editor";
+
 
 import { SidebarHotkeys } from "@/components/sidebar-hotkeys";
 import { clerk, loadClerk } from "@/lib/clerk";
@@ -36,23 +35,11 @@ import { getNotesEngine } from "@/lib/notes-engine";
 import {
 	collectNotePaths,
 	normalizeAppState,
-	normalizePageFormat,
 	reconcileAppState,
 } from "@/lib/app-state-reconcile";
 import {
-	fileName,
-	isSameOrChildPath,
-	moveCustomItemOrders,
-	moveDecorations,
-	movePath,
-	omitCustomItemOrders,
-	omitDecoration,
 	omitExact,
-	parentPath,
 	resolveSpacePath,
-	stripNoteExtension,
-	topLevelPath,
-	unique,
 } from "@/lib/workspace-paths";
 import { updateWorkspaceNote } from "@/lib/workspace-tree";
 import {
