@@ -3,6 +3,7 @@ import {
 	getSchema,
 	type Editor as TiptapEditor,
 } from "@tiptap/core";
+import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import Collaboration from "@tiptap/extension-collaboration";
 import Color from "@tiptap/extension-color";
 import Highlight from "@tiptap/extension-highlight";
@@ -15,10 +16,16 @@ import { TextStyle } from "@tiptap/extension-text-style";
 import Underline from "@tiptap/extension-underline";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
-import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
+import {
+	EditorContent,
+	ReactNodeViewRenderer,
+	useEditor,
+	useEditorState,
+} from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
 import { prosemirrorJSONToYDoc } from "@tiptap/y-tiptap";
+import { common, createLowlight } from "lowlight";
 import {
 	AlignCenterIcon,
 	AlignJustifyIcon,
@@ -81,6 +88,7 @@ import {
 	ContextMenuShortcut,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import { CodeBlockView } from "@/components/code-block-view";
 import { normalizeNoteContent, serializeNoteContent } from "@/lib/note-content";
 import { cn } from "@/lib/utils";
 
@@ -307,9 +315,22 @@ const defaultPageFormat: PageFormat = {
 
 const collaborationField = "prosemirror";
 
+const lowlight = createLowlight(common);
+
 function createBaseExtensions() {
 	return [
-		StarterKit.configure({ underline: false, undoRedo: false }),
+		StarterKit.configure({
+			underline: false,
+			undoRedo: false,
+			codeBlock: false,
+		}),
+		CodeBlockLowlight.extend({
+			addNodeView() {
+				return ReactNodeViewRenderer(CodeBlockView);
+			},
+		}).configure({
+			lowlight,
+		}),
 		Underline,
 		TextStyle.configure({
 			mergeNestedSpanStyles: true,
