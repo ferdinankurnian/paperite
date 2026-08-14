@@ -6,7 +6,7 @@
   },
   "description": "A note-taking app",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "main": "main.js",
   "desktopName": "dev.iydheko.paperite",
   "build": {

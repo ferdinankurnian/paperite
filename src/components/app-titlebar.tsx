@@ -3,6 +3,7 @@ import { CloudAlert, CloudCheck, CloudOff, CloudSync } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { ExportQueue } from "@/components/export-queue";
 import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
+import { useTheme } from "@/components/theme-provider";
 import {
 	HoverCard,
 	HoverCardContent,
@@ -21,9 +22,10 @@ import {
 	MenubarSubTrigger,
 	MenubarTrigger,
 } from "@/components/ui/menubar";
-import { useTheme } from "@/components/theme-provider";
 import type { CommandId } from "@/lib/commands";
 import { formatShortcut } from "@/lib/shortcuts";
+import { useAppStore } from "@/lib/stores/app-store";
+import { useEditorUiStore } from "@/lib/stores/editor-ui-store";
 import { getSyncEngine, onSyncChanged } from "@/lib/sync-engine";
 import { cn } from "@/lib/utils";
 
@@ -56,37 +58,20 @@ type EditorFormatCommand =
 	| "align-justify";
 
 export function AppTitlebar() {
-	const [title, setTitle] = useState(() => document.title || fallbackTitle);
-	const [zenMode, setZenMode] = useState(false);
-	const [closeButtonOnly, setCloseButtonOnly] = useState(false);
+	const zenMode = useEditorUiStore((s) => s.zenMode);
 	const location = useRouterState({ select: (s) => s.location });
 	const isLoginPage = location.pathname === "/login";
 	const isMacOS = window.electron?.platform.isMacOS ?? false;
 
 	useEffect(() => {
-		const syncTitle = () => setTitle(document.title || fallbackTitle);
-		const observer = new MutationObserver(syncTitle);
-		const titleElement = document.querySelector("title");
-
-		if (titleElement) {
-			observer.observe(titleElement, { childList: true });
-		}
-
 		const toggleZenMode = (event: CustomEvent<{ enabled?: boolean }>) => {
 			if (event.detail?.enabled !== undefined) {
-				setZenMode(event.detail.enabled);
+				useEditorUiStore.getState().setZenMode(event.detail.enabled);
 			} else {
-				setZenMode((current) => !current);
+				useEditorUiStore.getState().setZenMode((current) => !current);
 			}
 		};
 
-		const handleControlsChange = (
-			event: CustomEvent<{ closeButtonOnly: boolean }>,
-		) => {
-			setCloseButtonOnly(event.detail.closeButtonOnly);
-		};
-
-		window.addEventListener("paperite:title-change", syncTitle);
 		const removeAppMenuActionListener = window.electron?.onAppMenuAction(
 			(action: string) => {
 				window.dispatchEvent(new Event(`paperite:${action}`));
@@ -105,23 +90,13 @@ export function AppTitlebar() {
 			"paperite:toggle-zen-mode",
 			toggleZenMode as EventListener,
 		);
-		window.addEventListener(
-			"paperite:window-controls-change",
-			handleControlsChange as EventListener,
-		);
 
 		return () => {
-			observer.disconnect();
 			removeAppMenuActionListener?.();
 			removeAppMenuFormatListener?.();
-			window.removeEventListener("paperite:title-change", syncTitle);
 			window.removeEventListener(
 				"paperite:toggle-zen-mode",
 				toggleZenMode as EventListener,
-			);
-			window.removeEventListener(
-				"paperite:window-controls-change",
-				handleControlsChange as EventListener,
 			);
 		};
 	}, []);
@@ -135,20 +110,40 @@ export function AppTitlebar() {
 			)}
 		>
 			{isLoginPage || isMacOS ? <div /> : <AppMenu />}
-			<div className="pointer-events-none min-w-0 px-4 text-center text-[13px] font-medium text-muted-foreground">
-				<span className="block max-w-[48vw] truncate">{title}</span>
-			</div>
+			<WindowTitle />
 			{isMacOS ? (
 				<div className="app-region-no-drag ml-auto flex h-full items-stretch justify-end">
 					<ExportQueue />
 					<SyncIndicator />
 				</div>
 			) : (
-				<WindowControls closeButtonOnly={closeButtonOnly} />
+				<WindowControls />
 			)}
 		</header>
 	);
 }
+
+const WindowTitle = memo(function WindowTitle() {
+	const [title, setTitle] = useState(() => document.title || fallbackTitle);
+
+	useEffect(() => {
+		const syncTitle = () => setTitle(document.title || fallbackTitle);
+		const observer = new MutationObserver(syncTitle);
+		const titleElement = document.querySelector("title");
+		if (titleElement) observer.observe(titleElement, { childList: true });
+		window.addEventListener("paperite:title-change", syncTitle);
+		return () => {
+			observer.disconnect();
+			window.removeEventListener("paperite:title-change", syncTitle);
+		};
+	}, []);
+
+	return (
+		<div className="pointer-events-none min-w-0 px-4 text-center text-[13px] font-medium text-muted-foreground">
+			<span className="block max-w-[48vw] truncate">{title}</span>
+		</div>
+	);
+});
 
 function AppMenu() {
 	const [activeSpacePath, setActiveSpacePath] = useState("Inbox");
@@ -409,11 +404,8 @@ function AppMenu() {
 	);
 }
 
-const WindowControls = memo(function WindowControls({
-	closeButtonOnly,
-}: {
-	closeButtonOnly: boolean;
-}) {
+const WindowControls = memo(function WindowControls() {
+	const closeButtonOnly = useAppStore((state) => state.closeButtonOnly);
 	return (
 		<div className="app-region-no-drag ml-auto flex h-full items-stretch justify-end">
 			<ExportQueue />
