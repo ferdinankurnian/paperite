@@ -51,8 +51,10 @@ export function NavUser({
 	user,
 	showNotePreview,
 	closeButtonOnly,
+	syncSidebarWithActiveTab,
 	onSetShowNotePreview,
 	onSetCloseButtonOnly,
+	onSetSyncSidebarWithActiveTab,
 }: {
 	onLogOut: () => void | Promise<void>;
 	user: {
@@ -61,8 +63,10 @@ export function NavUser({
 	};
 	showNotePreview: boolean;
 	closeButtonOnly: boolean;
+	syncSidebarWithActiveTab: boolean;
 	onSetShowNotePreview: (show: boolean) => void;
 	onSetCloseButtonOnly: (closeButtonOnly: boolean) => void;
+	onSetSyncSidebarWithActiveTab: (sync: boolean) => void;
 }) {
 	const { isMobile } = useSidebar();
 	const { theme, setTheme } = useTheme();
@@ -172,6 +176,8 @@ export function NavUser({
 				onSetShowNotePreview={onSetShowNotePreview}
 				closeButtonOnly={closeButtonOnly}
 				onSetCloseButtonOnly={onSetCloseButtonOnly}
+				syncSidebarWithActiveTab={syncSidebarWithActiveTab}
+				onSetSyncSidebarWithActiveTab={onSetSyncSidebarWithActiveTab}
 				onRequestLogOut={() => setIsLogoutDialogOpen(true)}
 				betaEnabled={betaEnabled}
 			/>

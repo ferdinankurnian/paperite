@@ -6,6 +6,7 @@ import {
 	LogOutIcon,
 	MoonIcon,
 	PaletteIcon,
+	PanelLeftIcon,
 	SunIcon,
 	UserRoundIcon,
 } from "lucide-react";
@@ -43,6 +44,8 @@ export function SettingsDialog({
 	onSetShowNotePreview,
 	closeButtonOnly,
 	onSetCloseButtonOnly,
+	syncSidebarWithActiveTab,
+	onSetSyncSidebarWithActiveTab,
 	onRequestLogOut,
 	betaEnabled,
 }: {
@@ -55,6 +58,8 @@ export function SettingsDialog({
 	onSetShowNotePreview: (show: boolean) => void;
 	closeButtonOnly: boolean;
 	onSetCloseButtonOnly: (closeButtonOnly: boolean) => void;
+	syncSidebarWithActiveTab: boolean;
+	onSetSyncSidebarWithActiveTab: (sync: boolean) => void;
 	onRequestLogOut: () => void;
 	betaEnabled: boolean;
 }) {
@@ -244,6 +249,28 @@ export function SettingsDialog({
 										</div>
 									</div>
 								</section>
+								<section className="mt-4 rounded-xl bg-muted/45 p-4">
+									<div className="flex items-center justify-between gap-4">
+										<div className="flex items-center gap-2">
+											<PanelLeftIcon className="size-4 text-muted-foreground" />
+											<div>
+												<h3 className="text-sm font-medium">
+													Follow active tab
+												</h3>
+												<p className="text-xs text-muted-foreground">
+													Switch the sidebar to match the space of the active
+													tab.
+												</p>
+											</div>
+										</div>
+										<Switch
+											checked={syncSidebarWithActiveTab}
+											onCheckedChange={(checked) =>
+												onSetSyncSidebarWithActiveTab(checked)
+											}
+										/>
+									</div>
+								</section>
 							</>
 						)}
 						{activeTab === "note" && (
@@ -298,7 +325,7 @@ export function SettingsDialog({
 												</p>
 											</div>
 											<Tabs
-												value={defaultPageFormat.paragraphSpacing}
+								value={defaultPageFormat.paragraphSpacing}
 												onValueChange={(value) =>
 													setDefaultPageFormat({
 														paragraphSpacing:
@@ -307,29 +334,43 @@ export function SettingsDialog({
 												}
 											>
 												<TabsList className="grid h-9 w-48 grid-cols-2">
-													<TabsTrigger value="default" className="h-full">
-														Default
+													<TabsTrigger value="none" className="h-full">
+														None
 													</TabsTrigger>
-													<TabsTrigger value="compact" className="h-full">
-														Compact
+												<TabsTrigger value="spacious" className="h-full">
+													Spacious
 													</TabsTrigger>
 												</TabsList>
 											</Tabs>
 										</div>
-										<div className="flex items-center justify-between gap-4">
-											<div>
-												<p className="text-sm font-medium">First-line indent</p>
-												<p className="text-xs text-muted-foreground">
-													Indent the first line of each paragraph.
-												</p>
-											</div>
-											<Switch
-												checked={defaultPageFormat.firstLineIndent}
-												onCheckedChange={(checked) =>
-													setDefaultPageFormat({ firstLineIndent: checked })
-												}
-											/>
-										</div>
+						<div className="flex items-center justify-between gap-4">
+							<div>
+								<p className="text-sm font-medium">Indentation</p>
+								<p className="text-xs text-muted-foreground">
+									Control how paragraph lines are indented.
+								</p>
+							</div>
+							<Tabs
+								value={defaultPageFormat.indentation}
+								onValueChange={(value) =>
+									setDefaultPageFormat({
+										indentation: value as PageFormat["indentation"],
+									})
+								}
+							>
+								<TabsList className="grid h-9 w-52 grid-cols-3">
+									<TabsTrigger value="none" className="h-full px-2 text-xs">
+										None
+									</TabsTrigger>
+									<TabsTrigger value="first-line" className="h-full px-2 text-xs">
+										First line
+									</TabsTrigger>
+									<TabsTrigger value="hanging" className="h-full px-2 text-xs">
+										Hanging
+									</TabsTrigger>
+								</TabsList>
+							</Tabs>
+						</div>
 									</div>
 								</section>
 							</>

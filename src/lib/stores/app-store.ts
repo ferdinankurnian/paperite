@@ -23,10 +23,11 @@ export const defaultAppState: PaperiteAppState = {
 	inboxViewMode: "list",
 	showNotePreview: true,
 	closeButtonOnly: false,
+	syncSidebarWithActiveTab: true,
 	defaultPageFormat: {
-		firstLineIndent: false,
+		indentation: "none",
 		lineHeight: "normal",
-		paragraphSpacing: "default",
+		paragraphSpacing: "none",
 	},
 };
 
@@ -43,6 +44,7 @@ type AppStore = PaperiteAppState & {
 	setInboxViewMode: (mode: "list" | "grid") => void;
 	setShowNotePreview: (show: boolean) => void;
 	setCloseButtonOnly: (only: boolean) => void;
+	setSyncSidebarWithActiveTab: (sync: boolean) => void;
 	setDefaultPageFormat: (format: PageFormat | Partial<PageFormat>) => void;
 	setSpacePreviewMode: (spacePath: string, mode: SpacePreviewMode) => void;
 	setSpaceSortOrder: (spacePath: string, order: SidebarSortOrder) => void;
@@ -66,6 +68,7 @@ function pickState(s: AppStore): PaperiteAppState {
 		inboxViewMode: s.inboxViewMode,
 		showNotePreview: s.showNotePreview,
 		closeButtonOnly: s.closeButtonOnly,
+		syncSidebarWithActiveTab: s.syncSidebarWithActiveTab,
 		defaultPageFormat: s.defaultPageFormat,
 	};
 }
@@ -76,7 +79,9 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	replace: (next) => set({ ...next }),
 
 	update: (fn) => {
-		const next = fn(pickState(get()));
+		const current = pickState(get());
+		const next = fn(current);
+		if (next === current) return;
 		set({ ...next });
 	},
 
@@ -89,6 +94,8 @@ export const useAppStore = create<AppStore>((set, get) => ({
 	setInboxViewMode: (mode) => set({ inboxViewMode: mode }),
 	setShowNotePreview: (show) => set({ showNotePreview: show }),
 	setCloseButtonOnly: (only) => set({ closeButtonOnly: only }),
+	setSyncSidebarWithActiveTab: (sync) =>
+		set({ syncSidebarWithActiveTab: sync }),
 	setDefaultPageFormat: (format) =>
 		set((s) => ({
 			defaultPageFormat: { ...s.defaultPageFormat, ...format },

@@ -24,7 +24,7 @@ import {
 } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
-import { prosemirrorJSONToYDoc } from "@tiptap/y-tiptap";
+import { prosemirrorJSONToYDoc, yXmlFragmentToProsemirrorJSON } from "@tiptap/y-tiptap";
 import { common, createLowlight } from "lowlight";
 import {
 	AlignCenterIcon,
@@ -83,13 +83,14 @@ import {
 import {
 	ContextMenu,
 	ContextMenuContent,
+	ContextMenuGroup,
 	ContextMenuItem,
 	ContextMenuSeparator,
 	ContextMenuShortcut,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { CodeBlockView } from "@/components/code-block-view";
-import { normalizeNoteContent, serializeNoteContent } from "@/lib/note-content";
+import { normalizeNoteContent, noteContentText, serializeNoteContent } from "@/lib/note-content";
 import { cn } from "@/lib/utils";
 
 /** Per-mounted-editor view/edit controllers. Not persisted — lives with the tab instance. */
@@ -308,12 +309,15 @@ const emojiItems = [
 ] satisfies EmojiItem[];
 
 const defaultPageFormat: PageFormat = {
-	firstLineIndent: false,
+	indentation: "none",
 	lineHeight: "normal",
-	paragraphSpacing: "default",
+	paragraphSpacing: "none",
 };
 
 const collaborationField = "prosemirror";
+
+/** Transaction origin for saved-content reconciliation (persisted like user edits). */
+const yNoteReconcileOrigin = "paperite:y-note-reconcile";
 
 const lowlight = createLowlight(common);
 
@@ -522,13 +526,42 @@ export function NoteEditor({
 
 	const baseExtensions = useMemo(() => createBaseExtensions(), []);
 
+	// The persisted note file is the source of truth. The collaboration
+	// fragment can hold stale content (snapshot rewritten from disk, lost
+	// merge, crash) and the old "seed only when empty" rule let that stale
+	// fragment shadow newer saved content — the "Saved but gone" data loss.
+	// Rebuild the fragment from the saved content whenever they diverge;
+	// skipped once the user interacts so live edits are never clobbered by
+	// async content resolution.
 	useMemo(() => {
 		if (!yDoc) return;
-		if (yDoc.getXmlFragment(collaborationField).length > 0) return;
+		if (hasUserInteractedRef.current) return;
 
+		const fragment = yDoc.getXmlFragment(collaborationField);
 		const schema = getSchema(baseExtensions);
+
+		let fragmentMatches = false;
+		try {
+			const fragmentJson = yXmlFragmentToProsemirrorJSON(
+				fragment,
+			) as NoteContent;
+			fragmentMatches =
+				noteContentText(fragmentJson) === noteContentText(resolvedContent);
+		} catch {
+			fragmentMatches = false;
+		}
+
+		if (fragmentMatches) return;
+
 		const importedDoc = prosemirrorJSONToYDoc(schema, resolvedContent);
-		Y.applyUpdate(yDoc, Y.encodeStateAsUpdate(importedDoc));
+		yDoc.transact(() => {
+			if (fragment.length > 0) fragment.delete(0, fragment.length);
+		}, yNoteReconcileOrigin);
+		Y.applyUpdate(
+			yDoc,
+			Y.encodeStateAsUpdate(importedDoc),
+			yNoteReconcileOrigin,
+		);
 	}, [baseExtensions, resolvedContent, yDoc]);
 
 	const extensions = useMemo(
@@ -714,6 +747,13 @@ export function NoteEditor({
 		(event: MouseEvent<HTMLDivElement>) => {
 			if (!editor) return;
 			if (event.target !== event.currentTarget) return;
+			// The canvas padding sits outside ProseMirror, so a drag-select
+			// released there lands here as a plain click. focus("end") would
+			// collapse it — keep the selection and just restore focus.
+			if (!editor.state.selection.empty) {
+				editor.commands.focus();
+				return;
+			}
 			editor.commands.focus("end");
 		},
 		[editor],
@@ -798,9 +838,12 @@ export function NoteEditor({
 									"paperite-tiptap flex min-h-0 flex-1 select-text px-8 pb-44 md:px-14 lg:px-20",
 									pageFormat.lineHeight === "1.5" &&
 										"paperite-tiptap-leading-compact",
-									pageFormat.paragraphSpacing === "compact" &&
-										"paperite-tiptap-spacing-compact",
-									pageFormat.firstLineIndent && "paperite-tiptap-indent",
+									pageFormat.paragraphSpacing === "none" &&
+										"paperite-tiptap-spacing-none",
+									pageFormat.indentation === "first-line" &&
+										"paperite-tiptap-indent-first-line",
+									pageFormat.indentation === "hanging" &&
+										"paperite-tiptap-indent-hanging",
 								)}
 								onClick={readOnly ? undefined : focusEditorCanvas}
 								onKeyDown={
@@ -811,52 +854,44 @@ export function NoteEditor({
 							</div>
 						</ContextMenuTrigger>
 						<ContextMenuContent className="w-52">
-							<ContextMenuItem
-								disabled={readOnly}
-								onSelect={() => editor?.chain().focus().toggleBold().run()}
-							>
-								Bold
-								<ContextMenuShortcut>⌘B</ContextMenuShortcut>
-							</ContextMenuItem>
-							<ContextMenuItem
-								disabled={readOnly}
-								onSelect={() => editor?.chain().focus().toggleItalic().run()}
-							>
-								Italic
-								<ContextMenuShortcut>⌘I</ContextMenuShortcut>
-							</ContextMenuItem>
-							<ContextMenuItem
-								disabled={readOnly}
-								onSelect={() => editor?.chain().focus().toggleUnderline().run()}
-							>
-								Underline
-								<ContextMenuShortcut>⌘U</ContextMenuShortcut>
-							</ContextMenuItem>
-							<ContextMenuItem
-								disabled={readOnly}
-								onSelect={() => editor?.chain().focus().toggleStrike().run()}
-							>
-								Strikethrough
-							</ContextMenuItem>
-							<ContextMenuSeparator />
-							<ContextMenuItem
-								disabled={readOnly}
-								onSelect={() => editor?.chain().focus().toggleHighlight().run()}
-							>
-								Highlight
-							</ContextMenuItem>
-							<ContextMenuItem
-								disabled={readOnly}
-								onSelect={() => editor?.chain().focus().toggleBlockquote().run()}
-							>
-								Quote
-							</ContextMenuItem>
-							<ContextMenuItem
-								disabled={readOnly}
-								onSelect={() => editor?.chain().focus().toggleCodeBlock().run()}
-							>
-								Code block
-							</ContextMenuItem>
+							<ContextMenuGroup className="grid grid-cols-4 gap-0.5">
+								<ContextMenuFormatItem
+									editor={editor}
+									readOnly={readOnly}
+									label="Bold"
+									title="Bold (⌘B)"
+									mark="bold"
+									icon={BoldIcon}
+									command={(instance) => instance.chain().focus().toggleBold().run()}
+								/>
+								<ContextMenuFormatItem
+									editor={editor}
+									readOnly={readOnly}
+									label="Italic"
+									title="Italic (⌘I)"
+									mark="italic"
+									icon={ItalicIcon}
+									command={(instance) => instance.chain().focus().toggleItalic().run()}
+								/>
+								<ContextMenuFormatItem
+									editor={editor}
+									readOnly={readOnly}
+									label="Underline"
+									title="Underline (⌘U)"
+									mark="underline"
+									icon={UnderlineIcon}
+									command={(instance) => instance.chain().focus().toggleUnderline().run()}
+								/>
+								<ContextMenuFormatItem
+									editor={editor}
+									readOnly={readOnly}
+									label="Strikethrough"
+									title="Strikethrough (⌘⇧X)"
+									mark="strike"
+									icon={StrikethroughIcon}
+									command={(instance) => instance.chain().focus().toggleStrike().run()}
+								/>
+							</ContextMenuGroup>
 							<ContextMenuSeparator />
 							<ContextMenuItem
 								disabled={readOnly}
@@ -887,12 +922,32 @@ export function NoteEditor({
 								Paste
 								<ContextMenuShortcut>⌘V</ContextMenuShortcut>
 							</ContextMenuItem>
-							<ContextMenuSeparator />
 							<ContextMenuItem
-								onSelect={() => editor?.chain().focus().selectAll().run()}
+								onSelect={() => {
+								editor?.chain().focus().selectAll().run();
+							}}
 							>
 								Select all
 								<ContextMenuShortcut>⌘A</ContextMenuShortcut>
+							</ContextMenuItem>
+							<ContextMenuSeparator />
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleHighlight().run()}
+							>
+								Highlight
+							</ContextMenuItem>
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleBlockquote().run()}
+							>
+								Quote
+							</ContextMenuItem>
+							<ContextMenuItem
+								disabled={readOnly}
+								onSelect={() => editor?.chain().focus().toggleCodeBlock().run()}
+							>
+								Code block
 							</ContextMenuItem>
 						</ContextMenuContent>
 					</ContextMenu>
@@ -906,6 +961,42 @@ export function NoteEditor({
 				<LinkHoverCard hover={linkHover} onClose={() => setLinkHover(null)} />
 			) : null}
 		</div>
+	);
+}
+
+function ContextMenuFormatItem({
+		editor,
+		readOnly,
+		label,
+		title,
+		mark,
+		icon: Icon,
+		command,
+}: {
+	editor: TiptapEditor;
+	readOnly: boolean;
+	label: string;
+	title: string;
+	mark: "bold" | "italic" | "underline" | "strike";
+	icon: ComponentType<{ className?: string }>;
+	command: (editor: TiptapEditor) => boolean;
+}) {
+	const active = useEditorState({
+		editor,
+		selector: ({ editor: instance }) => instance.isActive(mark),
+	}) ?? false;
+
+	return (
+		<ContextMenuItem
+			disabled={readOnly}
+			aria-label={label}
+			title={title}
+			data-active={active}
+			className="justify-center px-2 py-1.5 data-[active=true]:bg-primary data-[active=true]:text-primary-foreground data-[active=true]:ring-1 data-[active=true]:ring-primary/50 data-[active=true]:focus:bg-primary"
+			onSelect={() => command(editor)}
+		>
+			<Icon className="size-4" />
+		</ContextMenuItem>
 	);
 }
 

@@ -85,7 +85,9 @@ export function useNoteCommands(options: Options) {
 				return {
 					...current,
 					activeNotePath: note.path,
-					activeSpacePath: topLevelPath(note.path),
+					activeSpacePath: current.syncSidebarWithActiveTab
+						? topLevelPath(note.path)
+						: current.activeSpacePath,
 					openTabs,
 				};
 			});

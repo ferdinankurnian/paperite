@@ -10,6 +10,7 @@ import {
 	PointerSensor,
 	pointerWithin,
 	rectIntersection,
+	useDndContext,
 	useDraggable,
 	useDroppable,
 	useSensor,
@@ -38,7 +39,6 @@ import {
 	GemIcon,
 	HeartIcon,
 	InboxIcon,
-	InfoIcon,
 	LayoutDashboardIcon,
 	LightbulbIcon,
 	ListIcon,
@@ -47,10 +47,12 @@ import {
 	PinIcon,
 	RotateCcwIcon,
 	SearchIcon,
+	Settings2Icon,
 	SparklesIcon,
 	StarIcon,
 	StickyNotePlusIcon,
 	Trash2Icon,
+	UserPlusIcon,
 	UsersIcon,
 	ZapIcon,
 } from "lucide-react";
@@ -69,6 +71,12 @@ import {
 	AlertDialogHeader,
 	AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+	Avatar,
+	AvatarFallback,
+	AvatarGroup,
+	AvatarImage,
+} from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
 	ContextMenu,
@@ -80,6 +88,13 @@ import {
 	ContextMenuSubTrigger,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import {
 	DropdownMenu,
 	DropdownMenuCheckboxItem,
@@ -101,11 +116,19 @@ import {
 	EmptyMedia,
 	EmptyTitle,
 } from "@/components/ui/empty";
+import { Input } from "@/components/ui/input";
 import {
 	InputGroup,
 	InputGroupAddon,
 	InputGroupInput,
 } from "@/components/ui/input-group";
+import {
+	Select,
+	SelectContent,
+	SelectItem,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import {
 	Sidebar,
 	SidebarContent,
@@ -117,6 +140,7 @@ import {
 	SidebarTrigger,
 	useSidebar,
 } from "@/components/ui/sidebar";
+import { Switch } from "@/components/ui/switch";
 import { clerk } from "@/lib/clerk";
 import { getNotesEngine } from "@/lib/notes-engine";
 import type { NoteSearchResult } from "@/lib/storage/types";
@@ -244,8 +268,10 @@ type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	spacePreviewModes?: Record<string, SpacePreviewMode>;
 	showNotePreview?: boolean;
 	closeButtonOnly?: boolean;
+	syncSidebarWithActiveTab?: boolean;
 	onSetShowNotePreview?: (show: boolean) => void;
 	onSetCloseButtonOnly?: (closeButtonOnly: boolean) => void;
+	onSetSyncSidebarWithActiveTab?: (sync: boolean) => void;
 	onSetSpacePreviewMode?: (spacePath: string, mode: SpacePreviewMode) => void;
 	activeSpacePath?: string;
 	expandedFolders?: string[];
@@ -409,8 +435,8 @@ function sortWorkspaceItems(
 	};
 
 	if (sortOrder === "custom") {
-		return foldersFirst(
-			pinFirst(
+		return pinFirst(
+			foldersFirst(
 				orderItemsByCustomOrder(
 					withSortedChildren,
 					customItemOrders[parentPath],
@@ -429,7 +455,7 @@ function sortWorkspaceItems(
 
 			return sortOrder === "a-z" ? comparison : -comparison;
 		});
-		return foldersFirst(pinFirst(sorted));
+		return pinFirst(foldersFirst(sorted));
 	}
 
 	const sortedNotes = withSortedChildren
@@ -444,7 +470,7 @@ function sortWorkspaceItems(
 	const dateSorted = withSortedChildren.map((item) =>
 		item.type === "note" ? sortedNotes[noteIndex++] : item,
 	);
-	return foldersFirst(pinFirst(dateSorted));
+	return pinFirst(foldersFirst(dateSorted));
 }
 
 function orderItemsByCustomOrder(
@@ -692,10 +718,18 @@ function NoteTree({
 		return (
 			<div
 				ref={setListRef}
-				className="flex min-h-8 flex-col gap-1.5 rounded-md data-[over=true]:bg-sidebar-accent/50"
+				className="relative flex min-h-8 flex-col gap-1.5 rounded-md"
 				data-over={isOver}
 			>
 				{items.map((item) => renderItem(item))}
+				{/* Always mounted — opacity only, avoids remount churn while dragging */}
+				<div
+					aria-hidden
+					className={cn(
+						"pointer-events-none absolute inset-x-1 bottom-0 z-10 h-0.5 translate-y-1/2 rounded-full bg-foreground transition-opacity duration-75",
+						isOver ? "opacity-100" : "opacity-0",
+					)}
+				/>
 			</div>
 		);
 	}
@@ -703,7 +737,7 @@ function NoteTree({
 	return (
 		<div
 			ref={setListRef}
-			className="relative min-h-8 rounded-md data-[over=true]:bg-sidebar-accent/50"
+			className="relative min-h-8 rounded-md"
 			data-over={isOver}
 			style={{ height: virtualizer.getTotalSize() }}
 		>
@@ -724,6 +758,13 @@ function NoteTree({
 					</div>
 				);
 			})}
+			<div
+				aria-hidden
+				className={cn(
+					"pointer-events-none absolute inset-x-1 bottom-0 z-10 h-0.5 translate-y-1/2 rounded-full bg-foreground transition-opacity duration-75",
+					isOver ? "opacity-100" : "opacity-0",
+				)}
+			/>
 		</div>
 	);
 }
@@ -936,11 +977,13 @@ function NoteGridCard({
 						onClick={() => onOpenNote(note, "preview")}
 						onDoubleClick={() => onOpenNote(note, "fixed")}
 					>
-						<div className="line-clamp-3 text-sm font-semibold leading-tight">
+						<div className="flex items-start justify-between gap-2 text-sm font-semibold leading-tight">
+							<span className="min-w-0 line-clamp-3">
+								{highlightSearchText(displayTitle, searchQuery)}
+							</span>
 							{note.pinned ? (
-								<PinIcon className="mr-1 inline size-3.5 shrink-0 text-muted-foreground" />
+								<PinIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
 							) : null}
-							{highlightSearchText(displayTitle, searchQuery)}
 						</div>
 						{showPreview && note.preview ? (
 							<p className="mt-1 text-xs leading-snug text-muted-foreground line-clamp-4">
@@ -976,6 +1019,10 @@ function NoteGridCard({
 						</>
 					) : (
 						<>
+							<ContextMenuItem onSelect={() => void toggleNotePinned(note)}>
+								<PinIcon />
+								{note.pinned ? "Unpin note" : "Pin note"}
+							</ContextMenuItem>
 							<MoveToSpaceMenu
 								spaces={spaces}
 								spaceIcons={spaceIcons}
@@ -983,10 +1030,6 @@ function NoteGridCard({
 								notePath={note.path}
 								onMove={(spacePath) => onMoveItem(note.path, spacePath)}
 							/>
-							<ContextMenuItem onSelect={() => void toggleNotePinned(note)}>
-								<PinIcon />
-								{note.pinned ? "Unpin note" : "Pin note"}
-							</ContextMenuItem>
 							<ContextMenuSeparator />
 							<ContextMenuItem
 								variant="destructive"
@@ -1442,7 +1485,6 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 }) {
 	const isActive = useAppStore((s) => s.activeNotePath === item.path);
 	const [deleteOpen, setDeleteOpen] = React.useState(false);
-	const [infoOpen, setInfoOpen] = React.useState(false);
 	const {
 		attributes,
 		isDragging,
@@ -1474,6 +1516,98 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 		(titleDraft !== undefined ? titleDraft : item.title).trim() || "Untitled";
 	const displayPreview = previewOverlay ?? item.preview;
 
+	// Shell owns useDraggable/useDroppable (must re-render on isOver/isDragging).
+	// Keep ContextMenu in a memo child so those updates don't rebuild the menu tree.
+	return (
+		<>
+			<div className="relative">
+				{/* Always mounted — toggle via opacity so isOver doesn't mount/unmount */}
+				<div
+					aria-hidden
+					className={cn(
+						"pointer-events-none absolute inset-x-1 top-0 z-10 h-0.5 -translate-y-1/2 rounded-full bg-foreground transition-opacity duration-75",
+						isOver && canDragItems ? "opacity-100" : "opacity-0",
+					)}
+				/>
+				<MemoNoteCardBody
+					attributes={canDragItems ? attributes : undefined}
+					canDragItems={canDragItems}
+					displayPreview={displayPreview}
+					displayTitle={displayTitle}
+					isActive={isActive}
+					isDragging={isDragging}
+					isTrash={isTrash}
+					item={item}
+					listeners={canDragItems ? listeners : undefined}
+					onDeleteItem={onDeleteItem}
+					onMoveItem={onMoveItem}
+					onOpenNote={onOpenNote}
+					onPermanentDeleteItem={onPermanentDeleteItem}
+					onPrefetchNote={onPrefetchNote}
+					onRestoreItem={onRestoreItem}
+					searchQuery={searchQuery}
+					setNodeRef={setNodeRef}
+					showPreview={showPreview}
+					spaceColors={spaceColors}
+					spaceIcons={spaceIcons}
+					spaces={spaces}
+					deleteOpen={deleteOpen}
+					setDeleteOpen={setDeleteOpen}
+				/>
+			</div>
+		</>
+	);
+});
+
+const MemoNoteCardBody = React.memo(function NoteCardBody({
+	attributes,
+	canDragItems,
+	deleteOpen,
+	displayPreview,
+	displayTitle,
+	isActive,
+	isDragging,
+	isTrash,
+	item,
+	listeners,
+	onDeleteItem,
+	onMoveItem,
+	onOpenNote,
+	onPermanentDeleteItem,
+	onPrefetchNote,
+	onRestoreItem,
+	searchQuery,
+	setDeleteOpen,
+	setNodeRef,
+	showPreview,
+	spaceColors,
+	spaceIcons,
+	spaces,
+}: {
+	attributes?: ReturnType<typeof useDraggable>["attributes"];
+	canDragItems: boolean;
+	deleteOpen: boolean;
+	displayPreview: string;
+	displayTitle: string;
+	isActive: boolean;
+	isDragging: boolean;
+	isTrash?: boolean;
+	item: WorkspaceNote;
+	listeners?: ReturnType<typeof useDraggable>["listeners"];
+	onDeleteItem: (path: string) => void;
+	onMoveItem: (itemPath: string, nextParentPath: string) => void;
+	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
+	onPermanentDeleteItem?: (notePath: string) => void;
+	onPrefetchNote?: (path: string) => void;
+	onRestoreItem?: (notePath: string) => void;
+	searchQuery: string;
+	setDeleteOpen: React.Dispatch<React.SetStateAction<boolean>>;
+	setNodeRef: (node: HTMLButtonElement | null) => void;
+	showPreview: boolean;
+	spaceColors: Record<string, string>;
+	spaceIcons: Record<string, string>;
+	spaces: WorkspaceSpace[];
+}) {
 	return (
 		<>
 			<ContextMenu>
@@ -1482,27 +1616,24 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 						ref={setNodeRef}
 						type="button"
 						className={cn(
-							"flex w-full flex-col items-start gap-1.5 rounded-md border border-transparent px-3 py-2.5 text-left text-sm leading-tight whitespace-nowrap outline-none transition-all duration-150 hover:border-border/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0 active:scale-[0.98] data-[active=true]:border-border/50 data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0 data-[over=true]:bg-sidebar-accent",
+							"flex w-full flex-col items-start gap-1.5 rounded-md border border-transparent px-3 py-2.5 text-left text-sm leading-tight whitespace-nowrap outline-none hover:border-border/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0 active:scale-[0.98] data-[active=true]:border-border/50 data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0",
 							canDragItems && "touch-none",
 						)}
 						data-active={isActive}
 						data-dragging={isDragging}
-						data-over={isOver}
-						{...(canDragItems ? attributes : {})}
-						{...(canDragItems ? listeners : {})}
+						{...(attributes ?? {})}
+						{...(listeners ?? {})}
 						onPointerEnter={() => onPrefetchNote?.(item.path)}
 						onClick={() => onOpenNote(item, "preview")}
 						onDoubleClick={() => onOpenNote(item, "fixed")}
 					>
-						<div className="flex w-full items-center gap-2">
+						<div className="flex w-full items-start justify-between gap-2">
 							<span className="min-w-0 flex-1 truncate font-medium">
-								<>
-									{item.pinned ? (
-										<PinIcon className="mr-1 inline size-3.5 shrink-0 text-muted-foreground" />
-									) : null}
-									{highlightSearchText(displayTitle, searchQuery)}
-								</>
+								{highlightSearchText(displayTitle, searchQuery)}
 							</span>
+							{item.pinned ? (
+								<PinIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+							) : null}
 						</div>
 						{showPreview && displayPreview ? (
 							<span className="line-clamp-2 w-full text-xs whitespace-break-spaces text-sidebar-foreground/65">
@@ -1538,11 +1669,10 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 						</>
 					) : (
 						<>
-							<ContextMenuItem onSelect={() => setInfoOpen(true)}>
-								<InfoIcon />
-								Note Info
+							<ContextMenuItem onSelect={() => void toggleNotePinned(item)}>
+								<PinIcon />
+								{item.pinned ? "Unpin note" : "Pin note"}
 							</ContextMenuItem>
-							<ContextMenuSeparator />
 							<MoveToSpaceMenu
 								spaces={spaces}
 								spaceIcons={spaceIcons}
@@ -1550,10 +1680,6 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 								notePath={item.path}
 								onMove={(spacePath) => onMoveItem(item.path, spacePath)}
 							/>
-							<ContextMenuItem onSelect={() => void toggleNotePinned(item)}>
-								<PinIcon />
-								{item.pinned ? "Unpin note" : "Pin note"}
-							</ContextMenuItem>
 							<ContextMenuSeparator />
 							<ContextMenuItem
 								variant="destructive"
@@ -1566,23 +1692,6 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 					)}
 				</ContextMenuContent>
 			</ContextMenu>
-			<AlertDialog open={infoOpen} onOpenChange={setInfoOpen}>
-				<AlertDialogContent>
-					<AlertDialogHeader>
-						<AlertDialogTitle>Note Info</AlertDialogTitle>
-						<AlertDialogDescription className="break-all text-left">
-							Title: {item.title}
-							<br />
-							Path: {item.path}
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter>
-						<AlertDialogAction onClick={() => setInfoOpen(false)}>
-							OK
-						</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
 			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
 				<AlertDialogContent>
 					<AlertDialogHeader>
@@ -1607,15 +1716,41 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 			</AlertDialog>
 		</>
 	);
+}, function noteCardBodyPropsAreEqual(prev, next) {
+	// isOver lives on the shell — body must not re-render when only the drop
+	// indicator toggles. attributes/listeners refs may churn from dnd-kit.
+	return (
+		prev.isDragging === next.isDragging &&
+		prev.isActive === next.isActive &&
+		prev.item === next.item &&
+		prev.canDragItems === next.canDragItems &&
+		prev.displayTitle === next.displayTitle &&
+		prev.displayPreview === next.displayPreview &&
+		prev.searchQuery === next.searchQuery &&
+		prev.showPreview === next.showPreview &&
+		prev.isTrash === next.isTrash &&
+		prev.deleteOpen === next.deleteOpen &&
+		prev.spaces === next.spaces &&
+		prev.spaceIcons === next.spaceIcons &&
+		prev.spaceColors === next.spaceColors &&
+		prev.setNodeRef === next.setNodeRef &&
+		prev.onDeleteItem === next.onDeleteItem &&
+		prev.onMoveItem === next.onMoveItem &&
+		prev.onOpenNote === next.onOpenNote &&
+		prev.onPrefetchNote === next.onPrefetchNote &&
+		prev.onRestoreItem === next.onRestoreItem &&
+		prev.onPermanentDeleteItem === next.onPermanentDeleteItem
+	);
 });
 
 function SpaceDropHeader({
 	spaces,
 	spaceColors,
 	spaceIcons,
+	user,
 	onCreateFolder,
 	onCreateNote,
-	onDeleteSpace,
+	onEditSpace,
 	spacePreviewModes,
 	showNotePreview,
 	onSetSpacePreviewMode,
@@ -1628,9 +1763,15 @@ function SpaceDropHeader({
 	spaces: WorkspaceSpace[];
 	spaceColors: Record<string, string>;
 	spaceIcons: Record<string, string>;
+	user: { name: string; avatar: string };
 	onCreateFolder: (parentPath: string) => void;
 	onCreateNote: (parentPath: string) => void;
-	onDeleteSpace: (path: string) => void;
+	onEditSpace: (
+		path: string,
+		title: string,
+		color: string,
+		icon: string,
+	) => void;
 	spacePreviewModes: Record<string, SpacePreviewMode>;
 	showNotePreview: boolean;
 	onSetSpacePreviewMode: (spacePath: string, mode: SpacePreviewMode) => void;
@@ -1666,6 +1807,20 @@ function SpaceDropHeader({
 	});
 	const isInbox = activeSpacePath === "Inbox";
 	const spacePreviewMode = spacePreviewModes[activeSpacePath] ?? "global";
+	const [settingsOpen, setSettingsOpen] = React.useState(false);
+	const [inviteOpen, setInviteOpen] = React.useState(false);
+	const [membersOpen, setMembersOpen] = React.useState(false);
+	const memberInitials = user.name
+		.split(" ")
+		.filter(Boolean)
+		.map((part) => part[0])
+		.join("")
+		.slice(0, 2)
+		.toUpperCase();
+	const [settingsTitle, setSettingsTitle] = React.useState(spaceTitle);
+	React.useEffect(() => {
+		setSettingsTitle(spaceTitle);
+	}, [spaceTitle]);
 
 	return (
 		<div
@@ -1700,61 +1855,12 @@ function SpaceDropHeader({
 							<ChevronDownIcon className="size-3.5 shrink-0 text-sidebar-foreground/60" />
 						</button>
 					</DropdownMenuTrigger>
-					<DropdownMenuContent align="start" className="w-56">
+					<DropdownMenuContent
+						align="start"
+						className={cn("w-56", !isInbox && "w-64 p-1.5")}
+					>
 						{isInbox ? (
 							<>
-								<DropdownMenuSub>
-									<DropdownMenuSubTrigger>
-										<ListIcon className="text-muted-foreground" />
-										<span>View Mode</span>
-									</DropdownMenuSubTrigger>
-									<DropdownMenuSubContent>
-										<DropdownMenuRadioGroup
-											value={viewMode}
-											onValueChange={(v) =>
-												onViewModeChange(v as "list" | "grid")
-											}
-										>
-											<DropdownMenuRadioItem value="list">
-												<ListIcon className="text-muted-foreground" />
-												<span>List</span>
-											</DropdownMenuRadioItem>
-											<DropdownMenuRadioItem value="grid">
-												<LayoutDashboardIcon className="text-muted-foreground" />
-												<span>Card</span>
-											</DropdownMenuRadioItem>
-										</DropdownMenuRadioGroup>
-									</DropdownMenuSubContent>
-								</DropdownMenuSub>
-								<DropdownMenuSub>
-									<DropdownMenuSubTrigger>
-										<FileTextIcon className="text-muted-foreground" />
-										<span>Note previews</span>
-									</DropdownMenuSubTrigger>
-									<DropdownMenuSubContent>
-										<DropdownMenuRadioGroup
-											value={spacePreviewMode}
-											onValueChange={(v) =>
-												onSetSpacePreviewMode(
-													activeSpacePath,
-													v as SpacePreviewMode,
-												)
-											}
-										>
-											<DropdownMenuRadioItem value="global">
-												<span>
-													Follow global ({showNotePreview ? "on" : "off"})
-												</span>
-											</DropdownMenuRadioItem>
-											<DropdownMenuRadioItem value="show">
-												<span>Always show</span>
-											</DropdownMenuRadioItem>
-											<DropdownMenuRadioItem value="hide">
-												<span>Always hide</span>
-											</DropdownMenuRadioItem>
-										</DropdownMenuRadioGroup>
-									</DropdownMenuSubContent>
-								</DropdownMenuSub>
 								<DropdownMenuSub>
 									<DropdownMenuSubTrigger>
 										<ArrowUpDownIcon className="text-muted-foreground" />
@@ -1791,48 +1897,30 @@ function SpaceDropHeader({
 										</DropdownMenuCheckboxItem>
 									</DropdownMenuSubContent>
 								</DropdownMenuSub>
-							</>
-						) : (
-							<>
 								<DropdownMenuSub>
 									<DropdownMenuSubTrigger>
-										<ArrowUpDownIcon className="text-muted-foreground" />
-										<span>Sort by</span>
+										<ListIcon className="text-muted-foreground" />
+										<span>View Mode</span>
 									</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent>
 										<DropdownMenuRadioGroup
-											value={sortOrder}
+											value={viewMode}
 											onValueChange={(v) =>
-												onSortOrderChange(v as SidebarSortOrder)
+												onViewModeChange(v as "list" | "grid")
 											}
 										>
-											<DropdownMenuRadioItem value="newest">
-												<span>Newest</span>
+											<DropdownMenuRadioItem value="list">
+												<ListIcon className="text-muted-foreground" />
+												<span>List</span>
 											</DropdownMenuRadioItem>
-											<DropdownMenuRadioItem value="oldest">
-												<span>Oldest</span>
-											</DropdownMenuRadioItem>
-											<DropdownMenuRadioItem value="a-z">
-												<span>A to Z</span>
-											</DropdownMenuRadioItem>
-											<DropdownMenuRadioItem value="z-a">
-												<span>Z to A</span>
-											</DropdownMenuRadioItem>
-											<DropdownMenuRadioItem value="custom">
-												<span>Custom</span>
+											<DropdownMenuRadioItem value="grid">
+												<LayoutDashboardIcon className="text-muted-foreground" />
+												<span>Card</span>
 											</DropdownMenuRadioItem>
 										</DropdownMenuRadioGroup>
-										<DropdownMenuSeparator />
-										<DropdownMenuCheckboxItem
-											checked={folderFirst}
-											onCheckedChange={(checked) =>
-												onFolderFirstChange(checked === true)
-											}
-										>
-											<span>Folder first</span>
-										</DropdownMenuCheckboxItem>
 									</DropdownMenuSubContent>
 								</DropdownMenuSub>
+								<DropdownMenuSeparator />
 								<DropdownMenuSub>
 									<DropdownMenuSubTrigger>
 										<FileTextIcon className="text-muted-foreground" />
@@ -1862,32 +1950,205 @@ function SpaceDropHeader({
 										</DropdownMenuRadioGroup>
 									</DropdownMenuSubContent>
 								</DropdownMenuSub>
-								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									onSelect={() => {
-										window.dispatchEvent(
-											new CustomEvent("paperite:open-edit-space", {
-												detail: activeSpacePath,
-											}),
-										);
-									}}
-								>
-									<PencilIcon className="text-muted-foreground" />
-									<span>Edit Space</span>
+							</>
+						) : (
+							<>
+								<div className="-mx-1 -mt-1 mb-1 border-b border-border/70 p-2">
+									<div className="flex items-end gap-3">
+										<SpaceIcon
+											className="size-10 shrink-0"
+											color={spaceColor}
+											icon={spaceIcon}
+											path={activeSpacePath}
+										/>
+										<div className="min-w-0">
+											<div className="truncate text-md font-semibold">{spaceTitle}</div>
+											<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
+												<AvatarGroup className="-space-x-1">
+													<Avatar className="size-5">
+														<AvatarImage src={user.avatar} alt={user.name} />
+														<AvatarFallback className="text-[9px] ring-0">{memberInitials || "P"}</AvatarFallback>
+													</Avatar>
+													<Avatar className="size-5">
+														<AvatarImage src={user.avatar} alt={user.name} />
+														<AvatarFallback className="text-[9px]">{memberInitials || "P"}</AvatarFallback>
+													</Avatar>
+												</AvatarGroup>
+												<span>1 member</span>
+											</div>
+										</div>
+									</div>
+								</div>
+								<DropdownMenuItem onSelect={() => setInviteOpen(true)}>
+									<UserPlusIcon className="text-muted-foreground" />
+									<span>Invite to space</span>
+								</DropdownMenuItem>
+								<DropdownMenuItem onSelect={() => setMembersOpen(true)}>
+									<UsersIcon className="text-muted-foreground" />
+									<span>Manage members</span>
 								</DropdownMenuItem>
 								<DropdownMenuSeparator />
-								<DropdownMenuItem
-									variant="destructive"
-									onSelect={() => onDeleteSpace(activeSpacePath)}
-								>
-									<Trash2Icon />
-									<span>Delete Space</span>
+								<DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+									<Settings2Icon className="text-muted-foreground" />
+									<span>Space settings</span>
 								</DropdownMenuItem>
 							</>
 						)}
 					</DropdownMenuContent>
 				</DropdownMenu>
 			)}
+			<Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+				<DialogContent className="sm:max-w-md">
+					<DialogHeader>
+						<DialogTitle>Space settings</DialogTitle>
+						<DialogDescription>
+							Control how this shared space looks and behaves for you.
+						</DialogDescription>
+					</DialogHeader>
+					<div className="space-y-5">
+						<div className="flex items-center gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
+							<SpaceIcon
+								className="size-8 shrink-0"
+								color={spaceColor}
+								icon={spaceIcon}
+								path={activeSpacePath}
+							/>
+							<div className="min-w-0 flex-1">
+								<div className="text-xs text-muted-foreground">Space name</div>
+								<Input
+									value={settingsTitle}
+									onChange={(event) => setSettingsTitle(event.target.value)}
+									className="mt-1 h-8 bg-transparent px-2 font-medium"
+								/>
+							</div>
+							<Button
+								type="button"
+								size="sm"
+								disabled={!settingsTitle.trim()}
+								onClick={() => {
+									onEditSpace(
+										activeSpacePath,
+										settingsTitle.trim(),
+										spaceColor ?? "#64748b",
+										spaceIcon ?? "cloud",
+									);
+								}}
+							>
+								Save
+							</Button>
+						</div>
+						<div className="space-y-3">
+							<div>
+								<div className="text-sm font-medium">Notes</div>
+								<div className="text-xs text-muted-foreground">
+									These preferences are kept in the space settings.
+								</div>
+							</div>
+							<div className="grid gap-2">
+								<label className="text-xs text-muted-foreground" htmlFor="space-sort-order">
+									Sort by
+								</label>
+								<Select
+									value={sortOrder}
+									onValueChange={(value) =>
+										onSortOrderChange(value as SidebarSortOrder)
+									}
+								>
+									<SelectTrigger id="space-sort-order" className="w-full">
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="newest">Newest</SelectItem>
+										<SelectItem value="oldest">Oldest</SelectItem>
+										<SelectItem value="a-z">A to Z</SelectItem>
+										<SelectItem value="z-a">Z to A</SelectItem>
+										<SelectItem value="custom">Custom</SelectItem>
+									</SelectContent>
+								</Select>
+							</div>
+							<div className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2.5">
+								<div>
+									<div className="text-sm">Folder first</div>
+									<div className="text-xs text-muted-foreground">
+										Keep folders above notes.
+									</div>
+								</div>
+								<Switch
+									checked={folderFirst}
+									onCheckedChange={onFolderFirstChange}
+								/>
+							</div>
+							<div className="grid gap-2">
+								<label className="text-xs text-muted-foreground" htmlFor="space-note-previews">
+									Note previews
+								</label>
+								<Select
+									value={spacePreviewMode}
+									onValueChange={(value) =>
+										onSetSpacePreviewMode(
+											activeSpacePath,
+											value as SpacePreviewMode,
+										)
+									}
+								>
+									<SelectTrigger id="space-note-previews" className="w-full">
+										<SelectValue />
+									</SelectTrigger>
+									<SelectContent>
+										<SelectItem value="global">
+											Follow global ({showNotePreview ? "on" : "off"})
+										</SelectItem>
+										<SelectItem value="show">Always show</SelectItem>
+										<SelectItem value="hide">Always hide</SelectItem>
+									</SelectContent>
+								</Select>
+							</div>
+						</div>
+					</div>
+				</DialogContent>
+			</Dialog>
+			<Dialog open={inviteOpen} onOpenChange={setInviteOpen}>
+				<DialogContent className="sm:max-w-sm">
+					<DialogHeader>
+						<DialogTitle>Invite to {spaceTitle}</DialogTitle>
+						<DialogDescription>
+							Invite people to collaborate in this space.
+						</DialogDescription>
+					</DialogHeader>
+					<div className="space-y-3">
+						<Input placeholder="name@example.com" type="email" disabled />
+						<Button type="button" className="w-full" disabled>
+							Invite member
+						</Button>
+						<p className="text-center text-xs text-muted-foreground">
+							Member invitations will be available when space sharing is connected.
+						</p>
+					</div>
+				</DialogContent>
+			</Dialog>
+			<Dialog open={membersOpen} onOpenChange={setMembersOpen}>
+				<DialogContent className="sm:max-w-sm">
+					<DialogHeader>
+						<DialogTitle>Manage members</DialogTitle>
+						<DialogDescription>
+							People who can access {spaceTitle}.
+						</DialogDescription>
+					</DialogHeader>
+					<div className="flex items-center gap-3 rounded-lg border border-border/70 p-3">
+						<Avatar>
+							<AvatarImage src={user.avatar} alt={user.name} />
+							<AvatarFallback>{memberInitials || "P"}</AvatarFallback>
+						</Avatar>
+						<div className="min-w-0 flex-1">
+							<div className="truncate text-sm font-medium">{user.name}</div>
+							<div className="text-xs text-muted-foreground">Owner</div>
+						</div>
+					</div>
+					<p className="text-xs text-muted-foreground">
+						You are the only member of this local space right now.
+					</p>
+				</DialogContent>
+			</Dialog>
 			<div className="flex items-center gap-1">
 				{isTrash ? (
 					<button
@@ -1945,6 +2206,17 @@ function DragItemPreview({ item }: { item: DragPreviewItem }) {
 	);
 }
 
+/** Isolated so drag-active changes don't re-render the whole sidebar tree. */
+function SidebarDragOverlay() {
+	const { active } = useDndContext();
+	const data = active?.data.current as DragPreviewItem | undefined;
+	return (
+		<DragOverlay dropAnimation={null}>
+			{data?.title ? <DragItemPreview item={data} /> : null}
+		</DragOverlay>
+	);
+}
+
 function AppSidebarImpl({
 	activeSpacePath: activeSpacePathProp,
 	expandedFolders: expandedFoldersProp,
@@ -1966,8 +2238,10 @@ function AppSidebarImpl({
 	spacePreviewModes: spacePreviewModesProp,
 	showNotePreview: showNotePreviewProp,
 	closeButtonOnly: closeButtonOnlyProp,
+	syncSidebarWithActiveTab: syncSidebarWithActiveTabProp,
 	onSetShowNotePreview: onSetShowNotePreviewProp,
 	onSetCloseButtonOnly: onSetCloseButtonOnlyProp,
+	onSetSyncSidebarWithActiveTab: onSetSyncSidebarWithActiveTabProp,
 	onSetSpacePreviewMode: onSetSpacePreviewModeProp,
 	spaces: spacesProp,
 	viewMode: viewModeProp,
@@ -2016,6 +2290,7 @@ function AppSidebarImpl({
 			spacePreviewModes: st.spacePreviewModes,
 			showNotePreview: st.showNotePreview,
 			closeButtonOnly: st.closeButtonOnly,
+			syncSidebarWithActiveTab: st.syncSidebarWithActiveTab,
 			customItemOrders: st.customItemOrders,
 			inboxViewMode: st.inboxViewMode,
 			spaceSortOrders: st.spaceSortOrders,
@@ -2048,6 +2323,8 @@ function AppSidebarImpl({
 		storeUi.showNotePreview ?? showNotePreviewProp ?? true;
 	const closeButtonOnly =
 		storeUi.closeButtonOnly ?? closeButtonOnlyProp ?? false;
+	const syncSidebarWithActiveTab =
+		storeUi.syncSidebarWithActiveTab ?? syncSidebarWithActiveTabProp ?? true;
 	const customItemOrders =
 		storeUi.customItemOrders ?? customItemOrdersProp ?? {};
 	const viewMode = storeUi.inboxViewMode ?? viewModeProp ?? "list";
@@ -2059,6 +2336,10 @@ function AppSidebarImpl({
 	const onSetCloseButtonOnly =
 		onSetCloseButtonOnlyProp ??
 		((value: boolean) => useAppStore.getState().setCloseButtonOnly(value));
+	const onSetSyncSidebarWithActiveTab =
+		onSetSyncSidebarWithActiveTabProp ??
+		((value: boolean) =>
+			useAppStore.getState().setSyncSidebarWithActiveTab(value));
 	const onSetSpacePreviewMode =
 		onSetSpacePreviewModeProp ??
 		((spacePath: string, mode: SpacePreviewMode) =>
@@ -2117,14 +2398,15 @@ function AppSidebarImpl({
 
 	const [notesSheetOpen, setNotesSheetOpen] = React.useState(false);
 	const [tabletLayout, setTabletLayout] = React.useState(false);
-	const [dragPreviewItem, setDragPreviewItem] =
-		React.useState<DragPreviewItem | null>(null);
 	// Hover-open while dragging: hold over a space → switch to its note list;
 	// hold over a collapsed folder → expand it so you can drop inside.
+	// Drag preview lives in SidebarDragOverlay (useDndContext) so setState here
+	// never re-renders the note/folder tree on drag start.
 	const hoverOpenTimerRef = React.useRef<number | null>(null);
 	const hoverOpenTargetRef = React.useRef<string | null>(null);
 	const dragPointerRef = React.useRef<{ x: number; y: number } | null>(null);
 	const isNoteDragRef = React.useRef(false);
+	const isDraggingRef = React.useRef(false);
 	const clearHoverOpen = React.useCallback(() => {
 		if (hoverOpenTimerRef.current !== null) {
 			window.clearTimeout(hoverOpenTimerRef.current);
@@ -2208,6 +2490,8 @@ function AppSidebarImpl({
 				sortOrder: string;
 				folderFirst: boolean;
 				customOrder: unknown;
+				// Full map so nested folder custom orders invalidate the cache.
+				customItemOrders: unknown;
 				items: WorkspaceItem[];
 			}
 		>(),
@@ -2241,7 +2525,8 @@ function AppSidebarImpl({
 				cached.searchQuery === debouncedSearchQuery &&
 				cached.sortOrder === effectiveSort &&
 				cached.folderFirst === pathFolderFirst &&
-				cached.customOrder === customOrder
+				cached.customOrder === customOrder &&
+				cached.customItemOrders === customItemOrders
 			) {
 				map.set(path, { space, items: cached.items });
 				continue;
@@ -2259,6 +2544,7 @@ function AppSidebarImpl({
 				sortOrder: effectiveSort,
 				folderFirst: pathFolderFirst,
 				customOrder,
+				customItemOrders,
 				items,
 			});
 			map.set(path, { space, items });
@@ -2421,9 +2707,8 @@ function AppSidebarImpl({
 	);
 
 	const startDraggingItem = ({ active, activatorEvent }: DragStartEvent) => {
-		const data = active.data.current as DragPreviewItem | undefined;
-		setDragPreviewItem(data?.title ? data : null);
 		const itemPath = String(active.id);
+		isDraggingRef.current = true;
 		isNoteDragRef.current = !spaces.some((space) => space.path === itemPath);
 		if (activatorEvent && "clientX" in activatorEvent) {
 			const ev = activatorEvent as PointerEvent | MouseEvent;
@@ -2432,8 +2717,8 @@ function AppSidebarImpl({
 	};
 
 	React.useEffect(() => {
-		if (!dragPreviewItem) return;
 		const onMove = (event: PointerEvent) => {
+			if (!isDraggingRef.current) return;
 			dragPointerRef.current = { x: event.clientX, y: event.clientY };
 			if (!isNoteDragRef.current) return;
 			const spacePath = spacePathUnderPointer(event.clientX, event.clientY);
@@ -2455,13 +2740,7 @@ function AppSidebarImpl({
 		};
 		window.addEventListener("pointermove", onMove);
 		return () => window.removeEventListener("pointermove", onMove);
-	}, [
-		dragPreviewItem,
-		spaces,
-		spacePathUnderPointer,
-		scheduleHoverOpen,
-		clearHoverOpen,
-	]);
+	}, [spaces, spacePathUnderPointer, scheduleHoverOpen, clearHoverOpen]);
 
 	const handleDragOver = ({ active, over }: DragOverEvent) => {
 		const itemPath = String(active.id);
@@ -2542,11 +2821,11 @@ function AppSidebarImpl({
 
 	const moveDroppedItem = ({ active, over }: DragEndEvent) => {
 		clearHoverOpen();
-		setDragPreviewItem(null);
 		const itemPath = String(active.id);
 		const pointer = dragPointerRef.current;
 		dragPointerRef.current = null;
 		isNoteDragRef.current = false;
+		isDraggingRef.current = false;
 
 		// Resolve over id; fall back to space under pointer if dnd-kit missed it.
 		let overId = over ? String(over.id) : null;
@@ -2667,9 +2946,9 @@ function AppSidebarImpl({
 			onDragEnd={moveDroppedItem}
 			onDragCancel={() => {
 				clearHoverOpen();
-				setDragPreviewItem(null);
 				dragPointerRef.current = null;
 				isNoteDragRef.current = false;
+				isDraggingRef.current = false;
 			}}
 		>
 			<Sidebar
@@ -2723,8 +3002,10 @@ function AppSidebarImpl({
 						user={user}
 						showNotePreview={showNotePreview}
 						closeButtonOnly={closeButtonOnly}
+						syncSidebarWithActiveTab={syncSidebarWithActiveTab}
 						onSetShowNotePreview={onSetShowNotePreview}
 						onSetCloseButtonOnly={onSetCloseButtonOnly}
+						onSetSyncSidebarWithActiveTab={onSetSyncSidebarWithActiveTab}
 					/>
 				</SidebarFooter>
 				<SidebarRail />
@@ -2749,11 +3030,12 @@ function AppSidebarImpl({
 									spaces={spaces}
 									spaceColors={spaceColors}
 									spaceIcons={spaceIcons}
+									user={user}
 									spacePreviewModes={spacePreviewModes}
 									showNotePreview={showNotePreview}
 									onCreateFolder={onCreateFolder}
 									onCreateNote={onCreateNote}
-									onDeleteSpace={onDeleteSpace}
+									onEditSpace={onEditSpace}
 									onSetSpacePreviewMode={onSetSpacePreviewMode}
 									viewMode={viewMode}
 									onViewModeChange={onViewModeChange}
@@ -2938,9 +3220,7 @@ function AppSidebarImpl({
 					</ExpandedFoldersContext.Provider>
 				</SearchExpandPathsContext.Provider>
 			</SearchQueryContext.Provider>
-			<DragOverlay dropAnimation={null}>
-				{dragPreviewItem ? <DragItemPreview item={dragPreviewItem} /> : null}
-			</DragOverlay>
+			<SidebarDragOverlay />
 		</DndContext>
 	);
 }

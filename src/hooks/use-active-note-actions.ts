@@ -29,9 +29,9 @@ import {
 } from "@/lib/workspace-paths";
 
 const FALLBACK_PAGE_FORMAT: PageFormat = {
-	firstLineIndent: false,
+	indentation: "none",
 	lineHeight: "normal",
-	paragraphSpacing: "default",
+	paragraphSpacing: "none",
 };
 
 type Ref<T> = { current: T };
@@ -236,16 +236,19 @@ export function useActiveNoteActions(options: Options) {
 			}
 
 			if (isUserEdit) {
-				current.setAppState((state) => {
-					const tab = state.openTabs.find((t) => t.path === sourceNotePath);
-					if (!tab?.preview) return state;
-					return {
+				const tab = useAppStore
+					.getState()
+					.openTabs.find((item) => item.path === sourceNotePath);
+				if (tab?.preview) {
+					current.setAppState((state) => ({
 						...state,
-						openTabs: state.openTabs.map((t) =>
-							t.path === sourceNotePath ? { ...t, preview: false } : t,
+						openTabs: state.openTabs.map((item) =>
+							item.path === sourceNotePath
+								? { ...item, preview: false }
+								: item,
 						),
-					};
-				});
+					}));
+				}
 			} else {
 				storeBumpContentEpoch();
 			}
@@ -279,7 +282,9 @@ export function useActiveNoteActions(options: Options) {
 			return {
 				...state,
 				activeNotePath: notePath,
-				activeSpacePath: topLevelPath(notePath),
+				activeSpacePath: state.syncSidebarWithActiveTab
+					? topLevelPath(notePath)
+					: state.activeSpacePath,
 			};
 		});
 	}, []);

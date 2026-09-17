@@ -34,6 +34,7 @@ import {
 import {
 	type ChangeEvent,
 	type DragEvent,
+	memo,
 	useCallback,
 	useEffect,
 	useRef,
@@ -552,7 +553,13 @@ function SpaceIconPicker({
 	);
 }
 
-function SortableSpaceItem({
+/**
+ * Space rail items share the sidebar DndContext so notes can be dropped onto
+ * spaces. useSortable/useDroppable will re-render this wrapper on any drag in
+ * that context — keep the wrapper cheap and pass memoized children so ContextMenu
+ * / HoverCard trees don't re-render when only transform/isOver change.
+ */
+const SortableSpaceItem = memo(function SortableSpaceItem({
 	children,
 	id,
 }: {
@@ -571,10 +578,13 @@ function SortableSpaceItem({
 		id: spaceDropTargetId(id),
 		data: { type: "space", path: id },
 	});
-	const setNodeRef = (node: HTMLDivElement | null) => {
-		setSortableRef(node);
-		setDroppableRef(node);
-	};
+	const setNodeRef = useCallback(
+		(node: HTMLDivElement | null) => {
+			setSortableRef(node);
+			setDroppableRef(node);
+		},
+		[setSortableRef, setDroppableRef],
+	);
 
 	return (
 		<div
@@ -593,7 +603,7 @@ function SortableSpaceItem({
 			{children}
 		</div>
 	);
-}
+});
 
 function SpaceDropMenuItem({
 	isActive,

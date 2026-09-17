@@ -250,7 +250,7 @@
 		margin: 0 0 0.85rem;
 	}
 
-	.paperite-tiptap-spacing-compact .paperite-prosemirror p {
+	.paperite-tiptap-spacing-none .paperite-prosemirror p {
 		margin-bottom: 0;
 	}
 
@@ -258,12 +258,18 @@
 		line-height: 1.5;
 	}
 
-	.paperite-tiptap-indent .paperite-prosemirror p {
+	.paperite-tiptap-indent-first-line .paperite-prosemirror p {
 		text-indent: 2rem;
 	}
 
-	.paperite-tiptap-indent .paperite-prosemirror li p {
+	.paperite-tiptap-indent-first-line .paperite-prosemirror li p,
+	.paperite-tiptap-indent-hanging .paperite-prosemirror li p {
 		text-indent: 0;
+	}
+
+	.paperite-tiptap-indent-hanging .paperite-prosemirror p {
+		padding-left: 2rem;
+		text-indent: -2rem;
 	}
 
 	.paperite-tiptap .paperite-prosemirror h1 {

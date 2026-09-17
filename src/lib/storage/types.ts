@@ -73,9 +73,11 @@ export type SidebarSortOrder = "newest" | "oldest" | "a-z" | "z-a" | "custom";
 export type SpacePreviewMode = "global" | "show" | "hide";
 
 export type PageFormat = {
-	firstLineIndent: boolean;
+	indentation: "none" | "first-line" | "hanging";
+	/** Legacy persisted flag; normalized into indentation on load. */
+	firstLineIndent?: boolean;
 	lineHeight: "normal" | "1.5";
-	paragraphSpacing: "default" | "compact";
+	paragraphSpacing: "none" | "spacious";
 };
 
 export type PaperiteAppState = {
@@ -94,6 +96,7 @@ export type PaperiteAppState = {
 	inboxViewMode: "list" | "grid";
 	showNotePreview: boolean;
 	closeButtonOnly: boolean;
+	syncSidebarWithActiveTab: boolean;
 	defaultPageFormat: PageFormat;
 };
 

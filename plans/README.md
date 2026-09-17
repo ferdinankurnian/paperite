@@ -22,7 +22,7 @@
 | 014 | [Notion-style drag handle](./014-notion-style-drag-handle.md) | TODO | P2 |
 | 015 | [Split Index — per-component re-render](./015-split-index-per-component-rerender.md) | DONE | P0 |
 | 016 | [Paperite+ Model](./016-paperite-plus-model.md) | LOCKED | P0 |
-| 017 | [Refactor Index state boundaries](./017-refactor-index-state-boundaries.md) | TODO | P0 |
+| 017 | [Refactor Index state boundaries](./017-refactor-index-state-boundaries.md) | IN PROGRESS | P0 |
 
 > Note (2026-07-28): the three `001-*` plans were marked TODO/missing from
 > this table despite being fully implemented in the codebase — verified by

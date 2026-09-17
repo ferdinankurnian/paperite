@@ -12,10 +12,15 @@ export function normalizePageFormat(
 	format: PageFormat | Partial<PageFormat> | undefined | null,
 ): PageFormat {
 	return {
-		firstLineIndent: format?.firstLineIndent === true,
+		indentation:
+			format?.indentation === "first-line" || format?.firstLineIndent === true
+				? "first-line"
+				: format?.indentation === "hanging"
+					? "hanging"
+					: "none",
 		lineHeight: format?.lineHeight === "1.5" ? "1.5" : "normal",
 		paragraphSpacing:
-			format?.paragraphSpacing === "compact" ? "compact" : "default",
+			format?.paragraphSpacing === "spacious" ? "spacious" : "none",
 	};
 }
 
@@ -43,6 +48,7 @@ export function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		inboxViewMode: state.inboxViewMode === "grid" ? "grid" : "list",
 		showNotePreview: state.showNotePreview !== false,
 		closeButtonOnly: state.closeButtonOnly === true,
+		syncSidebarWithActiveTab: state.syncSidebarWithActiveTab !== false,
 		defaultPageFormat: normalizePageFormat(state.defaultPageFormat),
 	};
 }
@@ -92,6 +98,7 @@ export function reconcileAppState(
 		inboxViewMode: state.inboxViewMode,
 		showNotePreview: state.showNotePreview,
 		closeButtonOnly: state.closeButtonOnly,
+		syncSidebarWithActiveTab: state.syncSidebarWithActiveTab,
 		defaultPageFormat: state.defaultPageFormat,
 	};
 }

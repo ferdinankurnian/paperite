@@ -24,9 +24,9 @@ const MemoNoteEditor = memo(
 );
 
 const FALLBACK_PAGE_FORMAT: PageFormat = {
-	firstLineIndent: false,
+	indentation: "none",
 	lineHeight: "normal",
-	paragraphSpacing: "default",
+	paragraphSpacing: "none",
 };
 
 type ActiveNotePaneProps = {
@@ -59,7 +59,13 @@ function ActiveNotePaneInner({
 	onRename,
 	onTitleChange,
 }: ActiveNotePaneProps) {
-	const openTabs = useAppStore((s) => s.openTabs);
+	// The editor stack only depends on tab path/title. Preview and pinned
+	// metadata belong to TabBar and must not wake the whole pane while typing.
+	const openTabsRenderKey = useAppStore((s) =>
+		s.openTabs.map((tab) => `${tab.path}\u0000${tab.title}`).join("\u0001"),
+	);
+	const openTabs = useAppStore.getState().openTabs;
+	void openTabsRenderKey;
 	const activeNotePath = useAppStore((s) => s.activeNotePath);
 	const defaultPageFormat =
 		useAppStore((s) => s.defaultPageFormat) ?? FALLBACK_PAGE_FORMAT;

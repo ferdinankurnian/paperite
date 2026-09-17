@@ -1,3 +1,4 @@
+import { XIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,9 +13,9 @@ import {
 export type { FloatingPanelMode, NoteInfoTarget };
 
 const FALLBACK_PAGE_FORMAT: PageFormat = {
-	firstLineIndent: false,
+	indentation: "none",
 	lineHeight: "normal",
-	paragraphSpacing: "default",
+	paragraphSpacing: "none",
 };
 
 type Props = {
@@ -57,61 +58,55 @@ export function FloatingNotePanel(p: Props) {
 	return (
 		<div
 			data-state={mode ? "open" : "closed"}
+			data-open={mode ? "" : undefined}
+			data-closed={!mode ? "" : undefined}
 			onAnimationEnd={(e) => {
 				if (e.target === e.currentTarget && !mode) closeFloatingPanel();
 			}}
-			className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-3 rounded-xl bg-popover p-3 text-sm text-popover-foreground shadow-[0_14px_40px_rgb(0_0_0/0.35),0_0_0_1px_rgb(255_255_255/0.08)]"
+			className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-3 rounded-xl bg-popover p-3 text-sm text-popover-foreground shadow-[0_14px_40px_rgb(0_0_0/0.35),0_0_0_1px_rgb(255_255_255/0.08)] duration-200 ease-out data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-top-2 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-top-2 data-closed:zoom-out-95"
 		>
 			{displayMode === "format" ? (
 				<>
 					<div className="flex items-center justify-between">
-						<div>
-							<h2 className="font-medium text-sm">Note setup</h2>
-							<p className="text-muted-foreground text-xs">
-								Tune the active note layout.
-							</p>
-						</div>
+						<h2 className="font-medium text-sm">Note setup</h2>
 						<Button
 							size="icon-sm"
 							variant="ghost"
 							aria-label="Close note setup"
 							onClick={() => setFloatingPanelMode(null)}
 						>
-							×
+							<XIcon />
 						</Button>
 					</div>
 					<div className="space-y-3 rounded-lg bg-muted/35 p-2">
 						<FormatChoice
-							label="Line height"
-							first={pageFormat.lineHeight === "normal"}
-							second={pageFormat.lineHeight === "1.5"}
-							onFirst={() => p.onFormat({ lineHeight: "normal" })}
-							onSecond={() => p.onFormat({ lineHeight: "1.5" })}
-							firstLabel="Normal"
-							secondLabel="1.5"
-						/>
-						<FormatChoice
 							label="Paragraph spacing"
-							first={pageFormat.paragraphSpacing === "default"}
-							second={pageFormat.paragraphSpacing === "compact"}
-							onFirst={() => p.onFormat({ paragraphSpacing: "default" })}
-							onSecond={() => p.onFormat({ paragraphSpacing: "compact" })}
-							firstLabel="Default"
-							secondLabel="Compact"
+							first={pageFormat.paragraphSpacing === "none"}
+							second={pageFormat.paragraphSpacing === "spacious"}
+							onFirst={() => p.onFormat({ paragraphSpacing: "none" })}
+							onSecond={() => p.onFormat({ paragraphSpacing: "spacious" })}
+							firstLabel="None"
+							secondLabel="Spacious"
 						/>
-						<Button
-							variant={pageFormat.firstLineIndent ? "default" : "outline"}
-							onClick={() =>
-								p.onFormat({ firstLineIndent: !pageFormat.firstLineIndent })
-							}
-						>
-							First-line indent
-						</Button>
+						<IndentationChoice
+							value={pageFormat.indentation}
+							onChange={(indentation) => p.onFormat({ indentation })}
+						/>
 					</div>
 				</>
 			) : displayMode === "info" ? (
 				<>
-					<h2 className="font-medium text-sm">Note Info</h2>
+					<div className="flex items-center justify-between">
+						<h2 className="font-medium text-sm">Note Info</h2>
+						<Button
+							size="icon-sm"
+							variant="ghost"
+							aria-label="Close note info"
+							onClick={() => setFloatingPanelMode(null)}
+						>
+							<XIcon />
+						</Button>
+					</div>
 					<div className="space-y-2 rounded-lg bg-muted/35 p-2">
 						<div>
 							<span className="text-muted-foreground text-xs">Title</span>
@@ -122,49 +117,54 @@ export function FloatingNotePanel(p: Props) {
 							<p className="break-all font-mono text-xs">{info?.path ?? "—"}</p>
 						</div>
 					</div>
-					<Button variant="ghost" onClick={() => setFloatingPanelMode(null)}>
-						Close
-					</Button>
 				</>
 			) : (
 				<>
-					<div className="flex items-center gap-2">
-						<Input
-							ref={findInputRef}
-							value={findText}
-							placeholder="Find..."
-							onChange={(e) => setFindText(e.target.value)}
-							onKeyDown={(e) => {
-								if (e.key === "Escape") setFloatingPanelMode(null);
-							}}
-						/>
+					<div className="flex items-center justify-between">
+						<h2 className="font-medium text-sm">
+							{displayMode === "replace" ? "Find & Replace" : "Find"}
+						</h2>
 						<Button
-							size="sm"
+							size="icon-sm"
 							variant="ghost"
+							aria-label="Close find panel"
 							onClick={() => setFloatingPanelMode(null)}
 						>
-							×
+							<XIcon />
 						</Button>
 					</div>
-					{displayMode === "replace" ? (
+					<div className="space-y-2 rounded-lg bg-muted/35 p-2">
 						<div className="flex items-center gap-2">
 							<Input
-								value={replaceText}
-								placeholder="Replace..."
-								onChange={(e) => setReplaceText(e.target.value)}
+								ref={findInputRef}
+								value={findText}
+								placeholder="Find..."
+								onChange={(e) => setFindText(e.target.value)}
+								onKeyDown={(e) => {
+									if (e.key === "Escape") setFloatingPanelMode(null);
+								}}
 							/>
-							<Button
-								size="sm"
-								variant="outline"
-								onClick={() => p.onReplace(false)}
-							>
-								One
-							</Button>
-							<Button size="sm" onClick={() => p.onReplace(true)}>
-								All
-							</Button>
 						</div>
-					) : null}
+						{displayMode === "replace" ? (
+							<div className="flex items-center gap-2">
+								<Input
+									value={replaceText}
+									placeholder="Replace..."
+									onChange={(e) => setReplaceText(e.target.value)}
+								/>
+								<Button
+									size="sm"
+									variant="outline"
+									onClick={() => p.onReplace(false)}
+								>
+									One
+								</Button>
+								<Button size="sm" onClick={() => p.onReplace(true)}>
+									All
+								</Button>
+							</div>
+						) : null}
+					</div>
 				</>
 			)}
 		</div>
@@ -189,8 +189,8 @@ function FormatChoice({
 	secondLabel: string;
 }) {
 	return (
-		<div className="space-y-1">
-			<span className="text-muted-foreground text-xs">{label}</span>
+		<div className="flex flex-col gap-2">
+			<span className="block text-muted-foreground text-xs">{label}</span>
 			<div className="flex gap-1">
 				<Button
 					className="flex-1"
@@ -206,6 +206,41 @@ function FormatChoice({
 				>
 					{secondLabel}
 				</Button>
+			</div>
+		</div>
+	);
+}
+
+function IndentationChoice({
+	value,
+	onChange,
+}: {
+	value: PageFormat["indentation"];
+	onChange: (value: PageFormat["indentation"]) => void;
+}) {
+	const choices: Array<{
+		value: PageFormat["indentation"];
+		label: string;
+	}> = [
+		{ value: "none", label: "None" },
+		{ value: "first-line", label: "First line" },
+		{ value: "hanging", label: "Hanging" },
+	];
+
+	return (
+		<div className="flex flex-col gap-2">
+			<span className="block text-muted-foreground text-xs">Indentation</span>
+			<div className="flex gap-1">
+				{choices.map((choice) => (
+					<Button
+						key={choice.value}
+						className="min-w-0 flex-1 px-1.5 text-xs"
+						variant={value === choice.value ? "default" : "ghost"}
+						onClick={() => onChange(choice.value)}
+					>
+						{choice.label}
+					</Button>
+				))}
 			</div>
 		</div>
 	);

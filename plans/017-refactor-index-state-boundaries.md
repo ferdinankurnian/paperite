@@ -185,6 +185,29 @@ the render evidence are complete.
 - Verification: bun test v1.3.13 (bf2e2cec) 6/0.
 - Remaining for formal plan close: Phase 0 manual render-contract evidence.
 
+### Progress update — 2026-09-16 (workspace composition boundary)
+
+- `src/components/note-workspace.tsx` now owns the note header, save badge,
+  floating panel, and active-note pane composition instead of forwarding an
+  arbitrary `children` node from `Index`.
+- `Index` passes stable callbacks and cache references to `NoteWorkspace`, so
+  unrelated `Index` updates no longer recreate the editor-side child tree.
+- `bun test` passes 6/6 and the changed workspace component passes Biome.
+- The app typecheck still has the pre-existing `code-block-view.tsx` errors;
+  manual React Profiler evidence is still required before marking this plan
+  done.
+
+### Progress update — 2026-09-16 (orchestration boundary)
+
+- `src/hooks/use-app-lifecycle.ts` now owns workspace-ref synchronization,
+  YDoc teardown, and blur/visibility/beforeunload save flushing.
+- `src/hooks/use-paperite-editor.ts` now owns session, autosave, loader,
+  prefetch, command, keyboard, and active-note hook wiring.
+- `src/components/paperite-shell.tsx` now owns sidebar/workspace composition.
+- `src/routes/_main/index.tsx` is now route/auth/fallback glue only (33 lines).
+- `bun test` passes 6/6 and all newly added files pass Biome. Typecheck still
+  reports only the existing `code-block-view.tsx` errors above.
+
 ### Progress update — 2026-08-14 (active-note actions → hook)
 
 - Added  owning rename/delete/find-replace,

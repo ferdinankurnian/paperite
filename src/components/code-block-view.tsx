@@ -46,15 +46,23 @@ const CODE_LANGUAGES = [
 	{ value: "yaml", label: "yaml" },
 ] as const;
 
-const LANGUAGE_VALUES = new Set(CODE_LANGUAGES.map((l) => l.value));
+type CodeLanguage = (typeof CODE_LANGUAGES)[number]["value"];
 
-function normalizeLanguage(raw: string | null | undefined): string {
+const LANGUAGE_VALUES = new Set<CodeLanguage>(
+	CODE_LANGUAGES.map((language) => language.value),
+);
+
+function isCodeLanguage(value: string): value is CodeLanguage {
+	return LANGUAGE_VALUES.has(value as CodeLanguage);
+}
+
+function normalizeLanguage(raw: string | null | undefined): CodeLanguage {
 	if (!raw || raw === "plaintext" || raw === "plain") return "text";
 	if (raw === "js") return "javascript";
 	if (raw === "ts") return "typescript";
 	if (raw === "py") return "python";
 	if (raw === "sh") return "bash";
-	return LANGUAGE_VALUES.has(raw) ? raw : "text";
+	return isCodeLanguage(raw) ? raw : "text";
 }
 
 export function CodeBlockView({
@@ -221,7 +229,7 @@ export function CodeBlockView({
 				</Button>
 			</div>
 			<pre className="m-0 overflow-x-auto px-3 py-2 font-mono text-sm text-foreground">
-				<NodeViewContent as="code" />
+				<NodeViewContent<"code"> as="code" />
 			</pre>
 		</NodeViewWrapper>
 	);

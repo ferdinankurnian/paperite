@@ -18,15 +18,15 @@ const NoteEditor = lazy(() =>
 );
 
 type PageFormat = {
-	firstLineIndent: boolean;
+	indentation: "none" | "first-line" | "hanging";
 	lineHeight: "normal" | "1.5";
-	paragraphSpacing: "default" | "compact";
+	paragraphSpacing: "none" | "spacious";
 };
 
 const defaultPageFormat: PageFormat = {
-	firstLineIndent: false,
+	indentation: "none",
 	lineHeight: "normal",
-	paragraphSpacing: "default",
+	paragraphSpacing: "none",
 };
 
 function fileName(notePath: string) {
