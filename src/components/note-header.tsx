@@ -69,7 +69,7 @@ function NoteHeaderInner({
 	const activeNotePath = useAppStore((s) => s.activeNotePath);
 
 	return (
-		<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 px-3 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
+		<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 pr-3 pl-0 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
 			<div className="flex shrink-0 items-center min-[56.0625rem]:hidden">
 				<SidebarTrigger
 					toggleNotesSheet

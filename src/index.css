@@ -487,6 +487,10 @@
 		@apply bg-yellow-300/80 text-neutral-950 outline-none;
 	}
 
+	.paperite-tiptap .paperite-search-match-active {
+		@apply bg-orange-300 text-neutral-950 outline-2 outline-orange-400;
+	}
+
 	/* Task list — NodeView does NOT set data-type on <li>, so target via parent ul */
 	.paperite-tiptap .paperite-prosemirror ul[data-type="taskList"] {
 		list-style: none;

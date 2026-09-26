@@ -91,6 +91,7 @@ import {
 } from "@/components/ui/context-menu";
 import { CodeBlockView } from "@/components/code-block-view";
 import { normalizeNoteContent, noteContentText, serializeNoteContent } from "@/lib/note-content";
+import { useEditorUiStore } from "@/lib/stores/editor-ui-store";
 import { cn } from "@/lib/utils";
 
 /** Per-mounted-editor view/edit controllers. Not persisted — lives with the tab instance. */
@@ -138,11 +139,11 @@ async function resolveImagePaths(
 	if (
 		node.type === "image" &&
 		typeof node.attrs?.src === "string" &&
-		isRelativeAssetSrc(node.attrs.src)
+		isRelativeAssetSrc(toRelativeAssetSrc(node.attrs.src))
 	) {
 		const url = await window.electron?.notes.getAssetUrl(
 			notePath,
-			node.attrs.src,
+			toRelativeAssetSrc(node.attrs.src),
 		);
 		if (url) {
 			return { ...node, attrs: { ...node.attrs, src: url } };
@@ -158,6 +159,25 @@ async function resolveImagePaths(
 }
 
 function toRelativeAssetSrc(src: string): string {
+	// URLs served by the main-process asset server (/note-assets/...) or
+	// legacy file:// URLs both map back to the workspace-relative path that
+	// is actually stored in note JSON. The server origin (incl. port) must
+	// never be persisted.
+	const marker = "/note-assets/";
+	const markerIdx = src.indexOf(marker);
+	if (markerIdx !== -1) {
+		return src
+			.slice(markerIdx + marker.length)
+			.split("/")
+			.map((segment) => {
+				try {
+					return decodeURIComponent(segment);
+				} catch {
+					return segment;
+				}
+			})
+			.join("/");
+	}
 	if (!src.startsWith("file://")) return src;
 	const assetsIdx = src.indexOf("/assets/");
 	if (assetsIdx === -1) return src;
@@ -181,7 +201,7 @@ function denormalizeImagePaths(node: NoteContent): NoteContent {
 	return node;
 }
 
-/** Save image to assets/ and return a displayable file:// URL (falls back to data URL). */
+/** Save image to assets/ and return a displayable http asset URL (falls back to data URL). */
 async function saveImageToNote(
 	notePath: string,
 	dataUrl: string,
@@ -218,6 +238,7 @@ type NoteEditorProps = {
 	/** Optional override (e.g. popout always editable). When set, local toggle is ignored. */
 	readOnly?: boolean;
 	searchQuery: string;
+	searchMatchIndex: number;
 	yDoc?: Y.Doc | null;
 	zenMode?: boolean;
 	onChange: (
@@ -426,6 +447,7 @@ export function NoteEditor({
 	pageFormat = defaultPageFormat,
 	readOnly: readOnlyProp,
 	searchQuery,
+	searchMatchIndex,
 	yDoc,
 	zenMode,
 	onChange,
@@ -477,6 +499,8 @@ export function NoteEditor({
 		};
 	}, [notePath, readOnlyProp]);
 	const searchQueryRef = useRef(searchQuery);
+	const searchMatchIndexRef = useRef(searchMatchIndex);
+	const isActiveRef = useRef(isActive);
 	const syncingExternalDocRef = useRef(false);
 	const hasUserInteractedRef = useRef(false);
 	const lastCommittedTitleRef = useRef(noteTitle || "");
@@ -576,7 +600,11 @@ export function NoteEditor({
 					]
 				: []),
 			createTitleNavigationExtension(titleInputRef),
-			createSearchHighlightExtension(searchQueryRef),
+			createSearchHighlightExtension(
+				searchQueryRef,
+				searchMatchIndexRef,
+				isActiveRef,
+			),
 			createEmojiSuggestionExtension(),
 		],
 		[baseExtensions, yDoc],
@@ -704,10 +732,12 @@ export function NoteEditor({
 
 	useEffect(() => {
 		searchQueryRef.current = searchQuery;
+		searchMatchIndexRef.current = searchMatchIndex;
+		isActiveRef.current = isActive;
 		if (!editor) return;
 
 		editor.view.dispatch(editor.state.tr.setMeta("paperiteSearchQuery", true));
-	}, [editor, searchQuery]);
+	}, [editor, isActive, searchMatchIndex, searchQuery]);
 
 	useEffect(() => {
 		const handleFormat = (event: Event) => {
@@ -1824,7 +1854,13 @@ function createTitleNavigationExtension(
 	});
 }
 
-function createSearchHighlightExtension(searchQueryRef: RefObject<string>) {
+type SearchMatch = { from: number; to: number };
+
+function createSearchHighlightExtension(
+	searchQueryRef: RefObject<string>,
+	searchMatchIndexRef: RefObject<number>,
+	isActiveRef: RefObject<boolean>,
+) {
 	return Extension.create({
 		name: "paperiteSearchHighlight",
 		addProseMirrorPlugins() {
@@ -1832,7 +1868,46 @@ function createSearchHighlightExtension(searchQueryRef: RefObject<string>) {
 				new Plugin({
 					props: {
 						decorations: (state) =>
-							buildSearchDecorations(state.doc, searchQueryRef.current),
+							buildSearchDecorations(
+								state.doc,
+								searchQueryRef.current,
+								searchMatchIndexRef.current,
+							),
+					},
+					view: () => {
+						let previousQuery = "";
+						let previousMatchIndex = -1;
+
+						return {
+							update: (view) => {
+								if (!isActiveRef.current) return;
+
+								const query = searchQueryRef.current.trim();
+								const matches = findSearchMatches(view.state.doc, query);
+								useEditorUiStore
+									.getState()
+									.setFindMatchCount(matches.length);
+
+								const matchIndex = normalizeMatchIndex(
+									searchMatchIndexRef.current,
+									matches.length,
+								);
+								const navigationChanged =
+									query !== previousQuery ||
+									matchIndex !== previousMatchIndex;
+								previousQuery = query;
+								previousMatchIndex = matchIndex;
+
+								if (!navigationChanged || !matches[matchIndex]) return;
+								const dom = view.domAtPos(matches[matchIndex].from).node;
+								const element =
+									dom instanceof Element ? dom : dom.parentElement;
+								element?.scrollIntoView({
+									block: "nearest",
+									inline: "nearest",
+								});
+							},
+						};
 					},
 				}),
 			];
@@ -1843,11 +1918,32 @@ function createSearchHighlightExtension(searchQueryRef: RefObject<string>) {
 function buildSearchDecorations(
 	doc: Parameters<typeof DecorationSet.create>[0],
 	query: string,
+	matchIndex: number,
 ) {
-	const trimmedQuery = query.trim();
-	if (!trimmedQuery) return DecorationSet.empty;
+	const matches = findSearchMatches(doc, query);
+	if (matches.length === 0) return DecorationSet.empty;
 
-	const decorations: Decoration[] = [];
+	const activeIndex = normalizeMatchIndex(matchIndex, matches.length);
+	const decorations = matches.map((match, index) =>
+		Decoration.inline(match.from, match.to, {
+			class:
+				index === activeIndex
+					? "paperite-search-match paperite-search-match-active"
+					: "paperite-search-match",
+		}),
+	);
+
+	return DecorationSet.create(doc, decorations);
+}
+
+function findSearchMatches(
+	doc: Parameters<typeof DecorationSet.create>[0],
+	query: string,
+): SearchMatch[] {
+	const trimmedQuery = query.trim();
+	if (!trimmedQuery) return [];
+
+	const matches: SearchMatch[] = [];
 	const normalizedQuery = trimmedQuery.toLocaleLowerCase();
 
 	doc.descendants((node, position) => {
@@ -1857,13 +1953,10 @@ function buildSearchDecorations(
 		let matchIndex = normalizedText.indexOf(normalizedQuery);
 
 		while (matchIndex !== -1) {
-			decorations.push(
-				Decoration.inline(
-					position + matchIndex,
-					position + matchIndex + trimmedQuery.length,
-					{ class: "paperite-search-match" },
-				),
-			);
+			matches.push({
+				from: position + matchIndex,
+				to: position + matchIndex + trimmedQuery.length,
+			});
 			matchIndex = normalizedText.indexOf(
 				normalizedQuery,
 				matchIndex + normalizedQuery.length,
@@ -1871,7 +1964,12 @@ function buildSearchDecorations(
 		}
 	});
 
-	return DecorationSet.create(doc, decorations);
+	return matches;
+}
+
+function normalizeMatchIndex(index: number, count: number) {
+	if (count === 0) return 0;
+	return ((index % count) + count) % count;
 }
 
 function editableTitle(title: string) {

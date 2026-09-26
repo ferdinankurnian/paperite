@@ -141,7 +141,7 @@ import {
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Switch } from "@/components/ui/switch";
-import { clerk } from "@/lib/clerk";
+import { clerk, isClerkConfigured, loadClerk } from "@/lib/clerk";
 import { getNotesEngine } from "@/lib/notes-engine";
 import type { NoteSearchResult } from "@/lib/storage/types";
 import { useAppStore } from "@/lib/stores/app-store";
@@ -316,6 +316,24 @@ type DragPreviewItem = {
 const fallbackUser = {
 	name: "Paperite user",
 	avatar: "",
+};
+
+const cachedUserKey = "paperite:cached-user";
+
+// Last-known profile, display-only. Clerk owns the real session — this
+// just stops the sidebar from lying with "Paperite user" while the
+// session is still being restored on cold start.
+const loadCachedUser = () => {
+	try {
+		const raw = window.localStorage.getItem(cachedUserKey);
+		if (!raw) return fallbackUser;
+		const parsed = JSON.parse(raw) as Partial<typeof fallbackUser>;
+		if (typeof parsed.name !== "string" || typeof parsed.avatar !== "string")
+			return fallbackUser;
+		return { name: parsed.name, avatar: parsed.avatar };
+	} catch {
+		return fallbackUser;
+	}
 };
 
 const SpaceIcon = ({
@@ -969,7 +987,7 @@ function NoteGridCard({
 					<button
 						ref={setNodeRef}
 						type="button"
-						className="mb-2 w-full touch-none break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left transition-all duration-150 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-[0.97] data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0"
+						className="mb-2 w-full touch-none break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-[0.97] data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0"
 						data-active={isActive}
 						data-dragging={isDragging}
 						{...attributes}
@@ -2268,7 +2286,11 @@ function AppSidebarImpl({
 		(s) => s.newlyCreatedFolderPath,
 	);
 	const { open, setOpen } = useSidebar();
-	const [user, setUser] = React.useState(fallbackUser);
+	const [user, setUser] = React.useState(loadCachedUser);
+	const [isSignedIn, setIsSignedIn] = React.useState(false);
+	const [isAuthLoading, setIsAuthLoading] = React.useState(() =>
+		isClerkConfigured(),
+	);
 	const [searchQuery, setSearchQuery] = React.useState("");
 	// Debounce filter work so typing in search doesn't re-walk the tree every key.
 	const [debouncedSearchQuery, setDebouncedSearchQuery] = React.useState("");
@@ -2663,25 +2685,81 @@ function AppSidebarImpl({
 	}, [open, setOpen, tabletLayout]);
 
 	React.useEffect(() => {
-		if (!import.meta.env.BETA_PAPERITE) return;
+		if (!isClerkConfigured()) return;
+
+		let cancelled = false;
 
 		const syncUser = () => {
 			const clerkUser = clerk.user;
+			setIsSignedIn(Boolean(clerkUser));
 
-			setUser({
-				name: clerkUser?.fullName ?? clerkUser?.username ?? "Paperite user",
-				avatar: clerkUser?.imageUrl ?? "",
-			});
+			if (clerkUser) {
+				const next = {
+					name: clerkUser.fullName ?? clerkUser.username ?? "Paperite user",
+					avatar: clerkUser.imageUrl ?? "",
+				};
+				setUser(next);
+				try {
+					window.localStorage.setItem(cachedUserKey, JSON.stringify(next));
+				} catch {
+					// Display cache only — auth state lives in Clerk.
+				}
+			} else {
+				setUser(fallbackUser);
+				try {
+					window.localStorage.removeItem(cachedUserKey);
+				} catch {
+					// Display cache only — auth state lives in Clerk.
+				}
+			}
 		};
+		let unsubscribe: (() => void) | undefined;
+		try {
+			unsubscribe = clerk.addListener(syncUser);
+		} catch (error) {
+			console.error("[paperite] clerk listener failed", error);
+		}
 
-		syncUser();
-		return clerk.addListener(syncUser);
+		// Global auth handler dispatches this after completing the
+		// OAuth callback — re-sync explicitly in case the clerk
+		// listener missed the transition.
+		const handleAuthSuccess = () => {
+			if (!cancelled) syncUser();
+		};
+		window.addEventListener("paperite:auth-success", handleAuthSuccess);
+
+		void loadClerk()
+			.then(() => {
+				if (cancelled) return;
+				syncUser();
+			})
+			.catch((error) => {
+				// Never fail silently back to guest mode: a failed restore
+				// used to look exactly like "logged out".
+				console.error("[paperite] failed to restore Clerk session", error);
+			})
+			.finally(() => {
+				if (!cancelled) setIsAuthLoading(false);
+			});
+
+		return () => {
+			cancelled = true;
+			unsubscribe?.();
+			window.removeEventListener("paperite:auth-success", handleAuthSuccess);
+		};
 	}, []);
 
 	const logOut = async () => {
-		if (!import.meta.env.BETA_PAPERITE) return;
+		if (!isClerkConfigured()) return;
 
 		await clerk.signOut();
+		try {
+			window.localStorage.removeItem(cachedUserKey);
+		} catch {
+			// Display cache only — auth state lives in Clerk.
+		}
+		setUser(fallbackUser);
+		setIsSignedIn(false);
 		await navigate({ to: "/login" });
 	};
 
@@ -3000,6 +3078,8 @@ function AppSidebarImpl({
 					<NavUser
 						onLogOut={logOut}
 						user={user}
+						isSignedIn={isSignedIn}
+						isAuthLoading={isAuthLoading}
 						showNotePreview={showNotePreview}
 						closeButtonOnly={closeButtonOnly}
 						syncSidebarWithActiveTab={syncSidebarWithActiveTab}

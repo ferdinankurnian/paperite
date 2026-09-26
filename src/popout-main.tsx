@@ -201,6 +201,7 @@ function PopoutNote() {
 									pageFormat={defaultPageFormat}
 									readOnly={false}
 									searchQuery=""
+									searchMatchIndex={0}
 									onChange={handleContentChange}
 									onContentRendered={handleContentRendered}
 									onRename={handleRename}

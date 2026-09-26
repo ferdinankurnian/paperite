@@ -168,7 +168,8 @@ export function useActiveNoteActions(options: Options) {
 
 	const replaceInNote = useCallback(() => {
 		const current = optionsRef.current;
-		const { findText, replaceText } = useEditorUiStore.getState();
+		const { findText, replaceText, findMatchIndex } =
+			useEditorUiStore.getState();
 		if (!findText) return;
 		const path = current.activeNotePathRef.current;
 		if (!path) return;
@@ -177,6 +178,7 @@ export function useActiveNoteActions(options: Options) {
 			findText,
 			replaceText,
 			false,
+			findMatchIndex,
 		);
 		current.commitNoteContent(path, next, true);
 		current.scheduleNoteAutosave(path, next);

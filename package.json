@@ -6,7 +6,7 @@
   },
   "description": "A note-taking app",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "main": "main.js",
   "desktopName": "dev.iydheko.paperite",
   "build": {
@@ -37,6 +37,9 @@
         "tar.gz"
       ],
       "category": "Utility",
+      "mimeTypes": [
+        "x-scheme-handler/paperite"
+      ],
       "syncDesktopName": true
     }
   },
@@ -55,7 +58,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@clerk/clerk-js": "^6.11.3",
+    "@clerk/clerk-js": "^6.34.1",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",

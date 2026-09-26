@@ -57,10 +57,14 @@ type EditorUiStore = {
 	floatingPanelVisible: boolean;
 	floatingPanelLastMode: FloatingPanelMode;
 	findText: string;
+	findMatchIndex: number;
+	findMatchCount: number;
 	replaceText: string;
 	noteInfoTarget: NoteInfoTarget | null;
 	setFloatingPanelMode: (mode: FloatingPanelMode) => void;
 	setFindText: (value: string) => void;
+	setFindMatchIndex: (index: number) => void;
+	setFindMatchCount: (count: number) => void;
 	setReplaceText: (value: string) => void;
 	openNoteInfo: (target: NoteInfoTarget) => void;
 	closeFloatingPanel: () => void;
@@ -176,6 +180,8 @@ export const useEditorUiStore = create<EditorUiStore>((set, get) => ({
 	floatingPanelVisible: false,
 	floatingPanelLastMode: null,
 	findText: "",
+	findMatchIndex: 0,
+	findMatchCount: 0,
 	replaceText: "",
 	noteInfoTarget: null,
 	setFloatingPanelMode: (mode) => {
@@ -195,7 +201,23 @@ export const useEditorUiStore = create<EditorUiStore>((set, get) => ({
 	},
 	setFindText: (value) => {
 		if (value === get().findText) return;
-		set({ findText: value });
+		set({ findText: value, findMatchIndex: 0, findMatchCount: 0 });
+	},
+	setFindMatchIndex: (index) => {
+		if (index === get().findMatchIndex) return;
+		set({ findMatchIndex: index });
+	},
+	setFindMatchCount: (count) => {
+		const current = get();
+		const nextIndex =
+			count > 0 ? Math.min(current.findMatchIndex, count - 1) : 0;
+		if (
+			count === current.findMatchCount &&
+			nextIndex === current.findMatchIndex
+		) {
+			return;
+		}
+		set({ findMatchCount: count, findMatchIndex: nextIndex });
 	},
 	setReplaceText: (value) => {
 		if (value === get().replaceText) return;

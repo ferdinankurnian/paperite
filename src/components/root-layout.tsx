@@ -1,6 +1,7 @@
 import { Outlet } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { AppTitlebar } from "@/components/app-titlebar";
+import { AuthDialog } from "@/components/auth-dialog";
 import { ErrorBoundary } from "@/components/error-boundary";
 import {
 	KeyboardShortcutsProvider,
@@ -8,9 +9,25 @@ import {
 } from "@/components/keyboard-shortcuts-provider";
 import { ThemeProvider } from "@/components/theme-provider";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { useGlobalAuthCallback } from "@/hooks/use-global-auth-callback";
 import { isShortcutEditableInput, shortcutMatchesEvent } from "@/lib/shortcuts";
 
 export function RootLayout() {
+	const [authDialogOpen, setAuthDialogOpen] = useState(false);
+
+	useGlobalAuthCallback();
+
+	useEffect(() => {
+		const openAuthDialog = () => setAuthDialogOpen(true);
+		const closeAuthDialog = () => setAuthDialogOpen(false);
+		window.addEventListener("paperite:open-auth", openAuthDialog);
+		window.addEventListener("paperite:auth-success", closeAuthDialog);
+		return () => {
+			window.removeEventListener("paperite:open-auth", openAuthDialog);
+			window.removeEventListener("paperite:auth-success", closeAuthDialog);
+		};
+	}, []);
+
 	return (
 		<ThemeProvider defaultTheme="dark" storageKey="vite-ui-theme">
 			<KeyboardShortcutsProvider>
@@ -24,6 +41,7 @@ export function RootLayout() {
 							</ErrorBoundary>
 						</div>
 					</div>
+					<AuthDialog open={authDialogOpen} onOpenChange={setAuthDialogOpen} />
 				</TooltipProvider>
 			</KeyboardShortcutsProvider>
 		</ThemeProvider>

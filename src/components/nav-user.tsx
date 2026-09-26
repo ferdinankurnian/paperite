@@ -8,11 +8,11 @@ import {
 	UserRoundIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useTheme } from "@/components/theme-provider";
 import {
 	SettingsDialog,
 	type SettingsTab,
 } from "@/components/settings/settings-dialog";
+import { useTheme } from "@/components/theme-provider";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -39,6 +39,7 @@ import {
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { isClerkConfigured } from "@/lib/clerk";
 
 const themes = [
 	{ icon: SunIcon, label: "Light", value: "light" },
@@ -49,6 +50,8 @@ const themes = [
 export function NavUser({
 	onLogOut,
 	user,
+	isSignedIn,
+	isAuthLoading,
 	showNotePreview,
 	closeButtonOnly,
 	syncSidebarWithActiveTab,
@@ -61,6 +64,8 @@ export function NavUser({
 		name: string;
 		avatar: string;
 	};
+	isSignedIn: boolean;
+	isAuthLoading: boolean;
 	showNotePreview: boolean;
 	closeButtonOnly: boolean;
 	syncSidebarWithActiveTab: boolean;
@@ -70,7 +75,8 @@ export function NavUser({
 }) {
 	const { isMobile } = useSidebar();
 	const { theme, setTheme } = useTheme();
-	const betaEnabled = import.meta.env.BETA_PAPERITE;
+	const authEnabled = isClerkConfigured();
+	const showAccount = isSignedIn;
 	const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 	const [activeTab, setActiveTab] = useState<SettingsTab>("general");
@@ -107,8 +113,12 @@ export function NavUser({
 								<div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
 									<UserAvatar user={user} />
 									<div className="grid flex-1 text-left text-sm leading-tight">
-										<span className="truncate font-medium">{user.name}</span>
-										<span className="truncate text-xs">Free Plan</span>
+										<span className="truncate font-medium">
+											{isAuthLoading ? "Signing you in…" : user.name}
+										</span>
+										<span className="truncate text-xs">
+											{isAuthLoading ? "Checking session…" : "Free Plan"}
+										</span>
 									</div>
 								</div>
 							</DropdownMenuLabel>
@@ -148,7 +158,19 @@ export function NavUser({
 									))}
 								</TabsList>
 							</Tabs>
-							{betaEnabled ? (
+							{authEnabled && !showAccount && !isAuthLoading ? (
+								<>
+									<DropdownMenuSeparator />
+									<DropdownMenuItem
+										onSelect={() =>
+											window.dispatchEvent(new Event("paperite:open-auth"))
+										}
+									>
+										<UserRoundIcon />
+										Sign in
+									</DropdownMenuItem>
+								</>
+							) : showAccount ? (
 								<>
 									<DropdownMenuSeparator />
 									<DropdownMenuItem
@@ -179,7 +201,7 @@ export function NavUser({
 				syncSidebarWithActiveTab={syncSidebarWithActiveTab}
 				onSetSyncSidebarWithActiveTab={onSetSyncSidebarWithActiveTab}
 				onRequestLogOut={() => setIsLogoutDialogOpen(true)}
-				betaEnabled={betaEnabled}
+				betaEnabled={showAccount}
 			/>
 			<AlertDialog
 				open={isLogoutDialogOpen}

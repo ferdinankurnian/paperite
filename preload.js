@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld("electron", {
 	},
 	auth: {
 		getPendingCallback: () => ipcRenderer.invoke("auth:get-pending-callback"),
+		startCallbackServer: () =>
+			ipcRenderer.invoke("auth:start-callback-server"),
 	},
 	sync: {
 		getStatus: () => ipcRenderer.invoke("sync:get-status"),

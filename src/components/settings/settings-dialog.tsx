@@ -172,7 +172,7 @@ export function SettingsDialog({
 												}`}
 											>
 												<img
-													src="/previews/note-previews-show.png"
+													src="previews/note-previews-show.png"
 													alt="Show"
 													className="h-16 w-20 object-cover object-left"
 												/>
@@ -190,7 +190,7 @@ export function SettingsDialog({
 												}`}
 											>
 												<img
-													src="/previews/note-previews-hide.png"
+													src="previews/note-previews-hide.png"
 													alt="Hide"
 													className="h-16 w-20 object-cover object-left"
 												/>
@@ -220,7 +220,7 @@ export function SettingsDialog({
 												}`}
 											>
 												<img
-													src="/previews/close-btn-all.png"
+													src="previews/close-btn-all.png"
 													alt="All buttons"
 													className="h-16 w-20 object-cover object-top"
 												/>
@@ -238,7 +238,7 @@ export function SettingsDialog({
 												}`}
 											>
 												<img
-													src="/previews/close-btn-close-only.png"
+													src="previews/close-btn-close-only.png"
 													alt="Close only"
 													className="h-16 w-20 object-cover object-top"
 												/>

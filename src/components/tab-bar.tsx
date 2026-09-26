@@ -1,11 +1,11 @@
 import {
 	closestCenter,
-	defaultDropAnimationSideEffects,
 	DndContext,
 	type DragEndEvent,
-	type DragStartEvent,
 	DragOverlay,
+	type DragStartEvent,
 	type DropAnimation,
+	defaultDropAnimationSideEffects,
 	type Modifier,
 	PointerSensor,
 	useSensor,
@@ -18,13 +18,7 @@ import {
 	useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import {
-	CloudIcon,
-	FolderIcon,
-	InboxIcon,
-	PinIcon,
-	XIcon,
-} from "lucide-react";
+import { CloudIcon, FolderIcon, InboxIcon, PinIcon, XIcon } from "lucide-react";
 import {
 	type CSSProperties,
 	memo,
@@ -35,18 +29,19 @@ import {
 	useState,
 } from "react";
 import {
-	HoverCard,
-	HoverCardContent,
-	HoverCardTrigger,
-} from "@/components/ui/hover-card";
-import {
 	ContextMenu,
 	ContextMenuContent,
 	ContextMenuItem,
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
+import {
+	HoverCard,
+	HoverCardContent,
+	HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { useAppStore } from "@/lib/stores/app-store";
 import { useEditorUiStore } from "@/lib/stores/editor-ui-store";
+import { cn } from "@/lib/utils";
 
 function displayNoteTitle(title: string) {
 	return title.trim() || "Untitled";
@@ -118,8 +113,9 @@ const SortableTab = memo(function SortableTab({
 	const title = displayTitle(
 		titleDraft !== undefined ? titleDraft : note.title,
 	);
-	const customIcon =
-		spaceIcon?.startsWith("custom:") ? spaceIcon.slice("custom:".length) : null;
+	const customIcon = spaceIcon?.startsWith("custom:")
+		? spaceIcon.slice("custom:".length)
+		: null;
 
 	return (
 		<HoverCard
@@ -145,7 +141,10 @@ const SortableTab = memo(function SortableTab({
 							data-preview={note.preview}
 							data-pinned={note.pinned}
 							data-dragging={isSortableDragging}
-							className="group relative z-10 my-2 w-28 shrink-0 cursor-default rounded-md border border-transparent text-[13px] text-muted-foreground transition-[color,background-color,border-color,transform] duration-150 hover:border-border/40 hover:bg-muted/60 hover:text-foreground active:scale-[0.98] data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:border-border/40 data-[dragging=true]:bg-muted/50 data-[dragging=true]:cursor-default sm:w-36 lg:w-44"
+							className={cn(
+								"group relative z-10 my-2 w-28 shrink-0 rounded-md border border-transparent text-[13px] text-muted-foreground transition-[color,background-color,border-color,transform] duration-150 hover:border-border/40 hover:bg-muted/60 hover:text-foreground active:scale-[0.96] data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:border-border/40 data-[dragging=true]:bg-muted/50 sm:w-36 lg:w-44",
+								"touch-none cursor-default",
+							)}
 							{...attributes}
 							{...listeners}
 						>
@@ -170,9 +169,7 @@ const SortableTab = memo(function SortableTab({
 							</button>
 							<button
 								type="button"
-								aria-label={
-									note.pinned ? `Unpin ${title}` : `Close ${title}`
-								}
+								aria-label={note.pinned ? `Unpin ${title}` : `Close ${title}`}
 								className={
 									note.pinned
 										? "-translate-y-1/2 absolute top-1/2 right-2 flex size-4 shrink-0 items-center justify-center opacity-65 hover:opacity-100"
@@ -245,6 +242,16 @@ type TabBarProps = {
 	onTogglePin: (path: string) => void;
 };
 
+const tabDropAnimation: DropAnimation = {
+	duration: 200,
+	easing: "cubic-bezier(0.25, 1, 0.5, 1)",
+	sideEffects: defaultDropAnimationSideEffects({
+		styles: {
+			active: { opacity: "0" },
+		},
+	}),
+};
+
 export const TabBar = memo(function TabBar({
 	spaceTitleFor,
 	onSelect,
@@ -275,7 +282,8 @@ export const TabBar = memo(function TabBar({
 	}, []);
 
 	const scheduleTabHoverCool = useCallback(() => {
-		if (tabHoverCoolTimerRef.current) clearTimeout(tabHoverCoolTimerRef.current);
+		if (tabHoverCoolTimerRef.current)
+			clearTimeout(tabHoverCoolTimerRef.current);
 		tabHoverCoolTimerRef.current = setTimeout(() => {
 			setTabHoverWarm(false);
 			tabHoverCoolTimerRef.current = null;
@@ -284,7 +292,8 @@ export const TabBar = memo(function TabBar({
 
 	useEffect(() => {
 		return () => {
-			if (tabHoverCoolTimerRef.current) clearTimeout(tabHoverCoolTimerRef.current);
+			if (tabHoverCoolTimerRef.current)
+				clearTimeout(tabHoverCoolTimerRef.current);
 		};
 	}, []);
 
@@ -305,26 +314,13 @@ export const TabBar = memo(function TabBar({
 		[],
 	);
 
-	const dndSensors = useSensors(
-		useSensor(PointerSensor, {
-			activationConstraint: { distance: 1 },
-		}),
+	const pointerSensorOptions = useMemo(
+		() => ({ activationConstraint: { distance: 6 } }),
+		[],
 	);
+	const dndSensors = useSensors(useSensor(PointerSensor, pointerSensorOptions));
 
-	const openTabPaths = useMemo(
-		() => openTabs.map((t) => t.path),
-		[openTabs],
-	);
-
-	const tabDropAnimation: DropAnimation = {
-		duration: 200,
-		easing: "cubic-bezier(0.25, 1, 0.5, 1)",
-		sideEffects: defaultDropAnimationSideEffects({
-			styles: {
-				active: { opacity: "0" },
-			},
-		}),
-	};
+	const openTabPaths = useMemo(() => openTabs.map((t) => t.path), [openTabs]);
 
 	const handleDragEnd = useCallback((event: DragEndEvent) => {
 		const { active, over } = event;
@@ -332,7 +328,9 @@ export const TabBar = memo(function TabBar({
 		const activeId = String(active.id);
 		const overId = String(over.id);
 		useAppStore.getState().update((current) => {
-			const oldIndex = current.openTabs.findIndex((tab) => tab.path === activeId);
+			const oldIndex = current.openTabs.findIndex(
+				(tab) => tab.path === activeId,
+			);
 			const newIndex = current.openTabs.findIndex((tab) => tab.path === overId);
 			if (oldIndex === -1 || newIndex === -1) return current;
 			return {
@@ -343,97 +341,111 @@ export const TabBar = memo(function TabBar({
 	}, []);
 
 	return (
-		<div
-			ref={tabListRef}
-			className="no-scrollbar flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain"
-			onMouseEnter={() => {
-				if (tabHoverCoolTimerRef.current) {
-					clearTimeout(tabHoverCoolTimerRef.current);
-					tabHoverCoolTimerRef.current = null;
-				}
-			}}
-			onMouseLeave={scheduleTabHoverCool}
-			onWheel={(e) => {
-				if (e.deltaY !== 0) {
-					e.preventDefault();
-					tabListRef.current?.scrollBy({
-						left: e.deltaY,
-						behavior: "auto",
-					});
-				}
-			}}
-		>
-			<DndContext
-				sensors={dndSensors}
-				collisionDetection={closestCenter}
-				modifiers={[restrictToHorizontalAxis]}
-				onDragStart={(event: DragStartEvent) => {
-					setIsTabDragging(true);
-					setActiveDragPath(String(event.active.id));
+		<div className="relative h-full min-w-0 flex-1">
+			<div
+				ref={tabListRef}
+				role="tablist"
+				aria-label="Open notes"
+				className="no-scrollbar flex h-full min-w-0 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-4"
+				onMouseEnter={() => {
+					if (tabHoverCoolTimerRef.current) {
+						clearTimeout(tabHoverCoolTimerRef.current);
+						tabHoverCoolTimerRef.current = null;
+					}
 				}}
-				onDragEnd={(event) => {
-					// Apply order first so the list commits before overlay unmounts.
-					handleDragEnd(event);
-					setIsTabDragging(false);
-					setActiveDragPath(null);
-				}}
-				onDragCancel={() => {
-					setIsTabDragging(false);
-					setActiveDragPath(null);
+				onMouseLeave={scheduleTabHoverCool}
+				onWheel={(e) => {
+					if (e.deltaY !== 0) {
+						e.preventDefault();
+						tabListRef.current?.scrollBy({
+							left: e.deltaY,
+							behavior: "auto",
+						});
+					}
 				}}
 			>
-				<SortableContext
-					items={openTabPaths}
-					strategy={horizontalListSortingStrategy}
+				<DndContext
+					sensors={dndSensors}
+					collisionDetection={closestCenter}
+					modifiers={[restrictToHorizontalAxis]}
+					onDragStart={(event: DragStartEvent) => {
+						setIsTabDragging(true);
+						setActiveDragPath(String(event.active.id));
+					}}
+					onDragEnd={(event) => {
+						// Apply order first so the list commits before overlay unmounts.
+						handleDragEnd(event);
+						setIsTabDragging(false);
+						setActiveDragPath(null);
+					}}
+					onDragCancel={() => {
+						setIsTabDragging(false);
+						setActiveDragPath(null);
+					}}
 				>
-					{openTabs.map((note) => {
-						const spacePath = topLevelPath(note.path);
-						return (
-							<SortableTab
-								key={note.path}
-								note={note}
-								isActive={note.path === activeNotePath}
-								displayTitle={displayNoteTitle}
-								spacePath={spacePath}
-								spaceTitle={spaceTitleFor(spacePath)}
-								spaceIcon={spaceIcons[spacePath]}
-								spaceColor={spaceColors[spacePath]}
-								openDelay={tabHoverWarm ? 0 : 1000}
-								isTabDragging={isTabDragging}
-								onHoverOpen={markTabHoverWarm}
-								onSelect={onSelect}
-								onDoubleClick={onDoubleClick}
-								onClose={onClose}
-								onTogglePin={onTogglePin}
-							/>
-						);
-					})}
-				</SortableContext>
-				<DragOverlay dropAnimation={tabDropAnimation}>
-					{activeDragPath
-						? (() => {
-								const dragNote = openTabs.find(
-									(tab) => tab.path === activeDragPath,
-								);
-								if (!dragNote) return null;
-								const dragTitle = displayNoteTitle(
-									useEditorUiStore.getState().titleDrafts[dragNote.path] ??
-										dragNote.title,
-								);
-								const isActive = dragNote.path === activeNotePath;
-								return (
-									<div
-										data-active={isActive}
-										data-preview={dragNote.preview}
-										className="flex h-8 w-28 scale-[0.98] cursor-default items-center rounded-md border px-2.5 text-[13px] shadow-md transition-transform duration-150 sm:w-36 lg:w-44 data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-border/40 data-[active=false]:bg-muted/60 data-[active=false]:text-muted-foreground data-[preview=true]:italic data-[preview=true]:opacity-70"
-									>
-										<span className="min-w-0 flex-1 truncate">{dragTitle}</span>
-									</div>
-								);
-						  })()
-						: null}
-				</DragOverlay>
-			</DndContext>
+					<SortableContext
+						items={openTabPaths}
+						strategy={horizontalListSortingStrategy}
+					>
+						{openTabs.map((note) => {
+							const spacePath = topLevelPath(note.path);
+							return (
+								<SortableTab
+									key={note.path}
+									note={note}
+									isActive={note.path === activeNotePath}
+									displayTitle={displayNoteTitle}
+									spacePath={spacePath}
+									spaceTitle={spaceTitleFor(spacePath)}
+									spaceIcon={spaceIcons[spacePath]}
+									spaceColor={spaceColors[spacePath]}
+									openDelay={tabHoverWarm ? 0 : 1000}
+									isTabDragging={isTabDragging}
+									onHoverOpen={markTabHoverWarm}
+									onSelect={onSelect}
+									onDoubleClick={onDoubleClick}
+									onClose={onClose}
+									onTogglePin={onTogglePin}
+								/>
+							);
+						})}
+					</SortableContext>
+					<DragOverlay dropAnimation={tabDropAnimation}>
+						{activeDragPath
+							? (() => {
+									const dragNote = openTabs.find(
+										(tab) => tab.path === activeDragPath,
+									);
+									if (!dragNote) return null;
+									const dragTitle = displayNoteTitle(
+										useEditorUiStore.getState().titleDrafts[dragNote.path] ??
+											dragNote.title,
+									);
+									const isActive = dragNote.path === activeNotePath;
+									return (
+										<div
+											data-active={isActive}
+											data-preview={dragNote.preview}
+											className="flex h-8 w-28 scale-[0.96] cursor-default items-center rounded-md border px-2.5 text-[13px] shadow-md transition-transform duration-150 sm:w-36 lg:w-44 data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-border/40 data-[active=false]:bg-muted/60 data-[active=false]:text-muted-foreground data-[preview=true]:italic data-[preview=true]:opacity-70"
+										>
+											<span className="min-w-0 flex-1 truncate">
+												{dragTitle}
+											</span>
+										</div>
+									);
+								})()
+							: null}
+					</DragOverlay>
+				</DndContext>
+			</div>
+			<div
+				aria-hidden="true"
+				className="pointer-events-none absolute inset-y-0 left-0 z-20 w-4 bg-linear-to-r from-background via-background/85 to-transparent"
+			/>
+			<div
+				aria-hidden="true"
+				className="pointer-events-none absolute inset-y-0 right-0 z-20 w-4 bg-linear-to-l from-background via-background/85 to-transparent"
+			/>
 		</div>
 	);
 });

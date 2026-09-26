@@ -45,22 +45,21 @@ export function replaceInNoteContent(
 	search: string,
 	replacement: string,
 	replaceAll: boolean,
+	targetMatchIndex = 0,
 ) {
 	if (!search) return content;
 
-	let didReplace = false;
+	const state = { matchCount: 0, didReplace: false };
 	const nextContent = replaceInNode(
 		normalizeNoteContent(content),
 		search,
 		replacement,
 		replaceAll,
-		() => didReplace,
-		() => {
-			didReplace = true;
-		},
+		targetMatchIndex,
+		state,
 	);
 
-	return didReplace ? nextContent : content;
+	return state.didReplace ? nextContent : content;
 }
 
 function replaceInNode(
@@ -68,21 +67,25 @@ function replaceInNode(
 	search: string,
 	replacement: string,
 	replaceAll: boolean,
-	hasReplaced: () => boolean,
-	markReplaced: () => void,
+	targetMatchIndex: number,
+	state: { matchCount: number; didReplace: boolean },
 ): NoteContent {
 	let changed = false;
 	const nextNode: NoteContent = { ...node };
 
-	if (typeof node.text === "string" && (replaceAll || !hasReplaced())) {
-		const nextText = replaceAll
-			? node.text.split(search).join(replacement)
-			: replaceFirst(node.text, search, replacement);
+	if (typeof node.text === "string" && (replaceAll || !state.didReplace)) {
+		const nextText = replaceTextOccurrences(
+			node.text,
+			search,
+			replacement,
+			replaceAll,
+			targetMatchIndex,
+			state,
+		);
 
 		if (nextText !== node.text) {
 			nextNode.text = nextText;
 			changed = true;
-			markReplaced();
 		}
 	}
 
@@ -93,8 +96,8 @@ function replaceInNode(
 				search,
 				replacement,
 				replaceAll,
-				hasReplaced,
-				markReplaced,
+				targetMatchIndex,
+				state,
 			),
 		);
 
@@ -107,11 +110,43 @@ function replaceInNode(
 	return changed ? nextNode : node;
 }
 
-function replaceFirst(source: string, search: string, replacement: string) {
-	const index = source.indexOf(search);
-	if (index === -1) return source;
+function replaceTextOccurrences(
+	source: string,
+	search: string,
+	replacement: string,
+	replaceAll: boolean,
+	targetMatchIndex: number,
+	state: { matchCount: number; didReplace: boolean },
+) {
+	const normalizedSource = source.toLocaleLowerCase();
+	const normalizedSearch = search.toLocaleLowerCase();
+	let searchIndex = normalizedSource.indexOf(normalizedSearch);
+	let sourceIndex = 0;
+	let result = "";
+	let changed = false;
 
-	return `${source.slice(0, index)}${replacement}${source.slice(index + search.length)}`;
+	while (searchIndex !== -1) {
+		const shouldReplace =
+			replaceAll ||
+			(!state.didReplace && state.matchCount === targetMatchIndex);
+		state.matchCount += 1;
+
+		if (shouldReplace) {
+			result += source.slice(sourceIndex, searchIndex) + replacement;
+			sourceIndex = searchIndex + search.length;
+			state.didReplace = true;
+			changed = true;
+		}
+
+		if (!replaceAll && state.didReplace) break;
+		searchIndex = normalizedSource.indexOf(
+			normalizedSearch,
+			searchIndex + normalizedSearch.length,
+		);
+	}
+
+	if (!changed) return source;
+	return result + source.slice(sourceIndex);
 }
 
 function collectText(node: NoteContent, chunks: string[]) {

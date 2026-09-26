@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useEffect } from "react";
 import type * as Y from "yjs";
 import { NoteEditor } from "@/components/note-editor";
 import type { NoteContent, PageFormat } from "@/lib/storage/types";
@@ -16,6 +16,7 @@ const MemoNoteEditor = memo(
 		prev.pageFormat === next.pageFormat &&
 		prev.yDoc === next.yDoc &&
 		prev.searchQuery === next.searchQuery &&
+		prev.searchMatchIndex === next.searchMatchIndex &&
 		prev.onChange === next.onChange &&
 		prev.onContentRendered === next.onContentRendered &&
 		prev.onContentSnapshot === next.onContentSnapshot &&
@@ -77,9 +78,21 @@ function ActiveNotePaneInner({
 	const pageFormats = useEditorUiStore((s) => s.pageFormats);
 	const zenMode = useEditorUiStore((s) => s.zenMode);
 	const findText = useEditorUiStore((s) => s.findText);
+	const findMatchIndex = useEditorUiStore((s) => s.findMatchIndex);
+	const setFindMatchIndex = useEditorUiStore((s) => s.setFindMatchIndex);
+	const setFindMatchCount = useEditorUiStore((s) => s.setFindMatchCount);
 	const floatingPanelMode = useEditorUiStore((s) => s.floatingPanelMode);
 	const searchEnabled =
 		floatingPanelMode === "find" || floatingPanelMode === "replace";
+
+	useEffect(() => {
+		if (!activeNotePath) {
+			setFindMatchIndex(0);
+			setFindMatchCount(0);
+			return;
+		}
+		setFindMatchIndex(0);
+	}, [activeNotePath, setFindMatchCount, setFindMatchIndex]);
 
 	return (
 		<section
@@ -147,6 +160,7 @@ function ActiveNotePaneInner({
 								pageFormat={pageFormats[tab.path] ?? defaultPageFormat}
 								yDoc={yNote.doc as Y.Doc}
 								searchQuery={isActive && searchEnabled ? findText : ""}
+								searchMatchIndex={isActive ? findMatchIndex : 0}
 								zenMode={zenMode}
 								onChange={onChange}
 								onContentRendered={onContentRendered}

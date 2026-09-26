@@ -70,6 +70,7 @@ declare global {
 			) => () => void;
 			auth: {
 				getPendingCallback: () => Promise<string | null>;
+				startCallbackServer: () => Promise<string>;
 			};
 			sync: {
 				getStatus: () => Promise<SyncStatus>;
