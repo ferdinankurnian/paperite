@@ -14,6 +14,13 @@ export default defineConfig({
 		),
 	},
 	base: "./",
+	server: {
+		// dev:server runs Express on :3000; proxy /api there so WebStorage
+		// works with same-origin BASE_URL. No prod impact.
+		proxy: {
+			"/api": "http://localhost:3000",
+		},
+	},
 	resolve: {
 		alias: {
 			"@": fileURLToPath(new URL("./src", import.meta.url)),

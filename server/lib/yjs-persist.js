@@ -22,6 +22,24 @@ const syncNoteId = (notePath, content) => {
 const syncNoteDirectory = (noteId) => path.join(syncNotesRoot(), noteId);
 const syncNoteSnapshotPath = (noteId) =>
 	path.join(syncNoteDirectory(noteId), "snapshot.bin");
+
+// Snapshot writes are read-modify-write on shared files. Concurrent appends
+// (multi-tab serve, keystroke bursts) read the same snapshot and the loser's
+// update vanishes. Serialize per note path. (Ported from main.js.)
+const yNoteWriteLocks = new Map();
+
+const withYNoteWriteLock = (lockKey, task) => {
+	const previous = yNoteWriteLocks.get(lockKey) ?? Promise.resolve();
+	const next = previous.then(task, task);
+	yNoteWriteLocks.set(lockKey, next);
+	const cleanup = () => {
+		if (yNoteWriteLocks.get(lockKey) === next) {
+			yNoteWriteLocks.delete(lockKey);
+		}
+	};
+	next.then(cleanup, cleanup);
+	return next;
+};
 const syncNoteStateVectorPath = (noteId) =>
 	path.join(syncNoteDirectory(noteId), "state-vector.bin");
 const syncNoteManifestPath = (noteId) =>
@@ -54,10 +72,17 @@ const encodeYNoteFromContent = (content) => {
 };
 
 const writeLocalYNoteSnapshot = async (notePath, content) => {
+	const normalizedPath = currentNotePath(notePath);
+	return withYNoteWriteLock(normalizedPath, () =>
+		writeLocalYNoteSnapshotLocked(normalizedPath, content),
+	);
+};
+
+const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 	const normalizedContent = normalizeNoteContent(content);
 	if (!normalizedContent.id) normalizedContent.id = crypto.randomUUID();
 
-	const noteId = syncNoteId(notePath, normalizedContent);
+	const noteId = syncNoteId(normalizedPath, normalizedContent);
 	const noteDirectory = syncNoteDirectory(noteId);
 	const updatesDirectory = syncNoteUpdatesDirectory(noteId);
 	const encoded = encodeYNoteFromContent(normalizedContent);
@@ -76,7 +101,7 @@ const writeLocalYNoteSnapshot = async (notePath, content) => {
 			{
 				format: "yjs-v1",
 				noteId,
-				path: currentNotePath(notePath),
+				path: normalizedPath,
 				updatedAt: now,
 				snapshot: path.relative(noteDirectory, syncNoteSnapshotPath(noteId)),
 				stateVector: path.relative(
@@ -92,8 +117,15 @@ const writeLocalYNoteSnapshot = async (notePath, content) => {
 	return { noteId, updatedAt: now };
 };
 
-const ensureLocalYNoteSnapshot = async (notePath, content) => {
-	const noteId = syncNoteId(notePath, content);
+const ensureLocalYNoteSnapshot = (notePath, content) => {
+	const normalizedPath = currentNotePath(notePath);
+	return withYNoteWriteLock(normalizedPath, () =>
+		ensureLocalYNoteSnapshotLocked(normalizedPath, content),
+	);
+};
+
+const ensureLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
+	const noteId = syncNoteId(normalizedPath, content);
 
 	try {
 		await fs.access(syncNoteSnapshotPath(noteId));
@@ -102,13 +134,19 @@ const ensureLocalYNoteSnapshot = async (notePath, content) => {
 		if (error?.code !== "ENOENT") throw error;
 	}
 
-	await writeLocalYNoteSnapshot(notePath, content);
+	await writeLocalYNoteSnapshotLocked(normalizedPath, content);
 };
 
-const readLocalYNoteState = async (notePath) => {
+const readLocalYNoteState = (notePath) => {
 	const normalizedPath = currentNotePath(notePath);
+	return withYNoteWriteLock(normalizedPath, () =>
+		readLocalYNoteStateLocked(normalizedPath),
+	);
+};
+
+const readLocalYNoteStateLocked = async (normalizedPath) => {
 	const content = await readNoteContent(normalizedPath, true);
-	await ensureLocalYNoteSnapshot(normalizedPath, content);
+	await ensureLocalYNoteSnapshotLocked(normalizedPath, content);
 
 	const noteId = syncNoteId(normalizedPath, content);
 	const snapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
@@ -120,10 +158,16 @@ const readLocalYNoteState = async (notePath) => {
 	};
 };
 
-const appendLocalYNoteUpdate = async (notePath, update) => {
+const appendLocalYNoteUpdate = (notePath, update) => {
 	const normalizedPath = currentNotePath(notePath);
+	return withYNoteWriteLock(normalizedPath, () =>
+		appendLocalYNoteUpdateLocked(normalizedPath, update),
+	);
+};
+
+const appendLocalYNoteUpdateLocked = async (normalizedPath, update) => {
 	const content = await readNoteContent(normalizedPath, true);
-	await ensureLocalYNoteSnapshot(normalizedPath, content);
+	await ensureLocalYNoteSnapshotLocked(normalizedPath, content);
 
 	const noteId = syncNoteId(normalizedPath, content);
 	const noteDirectory = syncNoteDirectory(noteId);

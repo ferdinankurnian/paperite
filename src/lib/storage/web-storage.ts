@@ -2,6 +2,7 @@ import type {
 	NoteContent,
 	NoteSearchResult,
 	NotesEngine,
+	PageFormat,
 	PaperiteAppState,
 	TrashNote,
 	WorkspaceSnapshot,
@@ -101,6 +102,16 @@ export class WebNotesEngine implements NotesEngine {
 		return api(`/api/notes/${encodeURIComponent(path)}`, {
 			method: "PUT",
 			body: JSON.stringify(content),
+		});
+	}
+
+	async setPageFormat(
+		path: string,
+		format: PageFormat,
+	): Promise<{ ok: true; pageFormat: PageFormat }> {
+		return api(`/api/notes/${encodeURIComponent(path)}/page-format`, {
+			method: "PUT",
+			body: JSON.stringify(format),
 		});
 	}
 

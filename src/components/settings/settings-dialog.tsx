@@ -1,4 +1,5 @@
 import {
+	CloudIcon,
 	FileTextIcon,
 	IndentIcon,
 	KeyboardIcon,
@@ -7,10 +8,14 @@ import {
 	MoonIcon,
 	PaletteIcon,
 	PanelLeftIcon,
+	SparklesIcon,
 	SunIcon,
 	UserRoundIcon,
 } from "lucide-react";
-import { useAppStore } from "@/lib/stores/app-store";
+import { useMemo, useState } from "react";
+import { AccountSessions } from "@/components/settings/account-sessions";
+import { KeyboardSettings } from "@/components/settings/keyboard-settings";
+import { SyncSettings } from "@/components/settings/sync-settings";
 import { useTheme } from "@/components/theme-provider";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -24,13 +29,35 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { PageFormat } from "@/lib/storage/types";
-import { KeyboardSettings } from "@/components/settings/keyboard-settings";
+import { useAppStore } from "@/lib/stores/app-store";
+import closeBtnAll from "/previews/close-btn-all.png";
+import closeBtnCloseOnly from "/previews/close-btn-close-only.png";
+import notePreviewsHide from "/previews/note-previews-hide.png";
+import notePreviewsShow from "/previews/note-previews-show.png";
 
 const themes = [
 	{ icon: SunIcon, label: "Light", value: "light" },
 	{ icon: MoonIcon, label: "Dark", value: "dark" },
 	{ icon: LaptopIcon, label: "System", value: "system" },
 ] as const;
+
+// Deterministic gibberish that keeps the email shape (@ and dots) but
+// replaces every letter/digit with a random one. Clicking reveals the
+// real address.
+function scrambleEmail(email: string): string {
+	const letters = "abcdefghijklmnopqrstuvwxyz";
+	let seed = 0;
+	for (const c of email) seed = (seed * 31 + c.charCodeAt(0)) >>> 0;
+	const rand = () => {
+		seed = (seed * 1103515245 + 12345) >>> 0;
+		return seed / 2 ** 32;
+	};
+	return email.replace(/[a-zA-Z0-9]/g, (c) =>
+		/\d/.test(c)
+			? String(Math.floor(rand() * 10))
+			: letters[Math.floor(rand() * letters.length)],
+	);
+}
 
 export type SettingsTab = "general" | "note" | "keyboard" | "sync" | "account";
 
@@ -53,7 +80,7 @@ export function SettingsDialog({
 	onOpenChange: (open: boolean) => void;
 	activeTab: SettingsTab;
 	onActiveTabChange: (tab: SettingsTab) => void;
-	user: { name: string; avatar: string };
+	user: { name: string; avatar: string; email: string };
 	showNotePreview: boolean;
 	onSetShowNotePreview: (show: boolean) => void;
 	closeButtonOnly: boolean;
@@ -63,22 +90,23 @@ export function SettingsDialog({
 	onRequestLogOut: () => void;
 	betaEnabled: boolean;
 }) {
+	const [showEmail, setShowEmail] = useState(false);
+	const fakeEmail = useMemo(() => scrambleEmail(user.email), [user.email]);
 	const { theme, setTheme } = useTheme();
 	const defaultPageFormat = useAppStore((s) => s.defaultPageFormat);
 	const setDefaultPageFormat = useAppStore((s) => s.setDefaultPageFormat);
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="h-[min(560px,calc(100svh-2rem))] max-w-3xl gap-0 overflow-hidden p-0 sm:max-w-4xl">
-				<div className="grid min-h-0 grid-cols-[190px_minmax(0,1fr)]">
+			<DialogContent className="h-[min(560px,calc(100svh-2rem))] max-w-3xl gap-0 overflow-hidden p-0 sm:max-w-5xl">
+				<div className="grid min-h-0 grid-cols-[225px_minmax(0,1fr)]">
 					<aside className="border-r bg-muted/35 p-2">
-						<p className="px-2 py-2 text-xs font-medium text-muted-foreground">
-							Settings
-						</p>
+						<p className="px-2 py-2 text-lg font-semibold">Settings</p>
 						<Button
 							type="button"
 							variant={activeTab === "general" ? "secondary" : "ghost"}
 							onClick={() => onActiveTabChange("general")}
+							size="lg"
 							className="w-full justify-start"
 						>
 							<PaletteIcon className="size-4" />
@@ -88,6 +116,7 @@ export function SettingsDialog({
 							type="button"
 							variant={activeTab === "note" ? "secondary" : "ghost"}
 							onClick={() => onActiveTabChange("note")}
+							size="lg"
 							className="w-full justify-start"
 						>
 							<FileTextIcon className="size-4" />
@@ -97,16 +126,28 @@ export function SettingsDialog({
 							type="button"
 							variant={activeTab === "keyboard" ? "secondary" : "ghost"}
 							onClick={() => onActiveTabChange("keyboard")}
+							size="lg"
 							className="w-full justify-start"
 						>
 							<KeyboardIcon className="size-4" />
 							Keyboard
+						</Button>
+						<Button
+							type="button"
+							variant={activeTab === "sync" ? "secondary" : "ghost"}
+							onClick={() => onActiveTabChange("sync")}
+							size="lg"
+							className="w-full justify-start"
+						>
+							<CloudIcon className="size-4" />
+							Sync
 						</Button>
 						{betaEnabled ? (
 							<Button
 								type="button"
 								variant={activeTab === "account" ? "secondary" : "ghost"}
 								onClick={() => onActiveTabChange("account")}
+								size="lg"
 								className="w-full justify-start"
 							>
 								<UserRoundIcon className="size-4" />
@@ -172,7 +213,7 @@ export function SettingsDialog({
 												}`}
 											>
 												<img
-													src="/previews/note-previews-show.png"
+													src={notePreviewsShow}
 													alt="Show"
 													className="h-16 w-20 object-cover object-left"
 												/>
@@ -190,7 +231,7 @@ export function SettingsDialog({
 												}`}
 											>
 												<img
-													src="/previews/note-previews-hide.png"
+													src={notePreviewsHide}
 													alt="Hide"
 													className="h-16 w-20 object-cover object-left"
 												/>
@@ -220,7 +261,7 @@ export function SettingsDialog({
 												}`}
 											>
 												<img
-													src="/previews/close-btn-all.png"
+													src={closeBtnAll}
 													alt="All buttons"
 													className="h-16 w-20 object-cover object-top"
 												/>
@@ -238,7 +279,7 @@ export function SettingsDialog({
 												}`}
 											>
 												<img
-													src="/previews/close-btn-close-only.png"
+													src={closeBtnCloseOnly}
 													alt="Close only"
 													className="h-16 w-20 object-cover object-top"
 												/>
@@ -325,7 +366,7 @@ export function SettingsDialog({
 												</p>
 											</div>
 											<Tabs
-								value={defaultPageFormat.paragraphSpacing}
+												value={defaultPageFormat.paragraphSpacing}
 												onValueChange={(value) =>
 													setDefaultPageFormat({
 														paragraphSpacing:
@@ -337,40 +378,49 @@ export function SettingsDialog({
 													<TabsTrigger value="none" className="h-full">
 														None
 													</TabsTrigger>
-												<TabsTrigger value="spacious" className="h-full">
-													Spacious
+													<TabsTrigger value="spacious" className="h-full">
+														Spacious
 													</TabsTrigger>
 												</TabsList>
 											</Tabs>
 										</div>
-						<div className="flex items-center justify-between gap-4">
-							<div>
-								<p className="text-sm font-medium">Indentation</p>
-								<p className="text-xs text-muted-foreground">
-									Control how paragraph lines are indented.
-								</p>
-							</div>
-							<Tabs
-								value={defaultPageFormat.indentation}
-								onValueChange={(value) =>
-									setDefaultPageFormat({
-										indentation: value as PageFormat["indentation"],
-									})
-								}
-							>
-								<TabsList className="grid h-9 w-52 grid-cols-3">
-									<TabsTrigger value="none" className="h-full px-2 text-xs">
-										None
-									</TabsTrigger>
-									<TabsTrigger value="first-line" className="h-full px-2 text-xs">
-										First line
-									</TabsTrigger>
-									<TabsTrigger value="hanging" className="h-full px-2 text-xs">
-										Hanging
-									</TabsTrigger>
-								</TabsList>
-							</Tabs>
-						</div>
+										<div className="flex items-center justify-between gap-4">
+											<div>
+												<p className="text-sm font-medium">Indentation</p>
+												<p className="text-xs text-muted-foreground">
+													Control how paragraph lines are indented.
+												</p>
+											</div>
+											<Tabs
+												value={defaultPageFormat.indentation}
+												onValueChange={(value) =>
+													setDefaultPageFormat({
+														indentation: value as PageFormat["indentation"],
+													})
+												}
+											>
+												<TabsList className="grid h-9 w-52 grid-cols-3">
+													<TabsTrigger
+														value="none"
+														className="h-full px-2 text-xs"
+													>
+														None
+													</TabsTrigger>
+													<TabsTrigger
+														value="first-line"
+														className="h-full px-2 text-xs"
+													>
+														First line
+													</TabsTrigger>
+													<TabsTrigger
+														value="hanging"
+														className="h-full px-2 text-xs"
+													>
+														Hanging
+													</TabsTrigger>
+												</TabsList>
+											</Tabs>
+										</div>
 									</div>
 								</section>
 							</>
@@ -384,53 +434,64 @@ export function SettingsDialog({
 									</DialogDescription>
 								</DialogHeader>
 								<section className="rounded-xl bg-muted/45 p-4">
-									<div className="flex items-center gap-3">
-										<Avatar className="size-10 rounded-full">
-											<AvatarImage src={user.avatar} alt={user.name} />
-											<AvatarFallback className="rounded-full">
-												{user.name
-													.split(" ")
-													.map((n) => n[0])
-													.join("")
-													.slice(0, 2)
-													.toUpperCase()}
-											</AvatarFallback>
-										</Avatar>
-										<div className="min-w-0">
-											<h3 className="text-sm font-medium">{user.name}</h3>
-											<p className="truncate text-xs text-muted-foreground">
-												Free Plan
-											</p>
+									<div className="flex items-center justify-between gap-3">
+										<div className="flex min-w-0 items-center gap-3">
+											<Avatar className="size-10 rounded-full">
+												<AvatarImage src={user.avatar} alt={user.name} />
+												<AvatarFallback className="rounded-full">
+													{user.name
+														.split(" ")
+														.map((n) => n[0])
+														.join("")
+														.slice(0, 2)
+														.toUpperCase()}
+												</AvatarFallback>
+											</Avatar>
+											<div className="min-w-0">
+												<h3 className="text-sm font-medium">{user.name}</h3>
+												{user.email ? (
+													<button
+														type="button"
+														onClick={() => setShowEmail((v) => !v)}
+														title={showEmail ? "Hide email" : "Show email"}
+														aria-label={showEmail ? "Hide email" : "Show email"}
+														className="flex max-w-full items-center gap-1.5"
+													>
+														<span
+															className={`truncate text-xs text-muted-foreground transition-all ${
+																showEmail ? "" : "blur-[2px] select-none"
+															}`}
+														>
+															{showEmail ? user.email : fakeEmail}
+														</span>
+													</button>
+												) : (
+													<p className="truncate text-xs text-muted-foreground">
+														Free Plan
+													</p>
+												)}
+											</div>
 										</div>
+										<Button
+											type="button"
+											variant="destructive"
+											size="sm"
+											className="shrink-0"
+											onClick={onRequestLogOut}
+										>
+											<LogOutIcon className="size-4" />
+											Sign Out
+										</Button>
 									</div>
 								</section>
 								<section className="mt-4 rounded-xl bg-muted/45 p-4">
-									<div className="mb-3 flex items-center gap-2">
-										<UserRoundIcon className="size-4 text-muted-foreground" />
-										<div>
-											<h3 className="text-sm font-medium">Profile</h3>
-											<p className="text-xs text-muted-foreground">
-												Your account details from Clerk.
-											</p>
-										</div>
-									</div>
-									<div className="space-y-3">
-										<div>
-											<p className="text-xs font-medium text-muted-foreground">
-												Full Name
-											</p>
-											<p className="text-sm">{user.name}</p>
-										</div>
-									</div>
-								</section>
-								<section className="mt-4 rounded-xl bg-muted/45 p-4">
-									<div className="flex items-center justify-between">
-										<div className="flex items-center gap-2">
-											<LogOutIcon className="size-4 text-muted-foreground" />
-											<div>
-												<h3 className="text-sm font-medium">Sign Out</h3>
-												<p className="text-xs text-muted-foreground">
-													Sign out of your account on this device.
+									<div className="flex items-center justify-between gap-3">
+										<div className="flex min-w-0 items-center gap-2">
+											<SparklesIcon className="size-4 shrink-0 text-muted-foreground" />
+											<div className="min-w-0">
+												<h3 className="text-sm font-medium">Join Paperite+</h3>
+												<p className="truncate text-xs text-muted-foreground">
+													Cloud sync across all your devices.
 												</p>
 											</div>
 										</div>
@@ -438,15 +499,18 @@ export function SettingsDialog({
 											type="button"
 											variant="outline"
 											size="sm"
-											onClick={onRequestLogOut}
+											className="shrink-0"
+											onClick={() => onActiveTabChange("sync")}
 										>
-											Sign Out
+											Join Paperite+
 										</Button>
 									</div>
 								</section>
+								<AccountSessions />
 							</>
 						)}
 						{activeTab === "keyboard" && <KeyboardSettings />}
+						{activeTab === "sync" && <SyncSettings />}
 					</div>
 				</div>
 			</DialogContent>

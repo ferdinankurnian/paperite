@@ -4,13 +4,26 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://github.com https://avatars.githubusercontent.com https://img.clerk.com; connect-src 'self' ws: http://localhost:* https://*.clerk.accounts.dev https://*.clerk.dev"
+      content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://127.0.0.1:* http://localhost:* https://github.com https://avatars.githubusercontent.com https://img.clerk.com; connect-src 'self' ws: http://localhost:* https://*.clerk.accounts.dev https://*.clerk.dev"
     />
     <meta
       http-equiv="X-Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://github.com https://avatars.githubusercontent.com https://img.clerk.com; connect-src 'self' ws: http://localhost:* https://*.clerk.accounts.dev https://*.clerk.dev"
+      content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://127.0.0.1:* http://localhost:* https://github.com https://avatars.githubusercontent.com https://img.clerk.com; connect-src 'self' ws: http://localhost:* https://*.clerk.accounts.dev https://*.clerk.dev"
     />
     <title>Paperite</title>
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <link
+      rel="icon"
+      type="image/png"
+      media="(prefers-color-scheme: light)"
+      href="./paperiteicon-light.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      media="(prefers-color-scheme: dark)"
+      href="./paperiteicon-dark.png"
+    />
   </head>
   <body style="background: #171717">
     <div id="root"></div>

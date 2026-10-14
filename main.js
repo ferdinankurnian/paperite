@@ -2,8 +2,8 @@ const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const nodeCrypto = require("node:crypto");
+const { execFileSync } = require("node:child_process");
 const path = require("node:path");
-const { pathToFileURL } = require("node:url");
 const { DatabaseSync } = require("node:sqlite");
 const {
 	app,
@@ -55,6 +55,19 @@ const loadLocalEnv = () => {
 };
 
 loadLocalEnv();
+
+// Headless mode: the packaged binary (AppImage, tarball, or `electron .`)
+// doubles as the `paperite serve` CLI. Boot the standalone server and skip
+// every window / single-instance branch below — the http server keeps the
+// event loop alive. `serve`/`--serve` may sit anywhere in argv:
+// packaged: [binary, serve, ...], dev: [electron, ., serve, ...].
+const serveArgs = process.argv.slice(1);
+const isServeMode =
+	serveArgs.includes("serve") || serveArgs.includes("--serve");
+
+if (isServeMode) {
+	require("./server/index.js");
+}
 
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const shouldUseMacChrome = process.platform === "darwin";
@@ -248,6 +261,18 @@ const createEmptyNoteContent = (title) => ({
 	type: "doc",
 	...(title ? { title } : {}),
 	content: [{ type: "paragraph" }],
+});
+
+const normalizePageFormat = (format) => ({
+	indentation:
+		format?.indentation === "first-line" || format?.firstLineIndent === true
+			? "first-line"
+			: format?.indentation === "hanging"
+				? "hanging"
+				: "none",
+	lineHeight: format?.lineHeight === "1.5" ? "1.5" : "normal",
+	paragraphSpacing:
+		format?.paragraphSpacing === "spacious" ? "spacious" : "none",
 });
 
 const isUuidFilename = (notePath) =>
@@ -576,6 +601,9 @@ const writeDerivedNoteContent = async (notePath, content) => {
 			if (normalizedContent.pinned === undefined && existingContent.pinned !== undefined) {
 				normalizedContent.pinned = existingContent.pinned;
 			}
+			if (normalizedContent.pageFormat === undefined && existingContent.pageFormat !== undefined) {
+				normalizedContent.pageFormat = existingContent.pageFormat;
+			}
 		} catch {
 			// Keep the derived payload as-is when the manifest is missing.
 		}
@@ -766,7 +794,10 @@ const startGoogleDriveConnection = async () => {
 			.then(() => {
 				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 				response.end(
-					"<h1>Paperite connected to Google Drive</h1><p>You can close this tab.</p>",
+					successPage(
+						"Drive connected.",
+						"Paperite is connected to Google Drive. Your notes will sync.",
+					),
 				);
 			})
 			.catch((error) => {
@@ -775,7 +806,11 @@ const startGoogleDriveConnection = async () => {
 				});
 				response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
 				response.end(
-					`<h1>Paperite Google Drive connection failed</h1><p>${error instanceof Error ? error.message : "Unknown error"}</p>`,
+					successPage(
+						"Connection failed.",
+						error instanceof Error ? error.message : "Unknown error",
+						"!",
+					),
 				);
 			})
 			.finally(() => server.close());
@@ -1972,12 +2007,173 @@ const writeNoteTitle = async (notePath, title) => {
 const isAppUrl = (url) => {
 	if (url.startsWith("paperite://")) return true;
 	if (devServerUrl && url.startsWith(devServerUrl)) return true;
+	if (
+		rendererServerUrl &&
+		(url.startsWith(rendererServerUrl) ||
+			url.startsWith(rendererServerUrl.replace("127.0.0.1", "localhost")))
+	)
+		return true;
 	return url.startsWith("file://");
 };
 
 const sendToFocusedWindow = (channel, payload) => {
 	const window = BrowserWindow.getFocusedWindow() ?? mainWindow;
 	window?.webContents.send(channel, payload);
+};
+
+// ---- renderer static server (production) ----
+// Production serves dist/ over http://127.0.0.1:<fixed port> instead of
+// file://. Clerk (and cookie/storage behavior in general) breaks on file://
+// origins: the dev-browser handshake 400s and sessions can never be
+// restored — not even by a plain reload. A fixed port keeps the origin, and
+// therefore all renderer storage, stable across restarts. The
+// single-instance lock guarantees no second Paperite fights for the port.
+const rendererPortStart = 31275;
+const rendererPortAttempts = 10;
+let rendererServerUrl;
+let rendererServerPromise;
+
+const rendererMimeTypes = {
+	".html": "text/html; charset=utf-8",
+	".js": "text/javascript; charset=utf-8",
+	".mjs": "text/javascript; charset=utf-8",
+	".css": "text/css; charset=utf-8",
+	".svg": "image/svg+xml",
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+	".avif": "image/avif",
+	".bmp": "image/bmp",
+	".ico": "image/x-icon",
+	".woff": "font/woff",
+	".woff2": "font/woff2",
+	".json": "application/json; charset=utf-8",
+	".map": "application/json; charset=utf-8",
+};
+
+const createRendererServer = () => {
+	const root = path.join(__dirname, "dist");
+
+	const serveFile = async (filePath, response, cacheControl) => {
+		try {
+			const data = await fs.readFile(filePath);
+			const ext = path.extname(filePath).toLowerCase();
+			response.writeHead(200, {
+				"content-type":
+					rendererMimeTypes[ext] ?? "application/octet-stream",
+				"content-length": data.length,
+				"cache-control": cacheControl,
+			});
+			response.end(data);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+
+	return http.createServer((request, response) => {
+		void (async () => {
+			const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+			// pathname stays percent-encoded here: each segment is decoded
+			// exactly once below. (Decoding the whole path first would
+			// corrupt names containing a literal %.)
+			const rawPathname = requestUrl.pathname;
+			const pathname = decodeURIComponent(rawPathname);
+
+			// Workspace assets (note images). file:// img URLs are blocked
+			// on http:// pages, so notes reference these http URLs instead.
+			// Stored paths stay workspace-relative; the port prefix is added
+			// at display time only.
+			const noteAssetsPrefix = "/note-assets/";
+			if (
+				rawPathname === "/note-assets" ||
+				rawPathname.startsWith(noteAssetsPrefix)
+			) {
+				let absolutePath;
+				try {
+					const segments = rawPathname
+						.slice(noteAssetsPrefix.length)
+						.split("/")
+						.filter(Boolean)
+						.map((segment) => decodeURIComponent(segment));
+					if (segments.some((s) => s === "." || s === ".." || !s))
+						throw new Error("bad asset path");
+					absolutePath = resolveWorkspacePath(segments.join("/"));
+				} catch {
+					response.writeHead(403);
+					response.end("Forbidden");
+					return;
+				}
+				if (await serveFile(absolutePath, response, "no-store")) return;
+				response.writeHead(404);
+				response.end("Not found");
+				return;
+			}
+
+			// Jail everything else inside dist/.
+			const resolved = path.normalize(path.join(root, pathname));
+			if (resolved !== root && !resolved.startsWith(root + path.sep)) {
+				response.writeHead(403);
+				response.end("Forbidden");
+				return;
+			}
+
+			if (!path.basename(pathname).includes(".")) {
+				// SPA fallback: the hash router lives in a single document,
+				// and the OAuth callback replaceStates to a non-hash /login
+				// path — a reload there must not land on a blank page.
+				if (
+					await serveFile(path.join(root, "index.html"), response, "no-store")
+				)
+					return;
+				response.writeHead(404);
+				response.end("Not found");
+				return;
+			}
+
+			const cacheControl = pathname.startsWith("/assets/")
+				? "public, max-age=31536000, immutable"
+				: "no-store";
+			if (await serveFile(resolved, response, cacheControl)) return;
+			response.writeHead(404);
+			response.end("Not found");
+		})().catch(() => {
+			try {
+				response.writeHead(500);
+				response.end("Internal error");
+			} catch {
+				// Socket already gone.
+			}
+		});
+	});
+};
+
+const startRendererServer = async () => {
+	let lastError;
+	for (let i = 0; i < rendererPortAttempts; i += 1) {
+		const port = rendererPortStart + i;
+		const server = createRendererServer();
+		try {
+			await new Promise((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(port, "127.0.0.1", resolve);
+			});
+			rendererServerUrl = `http://127.0.0.1:${port}`;
+			console.log(`[paperite] renderer server on ${rendererServerUrl}`);
+			return rendererServerUrl;
+		} catch (error) {
+			server.close();
+			lastError = error;
+		}
+	}
+	throw lastError ?? new Error("could not start renderer server");
+};
+
+const getRendererServerUrl = () => {
+	rendererServerPromise ??= startRendererServer();
+	return rendererServerPromise;
 };
 
 const createWindowOptions = ({ width, height, minWidth, minHeight }) => ({
@@ -1990,6 +2186,9 @@ const createWindowOptions = ({ width, height, minWidth, minHeight }) => ({
 	title: "Paperite",
 	backgroundColor: "#171717",
 	webPreferences: {
+		// Explicit persistent partition: Clerk's session tokens live in
+		// the renderer's localStorage/cookies, which must survive restarts.
+		partition: "persist:paperite",
 		webSecurity: false,
 		preload: require("node:path").join(__dirname, "preload.js"),
 		additionalArguments: [
@@ -1997,6 +2196,23 @@ const createWindowOptions = ({ width, height, minWidth, minHeight }) => ({
 		],
 	},
 });
+
+const revealWindow = (window, timeoutMs = 4_000) => {
+	let revealed = false;
+
+	const reveal = () => {
+		if (revealed || window.isDestroyed()) return;
+		revealed = true;
+		clearTimeout(timer);
+		window.show();
+	};
+
+	const timer = setTimeout(reveal, timeoutMs);
+
+	window.once("ready-to-show", reveal);
+	window.webContents.once("did-finish-load", reveal);
+	window.once("closed", () => clearTimeout(timer));
+};
 
 const createApplicationMenu = () => {
 	const template = [
@@ -2137,7 +2353,7 @@ const createWindow = () => {
 		}),
 	);
 
-	mainWindow.once("ready-to-show", () => mainWindow.show());
+	revealWindow(mainWindow);
 
 	mainWindow.webContents.on("will-navigate", (event, url) => {
 		if (isAppUrl(url)) return;
@@ -2156,7 +2372,16 @@ const createWindow = () => {
 	if (devServerUrl) {
 		mainWindow.loadURL(devServerUrl);
 	} else {
-		mainWindow.loadFile("dist/index.html");
+		getRendererServerUrl()
+			.then((base) => mainWindow?.loadURL(`${base}/index.html`))
+			.catch((error) => {
+				console.error("[paperite] renderer server failed", error);
+				dialog.showErrorBox(
+					"Paperite failed to start",
+					String(error?.message ?? error),
+				);
+				app.quit();
+			});
 	}
 };
 
@@ -2230,6 +2455,42 @@ const registerProtocolClient = () => {
 		app.setAsDefaultProtocolClient("paperite", process.execPath, [
 			app.getAppPath(),
 		]);
+
+		if (process.platform === "linux") {
+			try {
+				const applicationsDir = path.join(
+					app.getPath("home"),
+					".local",
+					"share",
+					"applications",
+				);
+				const desktopFile = path.join(applicationsDir, "paperite-dev.desktop");
+				const quoteDesktopArg = (value) =>
+					`"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+
+				fsSync.mkdirSync(applicationsDir, { recursive: true });
+				fsSync.writeFileSync(
+					desktopFile,
+					[
+						"[Desktop Entry]",
+						"Name=Paperite (Development)",
+						"Type=Application",
+						"Terminal=false",
+						`Exec=${quoteDesktopArg(process.execPath)} ${quoteDesktopArg(app.getAppPath())} %u`,
+						"MimeType=x-scheme-handler/paperite;",
+						"NoDisplay=true",
+						"",
+					].join("\n"),
+				);
+				execFileSync("xdg-mime", [
+					"default",
+					"paperite-dev.desktop",
+					"x-scheme-handler/paperite",
+				]);
+			} catch {
+				// Deep-link registration is best-effort in development.
+			}
+		}
 		return;
 	}
 
@@ -2248,10 +2509,19 @@ const handleProtocolCallback = (url) => {
 	if (isAuthCallbackUrl(url)) sendAuthCallback(url);
 };
 
+const focusMainWindow = () => {
+	if (!mainWindow || mainWindow.isDestroyed()) return;
+	if (mainWindow.isMinimized()) mainWindow.restore();
+	mainWindow.show();
+	mainWindow.moveTop?.();
+	mainWindow.focus();
+};
+
 const sendAuthCallback = (url) => {
+	console.log("[paperite] auth callback received:", url);
 	pendingAuthCallbackUrl = url;
 	mainWindow?.webContents.send("auth-callback", url);
-	mainWindow?.focus();
+	focusMainWindow();
 };
 
 ipcMain.handle("open-external", async (_event, url) => {
@@ -2263,6 +2533,130 @@ ipcMain.handle("auth:get-pending-callback", () => {
 	pendingAuthCallbackUrl = undefined;
 	return url;
 });
+
+// Clerk's API only accepts http(s) redirect URLs ("invalid_url_scheme"
+// rejects paperite:// outright), so a custom scheme can never be used as
+// the OAuth redirect directly. Instead we run a throwaway loopback server
+// (same RFC 8252 pattern as the Google Drive flow above), use its URL as
+// the redirect, and forward the callback into the renderer over IPC.
+// No xdg/deep-link/OS-handler involved at all.
+let clerkAuthServer;
+let clerkAuthServerTimeout;
+
+const stopClerkAuthServer = () => {
+	if (clerkAuthServerTimeout) {
+		clearTimeout(clerkAuthServerTimeout);
+		clerkAuthServerTimeout = undefined;
+	}
+	if (clerkAuthServer) {
+		const server = clerkAuthServer;
+		clerkAuthServer = undefined;
+		server.close();
+	}
+};
+
+const getClerkAuthServer = async () => {
+	// Reuse the live server: starting a second login while an older
+	// browser tab is still mid-flow must NOT kill the first tab's
+	// callback URL (that orphans the successful attempt server-side
+	// while the app only ever sees the failed retry).
+	if (clerkAuthServer) {
+		const address = clerkAuthServer.address();
+		if (address && typeof address !== "string") {
+			refreshClerkAuthServerTimeout();
+			return `http://localhost:${address.port}/callback`;
+		}
+		clerkAuthServer = undefined;
+	}
+	return startClerkAuthServer();
+};
+
+const refreshClerkAuthServerTimeout = () => {
+	if (clerkAuthServerTimeout) clearTimeout(clerkAuthServerTimeout);
+	clerkAuthServerTimeout = setTimeout(stopClerkAuthServer, 5 * 60_000);
+};
+
+const escapeHtml = (value) =>
+	String(value)
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;");
+
+const successPage = (title, subtitle, check = "✓") => `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Paperite — ${title}</title>
+<style>
+:root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #0b0c0d; color: #f4f3ef; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; overflow: hidden; background: radial-gradient(circle at 50% 0%, rgba(233,76,8,0.16), transparent 34rem), linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px), #0b0c0d; background-size: auto, 72px 72px, 72px 72px, auto; }
+main { width: min(100% - 2rem, 30rem); padding: 2.25rem; text-align: center; border: 1px solid rgba(255,255,255,0.12); border-radius: 1.5rem; background: rgba(22,23,24,0.88); box-shadow: 0 30px 100px rgba(0,0,0,0.38); backdrop-filter: blur(20px); }
+.brand { display: inline-flex; align-items: center; gap: 0.65rem; margin-bottom: 2.5rem; color: rgba(255,255,255,0.48); font-size: 0.72rem; font-weight: 600; letter-spacing: 0.18em; text-transform: uppercase; }
+.mark { display: grid; width: 1.75rem; height: 1.75rem; place-items: center; border-radius: 0.5rem; background: #e94c08; color: white; font-size: 0.7rem; letter-spacing: 0; }
+.check { display: grid; width: 3.5rem; height: 3.5rem; margin: 0 auto 1.5rem; place-items: center; border-radius: 999px; background: rgba(233,76,8,0.14); color: #ff6a2a; font-size: 1.5rem; }
+h1 { margin: 0; font-size: clamp(2rem, 5vw, 3rem); letter-spacing: -0.055em; line-height: 0.95; }
+p { margin: 1rem auto 0; max-width: 24rem; color: rgba(255,255,255,0.5); font-size: 0.95rem; line-height: 1.55; }
+.hint { margin-top: 1.25rem; color: rgba(255,255,255,0.3); font-size: 0.75rem; }
+</style>
+</head>
+<body>
+<main>
+<div class="brand"><span class="mark">P</span>Paperite</div>
+<div class="check" aria-hidden="true">${check}</div>
+<h1>${escapeHtml(title)}</h1>
+<p>${escapeHtml(subtitle)}</p>
+<p class="hint">You can close this tab and return to Paperite.</p>
+</main>
+</body>
+</html>`;
+
+const startClerkAuthServer = async () => {
+	const server = http.createServer((request, response) => {
+		const requestUrl = new URL(request.url ?? "/", "http://localhost");
+
+		if (requestUrl.pathname !== "/callback") {
+			response.writeHead(404);
+			response.end("Not found");
+			return;
+		}
+
+		sendAuthCallback(`paperite://auth/callback${requestUrl.search}`);
+		// Do NOT stop the server here: a second tab from a double-click
+		// may still land afterwards. Idle timeout below cleans up.
+		refreshClerkAuthServerTimeout();
+
+		response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+		response.end(
+			successPage(
+				"You're all set.",
+				"Signed in to Paperite. Your account is connected.",
+			),
+		);
+	});
+
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+
+	const address = server.address();
+	if (!address || typeof address === "string") {
+		server.close();
+		throw new Error("could not start auth callback server");
+	}
+
+	clerkAuthServer = server;
+	refreshClerkAuthServerTimeout();
+	console.log(
+		`[paperite] clerk auth callback server on http://localhost:${address.port}/callback`,
+	);
+	return `http://localhost:${address.port}/callback`;
+};
+
+ipcMain.handle("auth:start-callback-server", () => getClerkAuthServer());
 
 ipcMain.handle("sync:get-status", async () => ({
 	googleDrive: await getGoogleDriveStatus(),
@@ -2364,7 +2758,11 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	let existingContent;
 
 	// Preserve persisted metadata stripped by the editor body payload.
-	if (!normalizedContent.id || !normalizedContent.title) {
+	if (
+		!normalizedContent.id ||
+		!normalizedContent.title ||
+		normalizedContent.pageFormat === undefined
+	) {
 		try {
 			existingContent = await readNoteContent(normalizedPath, true);
 			if (!normalizedContent.id && existingContent.id) {
@@ -2372,6 +2770,12 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 			}
 			if (!normalizedContent.title && existingContent.title) {
 				normalizedContent.title = existingContent.title;
+			}
+			if (
+				normalizedContent.pageFormat === undefined &&
+				existingContent.pageFormat !== undefined
+			) {
+				normalizedContent.pageFormat = existingContent.pageFormat;
 			}
 		} catch {
 			// new note or missing file — id already set by createEmptyNoteContent
@@ -2416,6 +2820,20 @@ ipcMain.handle("notes:set-pinned", async (_event, notePath, pinned) => {
 	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
 	await getIndexedNote(normalizedPath, stats);
 	return { pinned: content.pinned };
+});
+
+ipcMain.handle("notes:set-page-format", async (_event, notePath, format) => {
+	await ensureWorkspace();
+	const normalizedPath = currentNotePath(notePath);
+	const content = await readNoteContent(normalizedPath, true);
+	content.pageFormat = normalizePageFormat(format);
+	await writeFileAtomic(
+		resolveNoteContentPath(normalizedPath),
+		serializeNoteContent(content),
+	);
+	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+	await getIndexedNote(normalizedPath, stats);
+	return { ok: true, pageFormat: content.pageFormat };
 });
 
 
@@ -2503,11 +2921,17 @@ ipcMain.handle(
 	"notes:get-asset-url",
 	async (_event, notePath, assetRelativePath) => {
 		const normalizedPath = currentNotePath(notePath);
-		const absolutePath = path.join(
-			resolveWorkspacePath(toPosixRelativePath(normalizedPath)),
-			assetRelativePath,
-		);
-		return pathToFileURL(absolutePath).href;
+		// Served over http: file:// img URLs are blocked on http:// pages.
+		// Stored note content keeps the workspace-relative path; only the
+		// display URL carries the (stable) server origin.
+		const encodeAssetPath = (posixPath) =>
+			toPosixRelativePath(posixPath)
+				.split("/")
+				.filter(Boolean)
+				.map(encodeURIComponent)
+				.join("/");
+		const base = await getRendererServerUrl();
+		return `${base}/note-assets/${encodeAssetPath(normalizedPath)}/${encodeAssetPath(assetRelativePath)}`;
 	},
 );
 ipcMain.handle("notes:prune-assets", async (_event, notePath) => {
@@ -2818,7 +3242,7 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 
 	popoutWindows.set(normalizedPath, popout);
 
-	popout.once("ready-to-show", () => popout.show());
+	revealWindow(popout);
 
 	popout.on("closed", () => {
 		popoutWindows.delete(normalizedPath);
@@ -2838,15 +3262,20 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 			`${devServerUrl}/popout.html?popout=1&note=${encodedPath}`,
 		);
 	} else {
-		await popout.loadFile("dist/popout.html", {
-			query: { popout: "1", note: encodedPath },
-		});
+		// Keep the historical double-encoding: popout-main runs
+		// URLSearchParams.get() + decodeURIComponent on the value.
+		const base = await getRendererServerUrl();
+		await popout.loadURL(
+			`${base}/popout.html?popout=1&note=${encodeURIComponent(encodedPath)}`,
+		);
 	}
 
 	return { ok: true };
 });
 
 app.whenReady().then(async () => {
+	// Serve mode: server/index.js owns the process lifecycle, no windows.
+	if (isServeMode) return;
 	createApplicationMenu();
 	await purgeOldTrashItems();
 	refreshWorkspaceWatchers().catch(() => undefined);
@@ -2863,14 +3292,20 @@ app.whenReady().then(async () => {
 	});
 });
 
-// linux: second-instance bukan open-url
-const gotLock = app.requestSingleInstanceLock();
+// linux: second-instance bukan open-url. Skipped in serve mode —
+// `paperite serve` must run alongside (or instead of) the desktop app.
+const gotLock = isServeMode ? true : app.requestSingleInstanceLock();
 if (!gotLock) {
 	app.quit();
 } else {
 	app.on("second-instance", (_event, argv) => {
+		console.log("[paperite] second-instance argv:", JSON.stringify(argv));
 		const url = getProtocolCallbackArg(argv);
-		if (url) handleProtocolCallback(url);
+		if (url) {
+			handleProtocolCallback(url);
+		} else {
+			focusMainWindow();
+		}
 	});
 }
 

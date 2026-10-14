@@ -145,11 +145,12 @@ router.post("/spaces", async (req, res) => {
 router.patch("/rename", async (req, res) => {
 	try {
 		await ensureWorkspace();
-		const { path: itemPath, name: nextName } = req.body || {};
+		const { path: itemPath, nextName, name: legacyName } = req.body || {};
+		const rawNextName = nextName ?? legacyName;
 		const current = currentNotePath(itemPath);
 
 		if (await isNoteDirectory(current)) {
-			const nextTitle = nextName?.trim() || "Untitled";
+			const nextTitle = rawNextName?.trim() || "Untitled";
 			const normalizedContent = normalizeNoteContent(
 				await readNoteContent(current, true),
 			);
@@ -169,8 +170,8 @@ router.patch("/rename", async (req, res) => {
 
 		const extension = isMigratableNotePath(current) ? noteFileExtension : "";
 		const nextBase = extension
-			? ensureNoteExtension(nextName)
-			: nextName?.trim();
+			? ensureNoteExtension(rawNextName ?? "Untitled")
+			: rawNextName?.trim();
 		const nextPath = path.posix.join(
 			path.posix.dirname(current),
 			nextBase || "Untitled",

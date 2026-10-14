@@ -1,4 +1,5 @@
 import { useEffect, useRef, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
+import { normalizePageFormat } from "@/lib/app-state-reconcile";
 import type { NotesEngine } from "@/lib/notes-engine";
 import {
 	createEmptyNoteContent,
@@ -41,6 +42,33 @@ function commitActiveContent(
 	if (notePath) {
 		current.noteContentCache.current.set(notePath, content);
 	}
+}
+
+/**
+ * Hydrate the in-memory per-note format override from the note file itself.
+ * Notes without a stored format fall back to the global default (override
+ * removed). Idempotent — skips the store write when nothing changed.
+ */
+function syncPageFormatOverride(notePath: string, content: NoteContent) {
+	const state = useEditorUiStore.getState();
+	if (content.pageFormat === undefined) {
+		if (notePath in state.pageFormats) {
+			const { [notePath]: _removed, ...rest } = state.pageFormats;
+			state.setPageFormats(rest);
+		}
+		return;
+	}
+	const next = normalizePageFormat(content.pageFormat);
+	const prev = state.pageFormats[notePath];
+	if (
+		prev &&
+		prev.indentation === next.indentation &&
+		prev.lineHeight === next.lineHeight &&
+		prev.paragraphSpacing === next.paragraphSpacing
+	) {
+		return;
+	}
+	state.setPageFormats({ ...state.pageFormats, [notePath]: next });
 }
 
 /**
@@ -93,6 +121,7 @@ export function useActiveNoteLoader(options: Options) {
 			const persisted = current.notePersistedCache.current.get(notePath);
 			current.lastLoadedNote.current = notePath;
 			current.noteContentRef.current = cached;
+			syncPageFormatOverride(notePath, persisted ?? cached);
 			current.lastPersistedContent.current = persisted
 				? serializeNoteContentBody(persisted)
 				: serializeNoteContentBody(cached);
@@ -120,6 +149,7 @@ export function useActiveNoteLoader(options: Options) {
 					? serializeNoteContentBody(persistedContent)
 					: serializeNoteContentBody(cachedContent);
 				commitActiveContent(current, notePath, cachedContent);
+				syncPageFormatOverride(notePath, persistedContent ?? cachedContent);
 				current.setSaveStatus(
 					persistedContent ? (isDirty ? "saving" : "saved") : "idle",
 				);
@@ -172,6 +202,7 @@ export function useActiveNoteLoader(options: Options) {
 				}
 				// Keep dirty cache as the live content; disk read is stale.
 				commitActiveContent(current, notePath, currentCachedContent!);
+				syncPageFormatOverride(notePath, currentCachedContent!);
 				current.setSaveStatus("saving");
 				current.tryMarkEditorReady(notePath);
 				return;
@@ -181,6 +212,7 @@ export function useActiveNoteLoader(options: Options) {
 			current.lastPersistedContent.current = readSerializedBody;
 			current.notePersistedCache.current.set(notePath, content);
 			commitActiveContent(current, notePath, content);
+			syncPageFormatOverride(notePath, content);
 			current.setSaveStatus("saved");
 			current.tryMarkEditorReady(notePath);
 			void current.notesApi?.pruneAssets?.(notePath).catch(() => undefined);

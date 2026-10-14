@@ -23,6 +23,7 @@ import {
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useAppStore } from "@/lib/stores/app-store";
 import { useEditorUiStore } from "@/lib/stores/editor-ui-store";
+import { cn } from "@/lib/utils";
 
 type NoteHeaderProps = {
 	spaceTitleFor: (path: string) => string;
@@ -69,7 +70,7 @@ function NoteHeaderInner({
 	const activeNotePath = useAppStore((s) => s.activeNotePath);
 
 	return (
-		<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 px-3 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
+		<header className="relative z-10 flex h-12 shrink-0 items-stretch gap-3 pr-3 pl-0 transition-[width,height] ease-linear after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-8 after:bg-linear-to-b after:from-background after:to-transparent after:content-['']">
 			<div className="flex shrink-0 items-center min-[56.0625rem]:hidden">
 				<SidebarTrigger
 					toggleNotesSheet
@@ -185,9 +186,25 @@ function NoteHeaderHostInner(headerProps: NoteHeaderHostProps) {
 	const activeNotePath = useAppStore((s) => s.activeNotePath);
 	const zenMode = useEditorUiStore((s) => s.zenMode);
 	const lockedNotePaths = useEditorUiStore((s) => s.lockedNotePaths);
-	if (zenMode || !activeNotePath) return null;
+	if (!activeNotePath) return null;
+	// Keep the header (and TabBar with all its per-tab dnd-kit/radix wiring)
+	// mounted while zen hides it via CSS — the old `return null` remounted
+	// every tab on each toggle. This host re-rendering is trivial; the memo
+	// children bail out since their props keep identity.
 	return (
-		<NoteHeader {...headerProps} locked={lockedNotePaths.has(activeNotePath)} />
+		<div
+			className={cn(
+				"shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 ease-linear",
+				zenMode ? "max-h-0 opacity-0" : "max-h-12 opacity-100",
+			)}
+			inert={zenMode ? true : undefined}
+			aria-hidden={zenMode ? true : undefined}
+		>
+			<NoteHeader
+				{...headerProps}
+				locked={lockedNotePaths.has(activeNotePath)}
+			/>
+		</div>
 	);
 }
 

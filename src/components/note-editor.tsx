@@ -91,6 +91,7 @@ import {
 } from "@/components/ui/context-menu";
 import { CodeBlockView } from "@/components/code-block-view";
 import { normalizeNoteContent, noteContentText, serializeNoteContent } from "@/lib/note-content";
+import { useEditorUiStore } from "@/lib/stores/editor-ui-store";
 import { cn } from "@/lib/utils";
 
 /** Per-mounted-editor view/edit controllers. Not persisted — lives with the tab instance. */
@@ -138,11 +139,11 @@ async function resolveImagePaths(
 	if (
 		node.type === "image" &&
 		typeof node.attrs?.src === "string" &&
-		isRelativeAssetSrc(node.attrs.src)
+		isRelativeAssetSrc(toRelativeAssetSrc(node.attrs.src))
 	) {
 		const url = await window.electron?.notes.getAssetUrl(
 			notePath,
-			node.attrs.src,
+			toRelativeAssetSrc(node.attrs.src),
 		);
 		if (url) {
 			return { ...node, attrs: { ...node.attrs, src: url } };
@@ -158,6 +159,25 @@ async function resolveImagePaths(
 }
 
 function toRelativeAssetSrc(src: string): string {
+	// URLs served by the main-process asset server (/note-assets/...) or
+	// legacy file:// URLs both map back to the workspace-relative path that
+	// is actually stored in note JSON. The server origin (incl. port) must
+	// never be persisted.
+	const marker = "/note-assets/";
+	const markerIdx = src.indexOf(marker);
+	if (markerIdx !== -1) {
+		return src
+			.slice(markerIdx + marker.length)
+			.split("/")
+			.map((segment) => {
+				try {
+					return decodeURIComponent(segment);
+				} catch {
+					return segment;
+				}
+			})
+			.join("/");
+	}
 	if (!src.startsWith("file://")) return src;
 	const assetsIdx = src.indexOf("/assets/");
 	if (assetsIdx === -1) return src;
@@ -181,7 +201,7 @@ function denormalizeImagePaths(node: NoteContent): NoteContent {
 	return node;
 }
 
-/** Save image to assets/ and return a displayable file:// URL (falls back to data URL). */
+/** Save image to assets/ and return a displayable http asset URL (falls back to data URL). */
 async function saveImageToNote(
 	notePath: string,
 	dataUrl: string,
@@ -218,6 +238,7 @@ type NoteEditorProps = {
 	/** Optional override (e.g. popout always editable). When set, local toggle is ignored. */
 	readOnly?: boolean;
 	searchQuery: string;
+	searchMatchIndex: number;
 	yDoc?: Y.Doc | null;
 	zenMode?: boolean;
 	onChange: (
@@ -327,6 +348,9 @@ function createBaseExtensions() {
 			underline: false,
 			undoRedo: false,
 			codeBlock: false,
+			// Explicit Link.configure below; leaving StarterKit's on
+			// registers 'link' twice (tiptap warns + double handling).
+			link: false,
 		}),
 		CodeBlockLowlight.extend({
 			addNodeView() {
@@ -426,6 +450,7 @@ export function NoteEditor({
 	pageFormat = defaultPageFormat,
 	readOnly: readOnlyProp,
 	searchQuery,
+	searchMatchIndex,
 	yDoc,
 	zenMode,
 	onChange,
@@ -477,6 +502,8 @@ export function NoteEditor({
 		};
 	}, [notePath, readOnlyProp]);
 	const searchQueryRef = useRef(searchQuery);
+	const searchMatchIndexRef = useRef(searchMatchIndex);
+	const isActiveRef = useRef(isActive);
 	const syncingExternalDocRef = useRef(false);
 	const hasUserInteractedRef = useRef(false);
 	const lastCommittedTitleRef = useRef(noteTitle || "");
@@ -576,7 +603,11 @@ export function NoteEditor({
 					]
 				: []),
 			createTitleNavigationExtension(titleInputRef),
-			createSearchHighlightExtension(searchQueryRef),
+			createSearchHighlightExtension(
+				searchQueryRef,
+				searchMatchIndexRef,
+				isActiveRef,
+			),
 			createEmojiSuggestionExtension(),
 		],
 		[baseExtensions, yDoc],
@@ -704,10 +735,12 @@ export function NoteEditor({
 
 	useEffect(() => {
 		searchQueryRef.current = searchQuery;
+		searchMatchIndexRef.current = searchMatchIndex;
+		isActiveRef.current = isActive;
 		if (!editor) return;
 
 		editor.view.dispatch(editor.state.tr.setMeta("paperiteSearchQuery", true));
-	}, [editor, searchQuery]);
+	}, [editor, isActive, searchMatchIndex, searchQuery]);
 
 	useEffect(() => {
 		const handleFormat = (event: Event) => {
@@ -779,13 +812,13 @@ export function NoteEditor({
 	}
 
 	return (
-		<div className="relative flex min-h-0 flex-1 overflow-hidden">
-			<div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto overscroll-contain">
+		<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+			<div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto overscroll-x-none overscroll-y-auto">
 				<div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
 					{readOnly ? (
 						<h1
 							aria-label="Note title"
-							className={`mx-8 mb-4 w-[calc(100%-4rem)] select-text text-3xl font-semibold leading-tight tracking-normal md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
+							className={`mx-8 mb-4 w-[calc(100%-4rem)] select-text text-3xl font-semibold leading-tight tracking-normal transition-[margin-top] duration-200 ease-linear md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
 						>
 							{draftTitle.trim() || "Untitled"}
 						</h1>
@@ -794,7 +827,7 @@ export function NoteEditor({
 							ref={titleInputRef}
 							value={draftTitle}
 							aria-label="Note title"
-							className={`mx-8 mb-4 w-[calc(100%-4rem)] resize-none bg-transparent text-3xl font-semibold leading-tight tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
+							className={`mx-8 mb-4 w-[calc(100%-4rem)] resize-none bg-transparent text-3xl font-semibold leading-tight tracking-normal outline-none transition-[margin-top] duration-200 ease-linear placeholder:text-muted-foreground md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
 							rows={1}
 							placeholder="Untitled"
 							onBlur={commitTitle}
@@ -835,7 +868,9 @@ export function NoteEditor({
 								role="application"
 								tabIndex={0}
 								className={cn(
-									"paperite-tiptap flex min-h-0 flex-1 select-text px-8 pb-44 md:px-14 lg:px-20",
+									// pb-[40vh]: viewport-relative overscroll room so the last
+									// line can travel up (Obsidian-style), on any screen height.
+									"paperite-tiptap flex min-h-0 flex-1 select-text px-8 pb-[40vh] md:px-14 lg:px-20",
 									pageFormat.lineHeight === "1.5" &&
 										"paperite-tiptap-leading-compact",
 									pageFormat.paragraphSpacing === "none" &&
@@ -952,11 +987,11 @@ export function NoteEditor({
 						</ContextMenuContent>
 					</ContextMenu>
 				</div>
-				<div className="pointer-events-none absolute right-0 bottom-0 left-0 z-20 h-24 bg-gradient-to-t from-background via-background/80 to-transparent" />
-				{editor && !readOnly ? (
-					<FormatMenu editor={editor} notePath={notePath} />
-				) : null}
 			</div>
+			<div className="pointer-events-none absolute right-0 bottom-0 left-0 z-20 h-24 bg-gradient-to-t from-background via-background/80 to-transparent" />
+			{editor && !readOnly ? (
+				<FormatMenu editor={editor} notePath={notePath} />
+			) : null}
 			{linkHover ? (
 				<LinkHoverCard hover={linkHover} onClose={() => setLinkHover(null)} />
 			) : null}
@@ -1145,7 +1180,7 @@ function FormatMenu({
 	};
 
 	return (
-		<div className="sticky right-0 bottom-4 left-0 z-30 mx-auto mt-[-3rem] w-full max-w-4xl px-8 md:px-14 lg:px-20">
+		<div className="absolute right-0 bottom-4 left-0 z-30 mx-auto w-full max-w-4xl px-8 md:px-14 lg:px-20">
 			<div
 				className="app-region-no-drag no-scrollbar flex w-full items-center gap-1 overflow-x-auto overflow-y-hidden rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 [&>*]:shrink-0"
 				onPointerDown={(event) => event.stopPropagation()}
@@ -1824,7 +1859,13 @@ function createTitleNavigationExtension(
 	});
 }
 
-function createSearchHighlightExtension(searchQueryRef: RefObject<string>) {
+type SearchMatch = { from: number; to: number };
+
+function createSearchHighlightExtension(
+	searchQueryRef: RefObject<string>,
+	searchMatchIndexRef: RefObject<number>,
+	isActiveRef: RefObject<boolean>,
+) {
 	return Extension.create({
 		name: "paperiteSearchHighlight",
 		addProseMirrorPlugins() {
@@ -1832,7 +1873,46 @@ function createSearchHighlightExtension(searchQueryRef: RefObject<string>) {
 				new Plugin({
 					props: {
 						decorations: (state) =>
-							buildSearchDecorations(state.doc, searchQueryRef.current),
+							buildSearchDecorations(
+								state.doc,
+								searchQueryRef.current,
+								searchMatchIndexRef.current,
+							),
+					},
+					view: () => {
+						let previousQuery = "";
+						let previousMatchIndex = -1;
+
+						return {
+							update: (view) => {
+								if (!isActiveRef.current) return;
+
+								const query = searchQueryRef.current.trim();
+								const matches = findSearchMatches(view.state.doc, query);
+								useEditorUiStore
+									.getState()
+									.setFindMatchCount(matches.length);
+
+								const matchIndex = normalizeMatchIndex(
+									searchMatchIndexRef.current,
+									matches.length,
+								);
+								const navigationChanged =
+									query !== previousQuery ||
+									matchIndex !== previousMatchIndex;
+								previousQuery = query;
+								previousMatchIndex = matchIndex;
+
+								if (!navigationChanged || !matches[matchIndex]) return;
+								const dom = view.domAtPos(matches[matchIndex].from).node;
+								const element =
+									dom instanceof Element ? dom : dom.parentElement;
+								element?.scrollIntoView({
+									block: "nearest",
+									inline: "nearest",
+								});
+							},
+						};
 					},
 				}),
 			];
@@ -1843,11 +1923,32 @@ function createSearchHighlightExtension(searchQueryRef: RefObject<string>) {
 function buildSearchDecorations(
 	doc: Parameters<typeof DecorationSet.create>[0],
 	query: string,
+	matchIndex: number,
 ) {
-	const trimmedQuery = query.trim();
-	if (!trimmedQuery) return DecorationSet.empty;
+	const matches = findSearchMatches(doc, query);
+	if (matches.length === 0) return DecorationSet.empty;
 
-	const decorations: Decoration[] = [];
+	const activeIndex = normalizeMatchIndex(matchIndex, matches.length);
+	const decorations = matches.map((match, index) =>
+		Decoration.inline(match.from, match.to, {
+			class:
+				index === activeIndex
+					? "paperite-search-match paperite-search-match-active"
+					: "paperite-search-match",
+		}),
+	);
+
+	return DecorationSet.create(doc, decorations);
+}
+
+function findSearchMatches(
+	doc: Parameters<typeof DecorationSet.create>[0],
+	query: string,
+): SearchMatch[] {
+	const trimmedQuery = query.trim();
+	if (!trimmedQuery) return [];
+
+	const matches: SearchMatch[] = [];
 	const normalizedQuery = trimmedQuery.toLocaleLowerCase();
 
 	doc.descendants((node, position) => {
@@ -1857,13 +1958,10 @@ function buildSearchDecorations(
 		let matchIndex = normalizedText.indexOf(normalizedQuery);
 
 		while (matchIndex !== -1) {
-			decorations.push(
-				Decoration.inline(
-					position + matchIndex,
-					position + matchIndex + trimmedQuery.length,
-					{ class: "paperite-search-match" },
-				),
-			);
+			matches.push({
+				from: position + matchIndex,
+				to: position + matchIndex + trimmedQuery.length,
+			});
 			matchIndex = normalizedText.indexOf(
 				normalizedQuery,
 				matchIndex + normalizedQuery.length,
@@ -1871,7 +1969,12 @@ function buildSearchDecorations(
 		}
 	});
 
-	return DecorationSet.create(doc, decorations);
+	return matches;
+}
+
+function normalizeMatchIndex(index: number, count: number) {
+	if (count === 0) return 0;
+	return ((index % count) + count) % count;
 }
 
 function editableTitle(title: string) {

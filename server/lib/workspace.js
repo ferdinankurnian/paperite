@@ -45,7 +45,24 @@ const resolveWorkspacePath = (relativePath = "") => {
 const toPosixRelativePath = (relativePath = "") =>
 	normalizeRelativePath(relativePath).replaceAll(path.sep, "/");
 
-const currentNotePath = (notePath) => toPosixRelativePath(notePath);
+// Legacy path redirects (old .json/.md file paths → migrated note dirs).
+// Electron fills these during legacy migration; the server port never
+// migrates, so the map stays empty there. Consulted by currentNotePath so
+// both shells share one resolution path.
+const pathRedirects = new Map();
+
+const setPathRedirect = (fromPath, toPath) => {
+	pathRedirects.set(toPosixRelativePath(fromPath), toPosixRelativePath(toPath));
+};
+
+const clearPathRedirects = () => {
+	pathRedirects.clear();
+};
+
+const currentNotePath = (notePath) => {
+	const normalized = toPosixRelativePath(notePath);
+	return pathRedirects.get(normalized) ?? normalized;
+};
 
 const isNoteManifestPath = (itemPath) =>
 	path.posix.basename(itemPath) === noteManifestFilename;
@@ -479,6 +496,8 @@ module.exports = {
 	resolveWorkspacePath,
 	toPosixRelativePath,
 	currentNotePath,
+	setPathRedirect,
+	clearPathRedirects,
 	isNoteManifestPath,
 	isNoteFilePath,
 	isLegacyMarkdownPath,

@@ -1,6 +1,6 @@
 import type {
-	PaperiteAppState,
 	PageFormat,
+	PaperiteAppState,
 	SidebarSortOrder,
 	WorkspaceItem,
 	WorkspaceSnapshot,
@@ -50,6 +50,12 @@ export function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		closeButtonOnly: state.closeButtonOnly === true,
 		syncSidebarWithActiveTab: state.syncSidebarWithActiveTab !== false,
 		defaultPageFormat: normalizePageFormat(state.defaultPageFormat),
+		cloudSpaceLinks: normalizeCloudSpaceLinks(
+			(state as Partial<PaperiteAppState>).cloudSpaceLinks,
+		),
+		cloudSeenUpdates: normalizeCloudSeenUpdates(
+			(state as Partial<PaperiteAppState>).cloudSeenUpdates,
+		),
 	};
 }
 
@@ -100,6 +106,11 @@ export function reconcileAppState(
 		closeButtonOnly: state.closeButtonOnly,
 		syncSidebarWithActiveTab: state.syncSidebarWithActiveTab,
 		defaultPageFormat: state.defaultPageFormat,
+		cloudSpaceLinks: reconcileCloudSpaceLinks(
+			state.cloudSpaceLinks ?? {},
+			workspace.spaces,
+		),
+		cloudSeenUpdates: normalizeCloudSeenUpdates(state.cloudSeenUpdates),
 	};
 }
 
@@ -255,4 +266,47 @@ function isSortOrder(order: unknown): order is SidebarSortOrder {
 		order === "z-a" ||
 		order === "custom"
 	);
+}
+
+function normalizeCloudSpaceLinks(
+	links: Record<string, string> | undefined,
+): Record<string, string> {
+	if (!links || typeof links !== "object") return {};
+	const next: Record<string, string> = {};
+	for (const [spacePath, spaceId] of Object.entries(links)) {
+		if (typeof spacePath !== "string" || !spacePath) continue;
+		if (typeof spaceId !== "string" || !spaceId) continue;
+		next[spacePath] = spaceId;
+	}
+	return next;
+}
+
+function reconcileCloudSpaceLinks(
+	links: Record<string, string>,
+	spaces: WorkspaceSpace[],
+) {
+	const spacePaths = new Set(spaces.map((space) => space.path));
+	const next: Record<string, string> = {};
+	for (const [spacePath, spaceId] of Object.entries(links)) {
+		if (!spacePaths.has(spacePath)) continue;
+		if (!spaceId) continue;
+		next[spacePath] = spaceId;
+	}
+	return next;
+}
+
+/** Plan 020 Step 3: cap seen-update lists (500/note, 500 notes) so the
+ *  persisted app-state row can't bloat without bound. */
+export function normalizeCloudSeenUpdates(
+	seen: Record<string, string[]> | undefined,
+): Record<string, string[]> {
+	if (!seen || typeof seen !== "object") return {};
+	const next: Record<string, string[]> = {};
+	for (const [key, ids] of Object.entries(seen).slice(-500)) {
+		if (typeof key !== "string" || !key || !Array.isArray(ids)) continue;
+		const clean = ids.filter((id) => typeof id === "string" && id);
+		if (clean.length === 0) continue;
+		next[key] = clean.slice(-500);
+	}
+	return next;
 }

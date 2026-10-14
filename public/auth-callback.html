@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Paperite — You're all set</title>
+		<style>
+			:root {
+				color-scheme: dark;
+				font-family:
+					Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+					"Segoe UI", sans-serif;
+				background: #0b0c0d;
+				color: #f4f3ef;
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				min-height: 100vh;
+				display: grid;
+				place-items: center;
+				overflow: hidden;
+				background:
+					radial-gradient(circle at 50% 0%, rgba(233, 76, 8, 0.16), transparent 34rem),
+					linear-gradient(rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+					linear-gradient(90deg, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+					#0b0c0d;
+				background-size: auto, 72px 72px, 72px 72px, auto;
+			}
+
+			main {
+				width: min(100% - 2rem, 30rem);
+				padding: 2.25rem;
+				text-align: center;
+				border: 1px solid rgba(255, 255, 255, 0.12);
+				border-radius: 1.5rem;
+				background: rgba(22, 23, 24, 0.88);
+				box-shadow: 0 30px 100px rgba(0, 0, 0, 0.38);
+				backdrop-filter: blur(20px);
+			}
+
+			.brand {
+				display: inline-flex;
+				align-items: center;
+				gap: 0.65rem;
+				margin-bottom: 2.5rem;
+				color: rgba(255, 255, 255, 0.48);
+				font-size: 0.72rem;
+				font-weight: 600;
+				letter-spacing: 0.18em;
+				text-transform: uppercase;
+			}
+
+			.mark {
+				display: grid;
+				width: 1.75rem;
+				height: 1.75rem;
+				place-items: center;
+				border-radius: 0.5rem;
+				background: #e94c08;
+				color: white;
+				font-size: 0.7rem;
+				letter-spacing: 0;
+			}
+
+			.check {
+				display: grid;
+				width: 3.5rem;
+				height: 3.5rem;
+				margin: 0 auto 1.5rem;
+				place-items: center;
+				border-radius: 999px;
+				background: rgba(233, 76, 8, 0.14);
+				color: #ff6a2a;
+				font-size: 1.5rem;
+			}
+
+			h1 {
+				margin: 0;
+				font-size: clamp(2rem, 5vw, 3rem);
+				letter-spacing: -0.055em;
+				line-height: 0.95;
+			}
+
+			p {
+				margin: 1rem auto 0;
+				max-width: 24rem;
+				color: rgba(255, 255, 255, 0.5);
+				font-size: 0.95rem;
+				line-height: 1.55;
+			}
+
+			.actions {
+				display: flex;
+				justify-content: center;
+				gap: 0.75rem;
+				margin-top: 2rem;
+			}
+
+			button {
+				min-height: 2.75rem;
+				padding: 0 1rem;
+				border: 1px solid rgba(255, 255, 255, 0.13);
+				border-radius: 0.75rem;
+				background: rgba(255, 255, 255, 0.06);
+				color: rgba(255, 255, 255, 0.75);
+				font: inherit;
+				font-size: 0.88rem;
+				cursor: pointer;
+				transition: transform 160ms ease, background-color 160ms ease;
+			}
+
+			button:hover {
+				background: rgba(255, 255, 255, 0.1);
+				color: white;
+			}
+
+			button:active {
+				transform: scale(0.96);
+			}
+
+			.primary {
+				border-color: transparent;
+				background: #f4f3ef;
+				color: #161718;
+			}
+
+			.primary:hover {
+				background: white;
+				color: #161718;
+			}
+
+			#status {
+				margin-top: 1.25rem;
+				color: rgba(255, 255, 255, 0.3);
+				font-size: 0.75rem;
+			}
+
+			@media (max-width: 32rem) {
+				main {
+					padding: 1.75rem;
+				}
+
+				.actions {
+					flex-direction: column;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<main>
+			<div class="brand"><span class="mark">P</span>Paperite</div>
+			<div class="check" aria-hidden="true">✓</div>
+			<h1>You're all set.</h1>
+			<p>Your account is connected. You can return to Paperite now.</p>
+			<div class="actions">
+				<button class="primary" id="open-paperite" type="button">
+					Open Paperite
+				</button>
+				<button id="close-page" type="button">Close this tab</button>
+			</div>
+			<p id="status" role="status">Opening Paperite…</p>
+		</main>
+
+		<script>
+			const paperiteUrl = `paperite://auth/callback${window.location.search}${window.location.hash}`;
+			const status = document.getElementById("status");
+
+			const openPaperite = () => {
+				status.textContent = "Trying to open Paperite…";
+				window.location.href = paperiteUrl;
+				window.setTimeout(() => {
+					status.textContent = "If nothing happened, click Open Paperite again.";
+				}, 1200);
+			};
+
+			document
+				.getElementById("open-paperite")
+				.addEventListener("click", openPaperite);
+			document.getElementById("close-page").addEventListener("click", () => {
+				window.close();
+				status.textContent = "You can close this tab now.";
+			});
+
+			window.setTimeout(openPaperite, 450);
+		</script>
+	</body>
+</html>

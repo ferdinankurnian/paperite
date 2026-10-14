@@ -8,7 +8,14 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { createSharedSpace } from "@/lib/convex";
+import {
+	createSharedSpace,
+	getCustomConvexUrl,
+	resetConvexUrl,
+	setCustomConvexUrl,
+	useConvexUrl,
+	useConvexUrlSource,
+} from "@/lib/convex";
 import { getSyncEngine, onSyncChanged } from "@/lib/sync-engine";
 import driveSvg from "/drive.svg";
 
@@ -23,6 +30,10 @@ export function SyncSettings() {
 	);
 	const [cloudMessage, setCloudMessage] = useState<string | null>(null);
 	const [sharedSpaceName, setSharedSpaceName] = useState("");
+	const [urlDraft, setUrlDraft] = useState(() => getCustomConvexUrl() ?? "");
+	const [urlMessage, setUrlMessage] = useState<string | null>(null);
+	const convexUrl = useConvexUrl();
+	const convexSource = useConvexUrlSource();
 	const syncEngine = getSyncEngine();
 
 	const refreshStatus = useCallback(async () => {
@@ -103,9 +114,27 @@ export function SyncSettings() {
 	};
 
 	const googleDrive = status?.googleDrive;
-	const convex = status?.convex;
+	const convexConfigured = convexUrl !== null;
 	const googleDriveEnabled = googleDrive?.enabled === true;
 	const googleDriveConnecting = busyAction === "connect" || connectPending;
+
+	const saveConvexUrl = () => {
+		setUrlMessage(null);
+		try {
+			setCustomConvexUrl(urlDraft);
+			setUrlMessage("Custom Convex URL saved.");
+		} catch (error) {
+			setUrlMessage(
+				error instanceof Error ? error.message : "Could not save the URL.",
+			);
+		}
+	};
+
+	const resetConvexUrlToDefault = () => {
+		resetConvexUrl();
+		setUrlDraft("");
+		setUrlMessage("Back to the default Convex URL.");
+	};
 
 	return (
 		<>
@@ -215,6 +244,73 @@ export function SyncSettings() {
 						</p>
 					) : null}
 				</section>
+				<section className="rounded-xl border bg-muted/25 p-4">
+					<div className="flex items-start justify-between gap-3">
+						<div className="flex items-center gap-2">
+							<CloudIcon className="size-4 text-muted-foreground" />
+							<div>
+								<h3 className="text-sm font-medium">Convex Cloud</h3>
+								<p className="text-xs text-muted-foreground">
+									Sync server for shared spaces. Default is Paperite+ — paste
+									your own deployment URL to BYO.
+								</p>
+							</div>
+						</div>
+						<StatusPill
+							active={convexConfigured}
+							label={
+								convexSource === "custom"
+									? "Custom URL"
+									: convexSource === "default"
+										? "Default"
+										: "Not configured"
+							}
+						/>
+					</div>
+					{convexUrl ? (
+						<p
+							className="mt-3 truncate rounded-lg bg-muted px-2 py-1.5 font-mono text-xs"
+							title={convexUrl}
+						>
+							{convexUrl}
+						</p>
+					) : (
+						<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+							Not configured. Shared spaces won't sync until a URL is set.
+						</p>
+					)}
+					<div className="mt-3 flex gap-2">
+						<Input
+							value={urlDraft}
+							onChange={(event) => setUrlDraft(event.target.value)}
+							placeholder="https://<deployment>.convex.cloud"
+							disabled={busyAction !== null}
+							spellCheck={false}
+						/>
+						<Button
+							type="button"
+							size="sm"
+							disabled={!urlDraft.trim() || busyAction !== null}
+							onClick={saveConvexUrl}
+						>
+							Save
+						</Button>
+						{convexSource === "custom" ? (
+							<Button
+								type="button"
+								size="sm"
+								variant="outline"
+								disabled={busyAction !== null}
+								onClick={resetConvexUrlToDefault}
+							>
+								Reset
+							</Button>
+						) : null}
+					</div>
+					{urlMessage ? (
+						<p className="mt-2 text-xs text-muted-foreground">{urlMessage}</p>
+					) : null}
+				</section>
 				{import.meta.env.BETA_PAPERITE && (
 					<section className="rounded-xl bg-muted/45 p-4">
 						<div className="flex items-start justify-between gap-3">
@@ -228,8 +324,8 @@ export function SyncSettings() {
 								</div>
 							</div>
 							<StatusPill
-								active={convex?.configured === true}
-								label={convex?.configured ? "Configured" : "Missing URL"}
+								active={convexConfigured}
+								label={convexConfigured ? "Configured" : "Missing URL"}
 							/>
 						</div>
 						<div className="mt-4 flex gap-2">
@@ -237,13 +333,13 @@ export function SyncSettings() {
 								value={sharedSpaceName}
 								onChange={(event) => setSharedSpaceName(event.target.value)}
 								placeholder="Shared space name"
-								disabled={!convex?.configured || busyAction !== null}
+								disabled={!convexConfigured || busyAction !== null}
 							/>
 							<Button
 								type="button"
 								size="sm"
 								disabled={
-									!convex?.configured ||
+									!convexConfigured ||
 									!sharedSpaceName.trim() ||
 									busyAction !== null
 								}

@@ -1,6 +1,7 @@
 import {
+	ChevronsUpDownIcon,
+	CloudIcon,
 	LaptopIcon,
-	LogOutIcon,
 	MenuIcon,
 	MoonIcon,
 	SettingsIcon,
@@ -8,11 +9,11 @@ import {
 	UserRoundIcon,
 } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useTheme } from "@/components/theme-provider";
 import {
 	SettingsDialog,
 	type SettingsTab,
 } from "@/components/settings/settings-dialog";
+import { useTheme } from "@/components/theme-provider";
 import {
 	AlertDialog,
 	AlertDialogAction,
@@ -39,16 +40,20 @@ import {
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { isClerkConfigured } from "@/lib/clerk";
+import { cn } from "@/lib/utils";
 
 const themes = [
+	{ icon: LaptopIcon, label: "System", value: "system" },
 	{ icon: SunIcon, label: "Light", value: "light" },
 	{ icon: MoonIcon, label: "Dark", value: "dark" },
-	{ icon: LaptopIcon, label: "System", value: "system" },
 ] as const;
 
 export function NavUser({
 	onLogOut,
 	user,
+	isSignedIn,
+	isAuthLoading,
 	showNotePreview,
 	closeButtonOnly,
 	syncSidebarWithActiveTab,
@@ -60,7 +65,10 @@ export function NavUser({
 	user: {
 		name: string;
 		avatar: string;
+		email: string;
 	};
+	isSignedIn: boolean;
+	isAuthLoading: boolean;
 	showNotePreview: boolean;
 	closeButtonOnly: boolean;
 	syncSidebarWithActiveTab: boolean;
@@ -70,7 +78,8 @@ export function NavUser({
 }) {
 	const { isMobile } = useSidebar();
 	const { theme, setTheme } = useTheme();
-	const betaEnabled = import.meta.env.BETA_PAPERITE;
+	const authEnabled = isClerkConfigured();
+	const showAccount = isSignedIn;
 	const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 	const [activeTab, setActiveTab] = useState<SettingsTab>("general");
@@ -92,10 +101,34 @@ export function NavUser({
 				<SidebarMenuItem>
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild>
-							<SidebarMenuButton className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground text-sidebar-foreground/80">
-								<MenuIcon className="size-4 shrink-0" />
-								<span className="min-w-0 flex-1 truncate text-left">Menu</span>
-							</SidebarMenuButton>
+							{showAccount ? (
+								<SidebarMenuButton
+									size="lg"
+									tooltip={isAuthLoading ? "Account" : user.name}
+									className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground duration-200 ease-linear group-data-[collapsible=icon]:p-1! [&>div.grid]:group-data-[collapsible=icon]:hidden [&>svg]:group-data-[collapsible=icon]:hidden"
+								>
+									<UserAvatar
+										user={user}
+										className="shrink-0 transition-[width,height] duration-200 ease-linear group-data-[collapsible=icon]:size-6"
+									/>
+									<div className="grid flex-1 text-left text-sm leading-tight">
+										<span className="truncate font-medium">
+											{isAuthLoading ? "Signing you in…" : user.name}
+										</span>
+										<span className="truncate text-xs text-sidebar-foreground/70">
+											{isAuthLoading ? "Checking session…" : "Free Plan"}
+										</span>
+									</div>
+									<ChevronsUpDownIcon className="ml-auto size-4 shrink-0" />
+								</SidebarMenuButton>
+							) : (
+								<SidebarMenuButton className="data-[state=open]:bg-sidebar-accent data-[state=open]:text-sidebar-accent-foreground text-sidebar-foreground/80">
+									<MenuIcon className="size-4 shrink-0" />
+									<span className="min-w-0 flex-1 truncate text-left">
+										Menu
+									</span>
+								</SidebarMenuButton>
+							)}
 						</DropdownMenuTrigger>
 						<DropdownMenuContent
 							className="w-(--radix-dropdown-menu-trigger-width) min-w-56 rounded-lg"
@@ -103,35 +136,39 @@ export function NavUser({
 							align="end"
 							sideOffset={4}
 						>
-							<DropdownMenuLabel className="p-0 font-normal">
-								<div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
-									<UserAvatar user={user} />
-									<div className="grid flex-1 text-left text-sm leading-tight">
-										<span className="truncate font-medium">{user.name}</span>
-										<span className="truncate text-xs">Free Plan</span>
+							{authEnabled && !showAccount && !isAuthLoading ? (
+								<>
+									<DropdownMenuItem
+										onSelect={() =>
+											window.dispatchEvent(new Event("paperite:open-auth"))
+										}
+									>
+										<UserRoundIcon />
+										Sign in
+									</DropdownMenuItem>
+								</>
+							) : showAccount ? (
+								<DropdownMenuLabel className="p-0 font-normal">
+									<div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
+										<UserAvatar user={user} />
+										<div className="grid flex-1 text-left text-sm leading-tight">
+											<span className="truncate font-medium">
+												{isAuthLoading ? "Signing you in…" : user.name}
+											</span>
+											<span className="truncate text-xs">
+												{isAuthLoading ? "Checking session…" : "Free Plan"}
+											</span>
+										</div>
 									</div>
-								</div>
-							</DropdownMenuLabel>
+								</DropdownMenuLabel>
+							) : null}
 							<DropdownMenuSeparator />
-							<DropdownMenuItem
-								onSelect={() => {
-									setActiveTab("general");
-									setIsSettingsOpen(true);
-								}}
-							>
-								<SettingsIcon />
-								Settings
-							</DropdownMenuItem>
-							<DropdownMenuSeparator />
-							<DropdownMenuLabel className="px-2 pb-1 text-xs text-muted-foreground">
-								Theme
-							</DropdownMenuLabel>
 							<Tabs
 								value={theme}
 								onValueChange={(value) =>
-									setTheme(value as "light" | "dark" | "system")
+									setTheme(value as "system" | "light" | "dark")
 								}
-								className="px-1 pb-1"
+								className="p-1"
 							>
 								<TabsList className="grid h-9 w-full grid-cols-3">
 									{themes.map(({ icon: Icon, label, value }) => (
@@ -148,20 +185,25 @@ export function NavUser({
 									))}
 								</TabsList>
 							</Tabs>
-							{betaEnabled ? (
-								<>
-									<DropdownMenuSeparator />
-									<DropdownMenuItem
-										onSelect={(event) => {
-											event.preventDefault();
-											setIsLogoutDialogOpen(true);
-										}}
-									>
-										<LogOutIcon />
-										Log out
-									</DropdownMenuItem>
-								</>
-							) : null}
+							<DropdownMenuSeparator />
+							<DropdownMenuItem
+								onSelect={() => {
+									setActiveTab("general");
+									setIsSettingsOpen(true);
+								}}
+							>
+								<SettingsIcon />
+								Settings
+							</DropdownMenuItem>
+							<DropdownMenuItem
+								onSelect={() => {
+									setActiveTab("sync");
+									setIsSettingsOpen(true);
+								}}
+							>
+								<CloudIcon />
+								Sync settings
+							</DropdownMenuItem>
 						</DropdownMenuContent>
 					</DropdownMenu>
 				</SidebarMenuItem>
@@ -179,7 +221,7 @@ export function NavUser({
 				syncSidebarWithActiveTab={syncSidebarWithActiveTab}
 				onSetSyncSidebarWithActiveTab={onSetSyncSidebarWithActiveTab}
 				onRequestLogOut={() => setIsLogoutDialogOpen(true)}
-				betaEnabled={betaEnabled}
+				betaEnabled={showAccount}
 			/>
 			<AlertDialog
 				open={isLogoutDialogOpen}
@@ -205,9 +247,15 @@ export function NavUser({
 	);
 }
 
-function UserAvatar({ user }: { user: { name: string; avatar: string } }) {
+function UserAvatar({
+	user,
+	className,
+}: {
+	user: { name: string; avatar: string; email: string };
+	className?: string;
+}) {
 	return (
-		<Avatar className="size-8 rounded-full after:hidden">
+		<Avatar className={cn("size-8 rounded-full after:hidden", className)}>
 			<AvatarImage src={user.avatar} alt={user.name} />
 			<AvatarFallback className="rounded-full">
 				<UserRoundIcon className="size-4" />

@@ -6,7 +6,7 @@
   },
   "description": "A note-taking app",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "main": "main.js",
   "desktopName": "dev.iydheko.paperite",
   "build": {
@@ -16,11 +16,13 @@
     "files": [
       "main.js",
       "preload.js",
+      "server/**/*",
       "dist/index.html",
       "dist/popout.html",
       "dist/assets/**/*",
       "dist/*.png",
       "dist/*.svg",
+      "dist-web/**/*",
       "package.json"
     ],
     "protocols": [
@@ -37,6 +39,9 @@
         "tar.gz"
       ],
       "category": "Utility",
+      "mimeTypes": [
+        "x-scheme-handler/paperite"
+      ],
       "syncDesktopName": true
     }
   },
@@ -46,7 +51,9 @@
     "dev:web": "vite",
     "dev:server": "PAPERITE_WEB=1 concurrently -k \"bun run dev:web\" \"wait-on http://localhost:5173 && node server/index.js --dev\"",
     "web": "node server/index.js",
-    "build": "tsc -b && vite build && electron-builder --publish never",
+    "serve": "node server/index.js",
+    "build": "tsc -b && vite build && PAPERITE_WEB=1 vite build --outDir dist-web && electron-builder --publish never",
+    "build:web": "tsc -b && PAPERITE_WEB=1 vite build --outDir dist-web",
     "lint": "biome check .",
     "preview": "vite preview",
     "format": "biome format --write .",
@@ -55,7 +62,7 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@clerk/clerk-js": "^6.11.3",
+    "@clerk/clerk-js": "^6.34.1",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",

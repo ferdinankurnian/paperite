@@ -1,15 +1,11 @@
 import { createFileRoute, redirect } from "@tanstack/react-router";
 import { PaperiteShell } from "@/components/paperite-shell";
 import { usePaperiteEditor } from "@/hooks/use-paperite-editor";
-import { clerk, loadClerk } from "@/lib/clerk";
+import { hasCompletedOnboarding } from "@/lib/onboarding";
 
 export const Route = createFileRoute("/_main/")({
-	beforeLoad: async () => {
-		if (!import.meta.env.BETA_PAPERITE) return;
-
-		await loadClerk();
-
-		if (!clerk.isSignedIn) {
+	beforeLoad: () => {
+		if (!hasCompletedOnboarding()) {
 			throw redirect({ to: "/login" });
 		}
 	},

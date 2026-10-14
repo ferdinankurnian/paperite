@@ -1,5 +1,11 @@
-import { XIcon } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { ChevronDownIcon, ChevronUpIcon, XIcon } from "lucide-react";
+import {
+	type ChangeEvent,
+	type KeyboardEvent,
+	type RefObject,
+	useEffect,
+	useRef,
+} from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { PageFormat } from "@/lib/storage/types";
@@ -29,6 +35,7 @@ type Props = {
  */
 export function FloatingNotePanel(p: Props) {
 	const activeNotePath = useAppStore((s) => s.activeNotePath);
+	const openTabs = useAppStore((s) => s.openTabs);
 	const pageFormats = useEditorUiStore((s) => s.pageFormats);
 	const defaultPageFormat =
 		useAppStore((s) => s.defaultPageFormat) ?? FALLBACK_PAGE_FORMAT;
@@ -36,10 +43,16 @@ export function FloatingNotePanel(p: Props) {
 	const visible = useEditorUiStore((s) => s.floatingPanelVisible);
 	const lastMode = useEditorUiStore((s) => s.floatingPanelLastMode);
 	const findText = useEditorUiStore((s) => s.findText);
+	const findMatchIndex = useEditorUiStore((s) => s.findMatchIndex);
+	const findMatchCount = useEditorUiStore((s) => s.findMatchCount);
 	const replaceText = useEditorUiStore((s) => s.replaceText);
 	const info = useEditorUiStore((s) => s.noteInfoTarget);
+	const activeTitleDraft = useEditorUiStore((s) =>
+		activeNotePath ? s.titleDrafts[activeNotePath] : undefined,
+	);
 	const setFloatingPanelMode = useEditorUiStore((s) => s.setFloatingPanelMode);
 	const setFindText = useEditorUiStore((s) => s.setFindText);
+	const setFindMatchIndex = useEditorUiStore((s) => s.setFindMatchIndex);
 	const setReplaceText = useEditorUiStore((s) => s.setReplaceText);
 	const closeFloatingPanel = useEditorUiStore((s) => s.closeFloatingPanel);
 	const findInputRef = useRef<HTMLInputElement>(null);
@@ -47,6 +60,31 @@ export function FloatingNotePanel(p: Props) {
 	const pageFormat = activeNotePath
 		? (pageFormats[activeNotePath] ?? defaultPageFormat)
 		: defaultPageFormat;
+	const activeTab = activeNotePath
+		? openTabs.find((tab) => tab.path === activeNotePath)
+		: undefined;
+	const displayedInfo = activeNotePath
+		? {
+				path: activeNotePath,
+				title: activeTitleDraft?.trim() || activeTab?.title || "Untitled",
+			}
+		: info;
+	const moveMatch = (direction: -1 | 1) => {
+		if (findMatchCount === 0) return;
+		setFindMatchIndex(
+			(findMatchIndex + direction + findMatchCount) % findMatchCount,
+		);
+	};
+	const handleFindKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+		if (event.key === "Escape") {
+			setFloatingPanelMode(null);
+			return;
+		}
+		if (event.key === "Enter") {
+			event.preventDefault();
+			moveMatch(event.shiftKey ? -1 : 1);
+		}
+	};
 
 	useEffect(() => {
 		if (!mode) return;
@@ -63,7 +101,7 @@ export function FloatingNotePanel(p: Props) {
 			onAnimationEnd={(e) => {
 				if (e.target === e.currentTarget && !mode) closeFloatingPanel();
 			}}
-			className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-3 rounded-xl bg-popover p-3 text-sm text-popover-foreground shadow-[0_14px_40px_rgb(0_0_0/0.35),0_0_0_1px_rgb(255_255_255/0.08)] duration-200 ease-out data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-top-2 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-top-2 data-closed:zoom-out-95"
+			className="absolute top-12 right-4 z-20 flex w-80 flex-col gap-2 rounded-xl bg-popover px-3 pt-2 pb-3 text-sm text-popover-foreground shadow-[0_14px_40px_rgb(0_0_0/0.35),0_0_0_1px_rgb(255_255_255/0.08)] duration-200 ease-out data-open:animate-in data-open:fade-in-0 data-open:slide-in-from-top-2 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:slide-out-to-top-2 data-closed:zoom-out-95"
 		>
 			{displayMode === "format" ? (
 				<>
@@ -110,11 +148,13 @@ export function FloatingNotePanel(p: Props) {
 					<div className="space-y-2 rounded-lg bg-muted/35 p-2">
 						<div>
 							<span className="text-muted-foreground text-xs">Title</span>
-							<p>{info?.title ?? "—"}</p>
+							<p>{displayedInfo?.title ?? "—"}</p>
 						</div>
 						<div>
 							<span className="text-muted-foreground text-xs">Path</span>
-							<p className="break-all font-mono text-xs">{info?.path ?? "—"}</p>
+							<p className="break-all font-mono text-xs">
+								{displayedInfo?.path ?? "—"}
+							</p>
 						</div>
 					</div>
 				</>
@@ -134,17 +174,16 @@ export function FloatingNotePanel(p: Props) {
 						</Button>
 					</div>
 					<div className="space-y-2 rounded-lg bg-muted/35 p-2">
-						<div className="flex items-center gap-2">
-							<Input
-								ref={findInputRef}
-								value={findText}
-								placeholder="Find..."
-								onChange={(e) => setFindText(e.target.value)}
-								onKeyDown={(e) => {
-									if (e.key === "Escape") setFloatingPanelMode(null);
-								}}
-							/>
-						</div>
+						<FindInputRow
+							inputRef={findInputRef}
+							value={findText}
+							onChange={(e) => setFindText(e.target.value)}
+							onKeyDown={handleFindKeyDown}
+							matchIndex={findMatchIndex}
+							matchCount={findMatchCount}
+							onPrevious={() => moveMatch(-1)}
+							onNext={() => moveMatch(1)}
+						/>
 						{displayMode === "replace" ? (
 							<div className="flex items-center gap-2">
 								<Input
@@ -155,11 +194,16 @@ export function FloatingNotePanel(p: Props) {
 								<Button
 									size="sm"
 									variant="outline"
+									disabled={!findMatchCount}
 									onClick={() => p.onReplace(false)}
 								>
-									One
+									Replace
 								</Button>
-								<Button size="sm" onClick={() => p.onReplace(true)}>
+								<Button
+									size="sm"
+									disabled={!findMatchCount}
+									onClick={() => p.onReplace(true)}
+								>
 									All
 								</Button>
 							</div>
@@ -167,6 +211,74 @@ export function FloatingNotePanel(p: Props) {
 					</div>
 				</>
 			)}
+		</div>
+	);
+}
+
+function FindInputRow({
+	inputRef,
+	value,
+	onChange,
+	onKeyDown,
+	matchIndex,
+	matchCount,
+	onPrevious,
+	onNext,
+}: {
+	inputRef: RefObject<HTMLInputElement | null>;
+	value: string;
+	onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+	onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => void;
+	matchIndex: number;
+	matchCount: number;
+	onPrevious: () => void;
+	onNext: () => void;
+}) {
+	const hasQuery = value.trim().length > 0;
+	const hasMatches = matchCount > 0;
+	const matchLabel = !hasQuery
+		? null
+		: hasMatches
+			? `${matchIndex + 1} of ${matchCount}`
+			: "0 matches";
+
+	return (
+		<div className="flex items-center gap-1.5">
+			<Input
+				ref={inputRef}
+				className="min-w-0 flex-1"
+				value={value}
+				placeholder="Find..."
+				onChange={onChange}
+				onKeyDown={onKeyDown}
+			/>
+			{matchLabel ? (
+				<span className="shrink-0 px-1 text-[11px] text-muted-foreground tabular-nums">
+					{matchLabel}
+				</span>
+			) : null}
+			<Button
+				type="button"
+				size="icon-sm"
+				variant="ghost"
+				aria-label="Previous match"
+				title="Previous match (Shift+Enter)"
+				disabled={!hasMatches}
+				onClick={onPrevious}
+			>
+				<ChevronUpIcon />
+			</Button>
+			<Button
+				type="button"
+				size="icon-sm"
+				variant="ghost"
+				aria-label="Next match"
+				title="Next match (Enter)"
+				disabled={!hasMatches}
+				onClick={onNext}
+			>
+				<ChevronDownIcon />
+			</Button>
 		</div>
 	);
 }

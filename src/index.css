@@ -178,6 +178,61 @@
 		height: calc(100svh - 2.25rem);
 	}
 
+	/* Web mode has no titlebar — reclaim its 2.25rem. Higher specificity
+		than the rule above so order doesn't matter. */
+	.paperite-shell.paperite-shell-web [data-slot="sidebar-container"] {
+		top: 0;
+		height: 100svh;
+	}
+
+	/* Zen mode: the whole sidebar cluster (space rail + note panel) lives
+		inside ZenSidebarWrap (`.paperite-zen`) and zen animates ONLY that
+		wrapper — one element, one motion, so the panels can never desync.
+		Inner widths stay fixed (rail 14.5rem, panel 20rem via the rigid
+		inner card), so the collapse only ever clips, never reflows text.
+		The non-none `translate` also makes the wrapper the containing block
+		for the rail's `fixed` container, so the rail rides along instead of
+		sticking to the viewport. Open footprint is explicit (34.5rem) because
+		max-width can't animate from `none`. Desktop only: on smaller
+		viewports the note panel is an overlay sheet with its own transform
+		rules and the wrapper stays inert-free of motion. */
+	.paperite-zen {
+		opacity: 1;
+		transition:
+			max-width 200ms linear,
+			translate 200ms linear,
+			opacity 200ms linear;
+	}
+
+	@media (min-width: 56.0001rem) {
+		/* Permanent containing block (desktop only): even the identity
+			`translate` makes the wrapper anchor the rail's `fixed`
+			container, so the anchor never flips mid-animation. Without
+			this, exiting zen released the block while top/height were
+			still mid-flight and the rail dropped a titlebar-height then
+			snapped back at the end. Mobile keeps viewport anchoring
+			(overlay sheet untouched). */
+		.paperite-zen {
+			translate: 0 0;
+		}
+
+		/* Always wrapper-anchored (never flips): wrapper-top already sits
+			below the titlebar, so top 0 + bottom 0 matches the old
+			viewport-anchored geometry exactly. top/height stay constant
+			across toggles — only max-width/translate/opacity animate. */
+		.paperite-zen[data-zen] [data-slot="sidebar-container"] {
+			top: 0;
+			bottom: 0;
+			height: auto;
+		}
+
+		.paperite-zen[data-zen="true"] {
+			max-width: 0;
+			translate: calc((var(--sidebar-width) + 20rem) / -2) 0;
+			opacity: 0;
+		}
+	}
+
 	@media (max-width: 56rem) {
 		.paperite-space-sidebar-wrapper {
 			display: none;
@@ -211,6 +266,12 @@
 
 		.paperite-note-sidebar[data-open="true"] {
 			transform: translateX(0);
+		}
+
+		/* Overlay sheet keeps fluid content like before zen; the rigid
+			20rem inner only applies to the desktop docked panel. */
+		.paperite-note-sidebar-inner {
+			width: 100%;
 		}
 
 		.paperite-note-sidebar-backdrop {
@@ -485,6 +546,10 @@
 
 	.paperite-tiptap .paperite-search-match {
 		@apply bg-yellow-300/80 text-neutral-950 outline-none;
+	}
+
+	.paperite-tiptap .paperite-search-match-active {
+		@apply bg-orange-300 text-neutral-950 outline-2 outline-orange-400;
 	}
 
 	/* Task list — NodeView does NOT set data-type on <li>, so target via parent ul */

@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld("electron", {
 	},
 	auth: {
 		getPendingCallback: () => ipcRenderer.invoke("auth:get-pending-callback"),
+		startCallbackServer: () =>
+			ipcRenderer.invoke("auth:start-callback-server"),
 	},
 	sync: {
 		getStatus: () => ipcRenderer.invoke("sync:get-status"),
@@ -80,6 +82,8 @@ contextBridge.exposeInMainWorld("electron", {
 			ipcRenderer.invoke("notes:prune-assets", notePath),
 		setPinned: (notePath, pinned) =>
 			ipcRenderer.invoke("notes:set-pinned", notePath, pinned),
+		setPageFormat: (notePath, format) =>
+			ipcRenderer.invoke("notes:set-page-format", notePath, format),
 		createNote: (parentPath, title) =>
 			ipcRenderer.invoke("notes:create-note", parentPath, title),
 		createFolder: (parentPath, title) =>

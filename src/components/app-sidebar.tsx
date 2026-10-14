@@ -141,7 +141,21 @@ import {
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Switch } from "@/components/ui/switch";
-import { clerk } from "@/lib/clerk";
+import { clerk, isClerkConfigured, loadClerk } from "@/lib/clerk";
+import {
+	backfillLinkedSpace,
+	markBackfilled,
+	stopLiveSync,
+	useLiveSyncPending,
+} from "@/lib/cloud-live-sync";
+import {
+	startPullForSpace,
+	stopAllPull,
+	stopPullForSpace,
+} from "@/lib/cloud-pull-sync";
+import { pullCloudSpace, shareSpaceToCloud } from "@/lib/cloud-space-sync";
+import { setCloudTransient } from "@/lib/cloud-sync-status";
+import { humanizeShareError, listSharedSpaces } from "@/lib/convex";
 import { getNotesEngine } from "@/lib/notes-engine";
 import type { NoteSearchResult } from "@/lib/storage/types";
 import { useAppStore } from "@/lib/stores/app-store";
@@ -316,6 +330,29 @@ type DragPreviewItem = {
 const fallbackUser = {
 	name: "Paperite user",
 	avatar: "",
+	email: "",
+};
+
+const cachedUserKey = "paperite:cached-user";
+
+// Last-known profile, display-only. Clerk owns the real session — this
+// just stops the sidebar from lying with "Paperite user" while the
+// session is still being restored on cold start.
+const loadCachedUser = () => {
+	try {
+		const raw = window.localStorage.getItem(cachedUserKey);
+		if (!raw) return fallbackUser;
+		const parsed = JSON.parse(raw) as Partial<typeof fallbackUser>;
+		if (typeof parsed.name !== "string" || typeof parsed.avatar !== "string")
+			return fallbackUser;
+		return {
+			name: parsed.name,
+			avatar: parsed.avatar,
+			email: typeof parsed.email === "string" ? parsed.email : "",
+		};
+	} catch {
+		return fallbackUser;
+	}
 };
 
 const SpaceIcon = ({
@@ -969,7 +1006,7 @@ function NoteGridCard({
 					<button
 						ref={setNodeRef}
 						type="button"
-						className="mb-2 w-full touch-none break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left transition-all duration-150 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-[0.97] data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0"
+						className="mb-2 w-full touch-none break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-[0.97] data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0"
 						data-active={isActive}
 						data-dragging={isDragging}
 						{...attributes}
@@ -1350,7 +1387,7 @@ function NoteFolderItem({
 						</div>
 						{hasChildren && isOpen ? (
 							<MemoizedFolderChildren
-												canDragItems={canDragItems}
+								canDragItems={canDragItems}
 								item={item}
 								level={level}
 								onCreateFolder={onCreateFolder}
@@ -1559,189 +1596,290 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 	);
 });
 
-const MemoNoteCardBody = React.memo(function NoteCardBody({
-	attributes,
-	canDragItems,
-	deleteOpen,
-	displayPreview,
-	displayTitle,
-	isActive,
-	isDragging,
-	isTrash,
-	item,
-	listeners,
-	onDeleteItem,
-	onMoveItem,
-	onOpenNote,
-	onPermanentDeleteItem,
-	onPrefetchNote,
-	onRestoreItem,
-	searchQuery,
-	setDeleteOpen,
-	setNodeRef,
-	showPreview,
-	spaceColors,
-	spaceIcons,
-	spaces,
-}: {
-	attributes?: ReturnType<typeof useDraggable>["attributes"];
-	canDragItems: boolean;
-	deleteOpen: boolean;
-	displayPreview: string;
-	displayTitle: string;
-	isActive: boolean;
-	isDragging: boolean;
-	isTrash?: boolean;
-	item: WorkspaceNote;
-	listeners?: ReturnType<typeof useDraggable>["listeners"];
-	onDeleteItem: (path: string) => void;
-	onMoveItem: (itemPath: string, nextParentPath: string) => void;
-	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
-	onPermanentDeleteItem?: (notePath: string) => void;
-	onPrefetchNote?: (path: string) => void;
-	onRestoreItem?: (notePath: string) => void;
-	searchQuery: string;
-	setDeleteOpen: React.Dispatch<React.SetStateAction<boolean>>;
-	setNodeRef: (node: HTMLButtonElement | null) => void;
-	showPreview: boolean;
-	spaceColors: Record<string, string>;
-	spaceIcons: Record<string, string>;
-	spaces: WorkspaceSpace[];
-}) {
-	return (
-		<>
-			<ContextMenu>
-				<ContextMenuTrigger asChild>
-					<button
-						ref={setNodeRef}
-						type="button"
-						className={cn(
-							"flex w-full flex-col items-start gap-1.5 rounded-md border border-transparent px-3 py-2.5 text-left text-sm leading-tight whitespace-nowrap outline-none hover:border-border/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0 active:scale-[0.98] data-[active=true]:border-border/50 data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0",
-							canDragItems && "touch-none",
-						)}
-						data-active={isActive}
-						data-dragging={isDragging}
-						{...(attributes ?? {})}
-						{...(listeners ?? {})}
-						onPointerEnter={() => onPrefetchNote?.(item.path)}
-						onClick={() => onOpenNote(item, "preview")}
-						onDoubleClick={() => onOpenNote(item, "fixed")}
-					>
-						<div className="flex w-full items-start justify-between gap-2">
-							<span className="min-w-0 flex-1 truncate font-medium">
-								{highlightSearchText(displayTitle, searchQuery)}
-							</span>
-							{item.pinned ? (
-								<PinIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-							) : null}
-						</div>
-						{showPreview && displayPreview ? (
-							<span className="line-clamp-2 w-full text-xs whitespace-break-spaces text-sidebar-foreground/65">
-								{highlightSearchText(displayPreview, searchQuery)}
-							</span>
-						) : null}
-					</button>
-				</ContextMenuTrigger>
-				<ContextMenuContent className="w-44">
-					{isTrash ? (
-						<>
-							<ContextMenuItem
-								onSelect={() => {
-									const name = item.path.split("/").pop();
-									if (name && onRestoreItem) onRestoreItem(name);
-								}}
-							>
-								<RotateCcwIcon />
-								Restore note
-							</ContextMenuItem>
-							<ContextMenuSeparator />
-							<ContextMenuItem
-								variant="destructive"
-								onSelect={() => {
-									const name = item.path.split("/").pop();
-									if (name && onPermanentDeleteItem)
-										onPermanentDeleteItem(name);
-								}}
-							>
-								<Trash2Icon />
-								Delete permanently
-							</ContextMenuItem>
-						</>
-					) : (
-						<>
-							<ContextMenuItem onSelect={() => void toggleNotePinned(item)}>
-								<PinIcon />
-								{item.pinned ? "Unpin note" : "Pin note"}
-							</ContextMenuItem>
-							<MoveToSpaceMenu
-								spaces={spaces}
-								spaceIcons={spaceIcons}
-								spaceColors={spaceColors}
-								notePath={item.path}
-								onMove={(spacePath) => onMoveItem(item.path, spacePath)}
-							/>
-							<ContextMenuSeparator />
-							<ContextMenuItem
-								variant="destructive"
-								onSelect={() => setDeleteOpen(true)}
-							>
-								<Trash2Icon />
-								Delete note
-							</ContextMenuItem>
-						</>
-					)}
-				</ContextMenuContent>
-			</ContextMenu>
-			<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-				<AlertDialogContent>
-					<AlertDialogHeader>
-						<AlertDialogTitle>Delete {item.title}?</AlertDialogTitle>
-						<AlertDialogDescription>
-							This will move the note to Trash.
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
-						<AlertDialogAction
-							variant="destructive"
-							onClick={() => {
-								onDeleteItem(item.path);
-								setDeleteOpen(false);
-							}}
+const MemoNoteCardBody = React.memo(
+	function NoteCardBody({
+		attributes,
+		canDragItems,
+		deleteOpen,
+		displayPreview,
+		displayTitle,
+		isActive,
+		isDragging,
+		isTrash,
+		item,
+		listeners,
+		onDeleteItem,
+		onMoveItem,
+		onOpenNote,
+		onPermanentDeleteItem,
+		onPrefetchNote,
+		onRestoreItem,
+		searchQuery,
+		setDeleteOpen,
+		setNodeRef,
+		showPreview,
+		spaceColors,
+		spaceIcons,
+		spaces,
+	}: {
+		attributes?: ReturnType<typeof useDraggable>["attributes"];
+		canDragItems: boolean;
+		deleteOpen: boolean;
+		displayPreview: string;
+		displayTitle: string;
+		isActive: boolean;
+		isDragging: boolean;
+		isTrash?: boolean;
+		item: WorkspaceNote;
+		listeners?: ReturnType<typeof useDraggable>["listeners"];
+		onDeleteItem: (path: string) => void;
+		onMoveItem: (itemPath: string, nextParentPath: string) => void;
+		onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
+		onPermanentDeleteItem?: (notePath: string) => void;
+		onPrefetchNote?: (path: string) => void;
+		onRestoreItem?: (notePath: string) => void;
+		searchQuery: string;
+		setDeleteOpen: React.Dispatch<React.SetStateAction<boolean>>;
+		setNodeRef: (node: HTMLButtonElement | null) => void;
+		showPreview: boolean;
+		spaceColors: Record<string, string>;
+		spaceIcons: Record<string, string>;
+		spaces: WorkspaceSpace[];
+	}) {
+		return (
+			<>
+				<ContextMenu>
+					<ContextMenuTrigger asChild>
+						<button
+							ref={setNodeRef}
+							type="button"
+							className={cn(
+								"flex w-full flex-col items-start gap-1.5 rounded-md border border-transparent px-3 py-2.5 text-left text-sm leading-tight whitespace-nowrap outline-none hover:border-border/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0 active:scale-[0.98] data-[active=true]:border-border/50 data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0",
+								canDragItems && "touch-none",
+							)}
+							data-active={isActive}
+							data-dragging={isDragging}
+							{...(attributes ?? {})}
+							{...(listeners ?? {})}
+							onPointerEnter={() => onPrefetchNote?.(item.path)}
+							onClick={() => onOpenNote(item, "preview")}
+							onDoubleClick={() => onOpenNote(item, "fixed")}
 						>
-							Delete
-						</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
-		</>
-	);
-}, function noteCardBodyPropsAreEqual(prev, next) {
-	// isOver lives on the shell — body must not re-render when only the drop
-	// indicator toggles. attributes/listeners refs may churn from dnd-kit.
+							<div className="flex w-full items-start justify-between gap-2">
+								<span className="min-w-0 flex-1 truncate font-medium">
+									{highlightSearchText(displayTitle, searchQuery)}
+								</span>
+								{item.pinned ? (
+									<PinIcon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+								) : null}
+							</div>
+							{showPreview && displayPreview ? (
+								<span className="line-clamp-2 w-full text-xs whitespace-break-spaces text-sidebar-foreground/65">
+									{highlightSearchText(displayPreview, searchQuery)}
+								</span>
+							) : null}
+						</button>
+					</ContextMenuTrigger>
+					<ContextMenuContent className="w-44">
+						{isTrash ? (
+							<>
+								<ContextMenuItem
+									onSelect={() => {
+										const name = item.path.split("/").pop();
+										if (name && onRestoreItem) onRestoreItem(name);
+									}}
+								>
+									<RotateCcwIcon />
+									Restore note
+								</ContextMenuItem>
+								<ContextMenuSeparator />
+								<ContextMenuItem
+									variant="destructive"
+									onSelect={() => {
+										const name = item.path.split("/").pop();
+										if (name && onPermanentDeleteItem)
+											onPermanentDeleteItem(name);
+									}}
+								>
+									<Trash2Icon />
+									Delete permanently
+								</ContextMenuItem>
+							</>
+						) : (
+							<>
+								<ContextMenuItem onSelect={() => void toggleNotePinned(item)}>
+									<PinIcon />
+									{item.pinned ? "Unpin note" : "Pin note"}
+								</ContextMenuItem>
+								<MoveToSpaceMenu
+									spaces={spaces}
+									spaceIcons={spaceIcons}
+									spaceColors={spaceColors}
+									notePath={item.path}
+									onMove={(spacePath) => onMoveItem(item.path, spacePath)}
+								/>
+								<ContextMenuSeparator />
+								<ContextMenuItem
+									variant="destructive"
+									onSelect={() => setDeleteOpen(true)}
+								>
+									<Trash2Icon />
+									Delete note
+								</ContextMenuItem>
+							</>
+						)}
+					</ContextMenuContent>
+				</ContextMenu>
+				<AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
+					<AlertDialogContent>
+						<AlertDialogHeader>
+							<AlertDialogTitle>Delete {item.title}?</AlertDialogTitle>
+							<AlertDialogDescription>
+								This will move the note to Trash.
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<AlertDialogFooter>
+							<AlertDialogCancel>Cancel</AlertDialogCancel>
+							<AlertDialogAction
+								variant="destructive"
+								onClick={() => {
+									onDeleteItem(item.path);
+									setDeleteOpen(false);
+								}}
+							>
+								Delete
+							</AlertDialogAction>
+						</AlertDialogFooter>
+					</AlertDialogContent>
+				</AlertDialog>
+			</>
+		);
+	},
+	function noteCardBodyPropsAreEqual(prev, next) {
+		// isOver lives on the shell — body must not re-render when only the drop
+		// indicator toggles. attributes/listeners refs may churn from dnd-kit.
+		return (
+			prev.isDragging === next.isDragging &&
+			prev.isActive === next.isActive &&
+			prev.item === next.item &&
+			prev.canDragItems === next.canDragItems &&
+			prev.displayTitle === next.displayTitle &&
+			prev.displayPreview === next.displayPreview &&
+			prev.searchQuery === next.searchQuery &&
+			prev.showPreview === next.showPreview &&
+			prev.isTrash === next.isTrash &&
+			prev.deleteOpen === next.deleteOpen &&
+			prev.spaces === next.spaces &&
+			prev.spaceIcons === next.spaceIcons &&
+			prev.spaceColors === next.spaceColors &&
+			prev.setNodeRef === next.setNodeRef &&
+			prev.onDeleteItem === next.onDeleteItem &&
+			prev.onMoveItem === next.onMoveItem &&
+			prev.onOpenNote === next.onOpenNote &&
+			prev.onPrefetchNote === next.onPrefetchNote &&
+			prev.onRestoreItem === next.onRestoreItem &&
+			prev.onPermanentDeleteItem === next.onPermanentDeleteItem
+		);
+	},
+);
+
+function ExistingCloudSpacePicker({
+	cloudSpaceLinks,
+	onLinked,
+}: {
+	cloudSpaceLinks: Record<string, string>;
+	onLinked: (spaceId: string, name: string) => void;
+}) {
+	const [open, setOpen] = React.useState(false);
+	const [loading, setLoading] = React.useState(false);
+	const [error, setError] = React.useState<string | null>(null);
+	const [candidates, setCandidates] = React.useState<
+		{ spaceId: string; name: string }[]
+	>([]);
+
+	const load = () => {
+		setOpen(true);
+		if (loading || candidates.length > 0) return;
+		setLoading(true);
+		setError(null);
+		void (async () => {
+			try {
+				const rows = await listSharedSpaces();
+				const linkedIds = new Set(Object.values(cloudSpaceLinks));
+				setCandidates(
+					rows
+						.filter((row) => row.space && !linkedIds.has(row.space._id))
+						.map((row) => ({
+							spaceId: row.space?._id ?? "",
+							name: row.space?.name ?? "Untitled",
+						}))
+						.filter((row) => row.spaceId),
+				);
+			} catch (err) {
+				setError(
+					err instanceof Error
+						? humanizeShareError(err)
+						: "Could not load cloud spaces.",
+				);
+			} finally {
+				setLoading(false);
+			}
+		})();
+	};
+
+	if (!open) {
+		return (
+			<button
+				type="button"
+				onClick={load}
+				className="text-xs text-muted-foreground underline-offset-4 hover:underline"
+			>
+				Or link to an existing cloud space from another device
+			</button>
+		);
+	}
+
 	return (
-		prev.isDragging === next.isDragging &&
-		prev.isActive === next.isActive &&
-		prev.item === next.item &&
-		prev.canDragItems === next.canDragItems &&
-		prev.displayTitle === next.displayTitle &&
-		prev.displayPreview === next.displayPreview &&
-		prev.searchQuery === next.searchQuery &&
-		prev.showPreview === next.showPreview &&
-		prev.isTrash === next.isTrash &&
-		prev.deleteOpen === next.deleteOpen &&
-		prev.spaces === next.spaces &&
-		prev.spaceIcons === next.spaceIcons &&
-		prev.spaceColors === next.spaceColors &&
-		prev.setNodeRef === next.setNodeRef &&
-		prev.onDeleteItem === next.onDeleteItem &&
-		prev.onMoveItem === next.onMoveItem &&
-		prev.onOpenNote === next.onOpenNote &&
-		prev.onPrefetchNote === next.onPrefetchNote &&
-		prev.onRestoreItem === next.onRestoreItem &&
-		prev.onPermanentDeleteItem === next.onPermanentDeleteItem
+		<div className="space-y-2 rounded-lg border border-border/60 px-3 py-2.5">
+			<div className="flex items-center justify-between">
+				<div className="text-xs font-medium">Existing cloud spaces</div>
+				<button
+					type="button"
+					onClick={() => setOpen(false)}
+					className="text-xs text-muted-foreground hover:underline"
+				>
+					Close
+				</button>
+			</div>
+			{loading ? (
+				<div className="text-xs text-muted-foreground">Loading…</div>
+			) : error ? (
+				<div className="text-xs text-destructive">{error}</div>
+			) : candidates.length === 0 ? (
+				<div className="text-xs text-muted-foreground">
+					No other cloud spaces on this account. Toggle the switch above to
+					share this space fresh.
+				</div>
+			) : (
+				<div className="grid gap-1">
+					{candidates.map((candidate) => (
+						<button
+							key={candidate.spaceId}
+							type="button"
+							onClick={() => onLinked(candidate.spaceId, candidate.name)}
+							className="truncate rounded-md px-2 py-1.5 text-left text-xs hover:bg-sidebar-accent"
+						>
+							{candidate.name}
+						</button>
+					))}
+				</div>
+			)}
+			<p className="text-[11px] text-muted-foreground">
+				Same-account join only — inviting other people is a separate feature.
+			</p>
+		</div>
 	);
-});
+}
 
 function SpaceDropHeader({
 	spaces,
@@ -1821,6 +1959,126 @@ function SpaceDropHeader({
 	React.useEffect(() => {
 		setSettingsTitle(spaceTitle);
 	}, [spaceTitle]);
+	const cloudSpaceLinks = useAppStore((s) => s.cloudSpaceLinks);
+	const setCloudSpaceLink = useAppStore((s) => s.setCloudSpaceLink);
+	const removeCloudSpaceLink = useAppStore((s) => s.removeCloudSpaceLink);
+	const cloudSpaceId = cloudSpaceLinks[activeSpacePath];
+	const [cloudBusy, setCloudBusy] = React.useState(false);
+	const [cloudError, setCloudError] = React.useState<string | null>(null);
+	const [cloudInfo, setCloudInfo] = React.useState<string | null>(null);
+	const pulledCloudRef = React.useRef<Record<string, boolean>>({});
+	// Plan 020 Step 4: queue-derived states. `linking` = share flow in
+	// flight, `live` = linked + outbox empty, `pending` = linked + n queued.
+	const pendingCloudUpdates = useLiveSyncPending(activeSpacePath);
+	const cloudPill: "local" | "linking" | "live" | "pending" | "error" =
+		cloudBusy
+			? "linking"
+			: cloudError
+				? "error"
+				: !cloudSpaceId
+					? "local"
+					: pendingCloudUpdates > 0
+						? "pending"
+						: "live";
+	const cloudPillLabel =
+		cloudPill === "pending" ? `pending (${pendingCloudUpdates})` : cloudPill;
+
+	// Plan 019 Step 4: opening a cloud-linked space pulls listNotes/listUpdates.
+	// Opt-in is absolute — no Convex call happens without a mapping.
+	React.useEffect(() => {
+		if (!cloudSpaceId || isTrash) return;
+		const key = `${activeSpacePath}:${cloudSpaceId}`;
+		if (pulledCloudRef.current[key]) return;
+		pulledCloudRef.current[key] = true;
+		let cancelled = false;
+		void (async () => {
+			try {
+				const result = await pullCloudSpace(activeSpacePath, cloudSpaceId);
+				if (cancelled) return;
+				if (result.createdLocalNotes > 0 || result.conflicts.length > 0) {
+					setCloudInfo(
+						`Pulled ${result.cloudNotes} cloud notes (${result.createdLocalNotes} new locally${result.conflicts.length > 0 ? `, ${result.conflicts.length} kept as "(cloud)" copies` : ""}).`,
+					);
+				}
+				// Plan 020 Step 3: keep the subscription alive after the
+				// one-shot pull so remote edits arrive without reopening.
+				await startPullForSpace(activeSpacePath, cloudSpaceId);
+				// Plan 020 Step 5: one-time backfill for pre-sync links.
+				await backfillLinkedSpace(activeSpacePath, cloudSpaceId).catch(
+					() => null,
+				);
+			} catch {
+				if (!cancelled) {
+					setCloudError(
+						"Could not pull cloud notes. Reopen the space to retry.",
+					);
+				}
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [activeSpacePath, cloudSpaceId, isTrash]);
+
+	const handleCloudToggle = (next: boolean) => {
+		if (cloudBusy) return;
+		if (next) {
+			if (cloudSpaceId) return;
+			setCloudBusy(true);
+			setCloudError(null);
+			setCloudInfo(null);
+			void (async () => {
+				try {
+					const { spaceId: newId, noteCount } =
+						await shareSpaceToCloud(activeSpacePath);
+					setCloudSpaceLink(activeSpacePath, newId);
+					pulledCloudRef.current[`${activeSpacePath}:${newId}`] = true;
+					// Plan 020 Step 3: subscribe immediately so the fresh link
+					// is live without waiting for a space reopen.
+					await startPullForSpace(activeSpacePath, newId);
+					// Plan 020 Step 5: fresh shares already hold full state.
+					markBackfilled(activeSpacePath);
+					setCloudInfo(
+						noteCount === 0
+							? "Saved empty space to cloud."
+							: `Saved ${noteCount} note${noteCount === 1 ? "" : "s"} to cloud.`,
+					);
+				} catch (error) {
+					setCloudError(
+						error instanceof Error ? error.message : "Cloud save failed.",
+					);
+				} finally {
+					setCloudBusy(false);
+				}
+			})();
+			return;
+		}
+		// Toggle OFF: unlink locally only. Local notes stay byte-identical,
+		// the cloud copy is kept (delete is a separate future feature).
+		// A later toggle ON creates a FRESH share (new spaceId).
+		// Plan 020: tear down live sync both ways (push queue + subscriptions).
+		stopPullForSpace(activeSpacePath);
+		stopLiveSync(activeSpacePath);
+		removeCloudSpaceLink(activeSpacePath);
+		setCloudError(null);
+		setCloudInfo("Unlinked. Local notes kept; cloud copy kept.");
+	};
+
+	// Mirror the transient phase for the titlebar indicator (memory-only;
+	// the durable link stays in cloudSpaceLinks). Clearing happens here too
+	// so the titlebar never sticks on "syncing" after the flow settles.
+	React.useEffect(() => {
+		if (cloudBusy) {
+			setCloudTransient(activeSpacePath, { phase: "syncing", message: null });
+		} else if (cloudError) {
+			setCloudTransient(activeSpacePath, {
+				phase: "error",
+				message: cloudError,
+			});
+		} else {
+			setCloudTransient(activeSpacePath, null);
+		}
+	}, [activeSpacePath, cloudBusy, cloudError]);
 
 	return (
 		<div
@@ -1962,17 +2220,24 @@ function SpaceDropHeader({
 											path={activeSpacePath}
 										/>
 										<div className="min-w-0">
-											<div className="truncate text-md font-semibold">{spaceTitle}</div>
+											<div className="truncate text-md font-semibold">
+												{spaceTitle}
+											</div>
 											<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
 												<AvatarGroup className="-space-x-1">
-													<Avatar className="size-5">
-														<AvatarImage src={user.avatar} alt={user.name} />
-														<AvatarFallback className="text-[9px] ring-0">{memberInitials || "P"}</AvatarFallback>
-													</Avatar>
-													<Avatar className="size-5">
-														<AvatarImage src={user.avatar} alt={user.name} />
-														<AvatarFallback className="text-[9px]">{memberInitials || "P"}</AvatarFallback>
-													</Avatar>
+													{[{ name: user.name, avatar: user.avatar }]
+														.slice(0, 3)
+														.map((member) => (
+															<Avatar key={member.name} className="size-5">
+																<AvatarImage
+																	src={member.avatar}
+																	alt={member.name}
+																/>
+																<AvatarFallback className="text-[9px] ring-0">
+																	{memberInitials || "P"}
+																</AvatarFallback>
+															</Avatar>
+														))}
 												</AvatarGroup>
 												<span>1 member</span>
 											</div>
@@ -2045,7 +2310,10 @@ function SpaceDropHeader({
 								</div>
 							</div>
 							<div className="grid gap-2">
-								<label className="text-xs text-muted-foreground" htmlFor="space-sort-order">
+								<label
+									className="text-xs text-muted-foreground"
+									htmlFor="space-sort-order"
+								>
 									Sort by
 								</label>
 								<Select
@@ -2079,7 +2347,10 @@ function SpaceDropHeader({
 								/>
 							</div>
 							<div className="grid gap-2">
-								<label className="text-xs text-muted-foreground" htmlFor="space-note-previews">
+								<label
+									className="text-xs text-muted-foreground"
+									htmlFor="space-note-previews"
+								>
 									Note previews
 								</label>
 								<Select
@@ -2104,6 +2375,78 @@ function SpaceDropHeader({
 								</Select>
 							</div>
 						</div>
+						<div className="space-y-3">
+							<div>
+								<div className="text-sm font-medium">Cloud</div>
+								<div className="text-xs text-muted-foreground">
+									Opt-in per space. Local-first unless you save it.
+								</div>
+							</div>
+							<div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2.5">
+								<div className="min-w-0">
+									<div className="text-sm">Save this space to cloud</div>
+									<div className="text-xs text-muted-foreground">
+										{cloudPill === "linking"
+											? "Linking space to cloud…"
+											: cloudPill === "live"
+												? "Live. Edits sync within seconds."
+												: cloudPill === "pending"
+													? `${pendingCloudUpdates} edit${pendingCloudUpdates === 1 ? "" : "s"} waiting — will send when you're back online.`
+													: "Off. This space never touches Convex."}
+									</div>
+									{cloudError ? (
+										<div className="mt-1 text-xs text-destructive">
+											{cloudError}
+										</div>
+									) : null}
+									{!cloudError && cloudInfo ? (
+										<div className="mt-1 text-xs text-muted-foreground">
+											{cloudInfo}
+										</div>
+									) : null}
+								</div>
+								<div className="flex shrink-0 items-center gap-2">
+									<button
+										type="button"
+										title={
+											cloudPill === "pending"
+												? `${pendingCloudUpdates} queued edit${pendingCloudUpdates === 1 ? "" : "s"} unsent — they stay queued with backoff and send on reconnect.`
+												: cloudPill === "live"
+													? "Linked, outbox empty, subscriptions healthy."
+													: undefined
+										}
+										onClick={() => {
+											if (cloudPill !== "pending") return;
+											setCloudInfo(
+												`${pendingCloudUpdates} edit${pendingCloudUpdates === 1 ? "" : "s"} waiting in the outbox — kept across retries, sent oldest-first when the connection recovers.`,
+											);
+										}}
+										className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground data-[pill=error]:bg-destructive/15 data-[pill=error]:text-destructive data-[pill=linking]:bg-amber-500/15 data-[pill=linking]:text-amber-500 data-[pill=live]:bg-emerald-500/15 data-[pill=live]:text-emerald-500 data-[pill=pending]:bg-amber-500/15 data-[pill=pending]:text-amber-500"
+										data-pill={cloudPill}
+									>
+										{cloudPillLabel}
+									</button>
+									<Switch
+										checked={Boolean(cloudSpaceId)}
+										disabled={cloudBusy}
+										onCheckedChange={handleCloudToggle}
+										aria-label="Save this space to cloud"
+									/>
+								</div>
+							</div>
+							{!cloudSpaceId && !cloudBusy ? (
+								<ExistingCloudSpacePicker
+									cloudSpaceLinks={cloudSpaceLinks}
+									onLinked={(spaceId, name) => {
+										setCloudSpaceLink(activeSpacePath, spaceId);
+										setCloudError(null);
+										setCloudInfo(
+											`Linked to existing cloud space "${name}". Pulling…`,
+										);
+									}}
+								/>
+							) : null}
+						</div>
 					</div>
 				</DialogContent>
 			</Dialog>
@@ -2121,7 +2464,8 @@ function SpaceDropHeader({
 							Invite member
 						</Button>
 						<p className="text-center text-xs text-muted-foreground">
-							Member invitations will be available when space sharing is connected.
+							Member invitations will be available when space sharing is
+							connected.
 						</p>
 					</div>
 				</DialogContent>
@@ -2217,6 +2561,37 @@ function SidebarDragOverlay() {
 	);
 }
 
+/**
+ * Single collapsing box for the whole sidebar cluster (space rail +
+ * note panel). Zen animates ONLY this wrapper (max-width + translate +
+ * opacity in index.css) so the two panels can never desync — one element,
+ * one motion. Content inside stays rigid (fixed widths, clipped by the
+ * wrapper's overflow) so nothing reflows mid-flight.
+ *
+ * The non-none `translate` during zen also makes this wrapper the
+ * containing block for the rail's `fixed` container, so the rail rides
+ * along instead of sticking to the viewport. Base state has no translate,
+ * so tablet/mobile overlay behavior is untouched.
+ *
+ * NOTE: wrapping nests Sidebar's `peer` element one level deeper, which
+ * breaks `peer-data-*` selectors on SidebarInset — currently harmless
+ * because those only activate with `variant="inset"` and we always use
+ * the default `sidebar` variant. Revisit if variant ever changes.
+ */
+function ZenSidebarWrap({ children }: { children: React.ReactNode }) {
+	const zenMode = useEditorUiStore((s) => s.zenMode);
+	return (
+		<div
+			className="paperite-zen flex max-w-[34.5rem] min-h-0 overflow-hidden"
+			data-zen={zenMode ? "true" : "false"}
+			inert={zenMode ? true : undefined}
+			aria-hidden={zenMode ? true : undefined}
+		>
+			{children}
+		</div>
+	);
+}
+
 function AppSidebarImpl({
 	activeSpacePath: activeSpacePathProp,
 	expandedFolders: expandedFoldersProp,
@@ -2268,7 +2643,11 @@ function AppSidebarImpl({
 		(s) => s.newlyCreatedFolderPath,
 	);
 	const { open, setOpen } = useSidebar();
-	const [user, setUser] = React.useState(fallbackUser);
+	const [user, setUser] = React.useState(loadCachedUser);
+	const [isSignedIn, setIsSignedIn] = React.useState(false);
+	const [isAuthLoading, setIsAuthLoading] = React.useState(() =>
+		isClerkConfigured(),
+	);
 	const [searchQuery, setSearchQuery] = React.useState("");
 	// Debounce filter work so typing in search doesn't re-walk the tree every key.
 	const [debouncedSearchQuery, setDebouncedSearchQuery] = React.useState("");
@@ -2663,25 +3042,87 @@ function AppSidebarImpl({
 	}, [open, setOpen, tabletLayout]);
 
 	React.useEffect(() => {
-		if (!import.meta.env.BETA_PAPERITE) return;
+		if (!isClerkConfigured()) return;
+
+		let cancelled = false;
 
 		const syncUser = () => {
 			const clerkUser = clerk.user;
+			setIsSignedIn(Boolean(clerkUser));
 
-			setUser({
-				name: clerkUser?.fullName ?? clerkUser?.username ?? "Paperite user",
-				avatar: clerkUser?.imageUrl ?? "",
-			});
+			if (clerkUser) {
+				const next = {
+					name: clerkUser.fullName ?? clerkUser.username ?? "Paperite user",
+					avatar: clerkUser.imageUrl ?? "",
+					email:
+						clerkUser.primaryEmailAddress?.emailAddress ??
+						clerkUser.emailAddresses[0]?.emailAddress ??
+						"",
+				};
+				setUser(next);
+				try {
+					window.localStorage.setItem(cachedUserKey, JSON.stringify(next));
+				} catch {
+					// Display cache only — auth state lives in Clerk.
+				}
+			} else {
+				setUser(fallbackUser);
+				try {
+					window.localStorage.removeItem(cachedUserKey);
+				} catch {
+					// Display cache only — auth state lives in Clerk.
+				}
+			}
 		};
+		let unsubscribe: (() => void) | undefined;
+		try {
+			unsubscribe = clerk.addListener(syncUser);
+		} catch (error) {
+			console.error("[paperite] clerk listener failed", error);
+		}
 
-		syncUser();
-		return clerk.addListener(syncUser);
+		// Global auth handler dispatches this after completing the
+		// OAuth callback — re-sync explicitly in case the clerk
+		// listener missed the transition.
+		const handleAuthSuccess = () => {
+			if (!cancelled) syncUser();
+		};
+		window.addEventListener("paperite:auth-success", handleAuthSuccess);
+
+		void loadClerk()
+			.then(() => {
+				if (cancelled) return;
+				syncUser();
+			})
+			.catch((error) => {
+				// Never fail silently back to guest mode: a failed restore
+				// used to look exactly like "logged out".
+				console.error("[paperite] failed to restore Clerk session", error);
+			})
+			.finally(() => {
+				if (!cancelled) setIsAuthLoading(false);
+			});
+
+		return () => {
+			cancelled = true;
+			unsubscribe?.();
+			window.removeEventListener("paperite:auth-success", handleAuthSuccess);
+		};
 	}, []);
 
 	const logOut = async () => {
-		if (!import.meta.env.BETA_PAPERITE) return;
+		if (!isClerkConfigured()) return;
 
+		// Plan 020 Step 3: subscriptions are per-account — drop them all.
+		stopAllPull();
 		await clerk.signOut();
+		try {
+			window.localStorage.removeItem(cachedUserKey);
+		} catch {
+			// Display cache only — auth state lives in Clerk.
+		}
+		setUser(fallbackUser);
+		setIsSignedIn(false);
 		await navigate({ to: "/login" });
 	};
 
@@ -2951,65 +3392,285 @@ function AppSidebarImpl({
 				isDraggingRef.current = false;
 			}}
 		>
-			<Sidebar
-				collapsible="icon"
-				forceDesktop
-				forceCollapsed={tabletLayout}
-				wrapperClassName={cn(
-					"paperite-space-sidebar-wrapper",
-					notesSheetOpen && "paperite-space-sidebar-wrapper-open",
-				)}
-				className="paperite-space-sidebar"
-				{...props}
-			>
-				<SidebarHeader className="group-data-[collapsible=icon]:p-1 group-data-[collapsible=icon]:pt-3 pb-0">
-					<div className="flex h-10 items-center justify-between px-2 group-data-[collapsible=icon]:h-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
-						<div className="font-brand text-xl text-[#E94C08] group-data-[collapsible=icon]:hidden">
-							Paperite
+			<ZenSidebarWrap>
+				<Sidebar
+					collapsible="icon"
+					forceDesktop
+					// Web mode: never auto-collapse by window width. Browser chrome
+					// (Zen sidebars, devtools) shrinks the viewport and makes the
+					// 56rem breakpoint flap — the user toggles manually instead.
+					forceCollapsed={tabletLayout && !import.meta.env.PAPERITE_WEB}
+					wrapperClassName={cn(
+						"paperite-space-sidebar-wrapper",
+						notesSheetOpen && "paperite-space-sidebar-wrapper-open",
+					)}
+					className="paperite-space-sidebar"
+					{...props}
+				>
+					<SidebarHeader className="group-data-[collapsible=icon]:p-1 group-data-[collapsible=icon]:pt-3 pb-0">
+						<div className="flex h-10 items-center justify-between px-2 group-data-[collapsible=icon]:h-8 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+							<div className="font-brand text-xl text-[#E94C08] group-data-[collapsible=icon]:hidden">
+								Paperite
+							</div>
+							<SidebarTrigger
+								toggleNotesSheet={tabletLayout}
+								className="size-8 rounded-md group-data-[collapsible=icon]:p-2 [&_svg]:size-4"
+							/>
 						</div>
-						<SidebarTrigger
-							toggleNotesSheet={tabletLayout}
-							className="size-8 rounded-md group-data-[collapsible=icon]:p-2 [&_svg]:size-4"
+					</SidebarHeader>
+					<SidebarContent>
+						<NavMain
+							spaces={spaces.map((space) => ({
+								title: space.title,
+								url: "#",
+								path: space.path,
+								icon: (
+									<SpaceIcon
+										color={spaceColors[space.path]}
+										icon={spaceIcons[space.path]}
+										path={space.path}
+									/>
+								),
+							}))}
+							onCreateSpace={onCreateSpace}
+							onDeleteSpace={onDeleteSpace}
+							onEditSpace={onEditSpace}
+							onSelectSpace={onSelectSpace}
+							spaceColorsByPath={spaceColors}
+							spaceIconsByPath={spaceIcons}
 						/>
-					</div>
-				</SidebarHeader>
-				<SidebarContent>
-					<NavMain
-						spaces={spaces.map((space) => ({
-							title: space.title,
-							url: "#",
-							path: space.path,
-							icon: (
-								<SpaceIcon
-									color={spaceColors[space.path]}
-									icon={spaceIcons[space.path]}
-									path={space.path}
-								/>
-							),
-						}))}
-						onCreateSpace={onCreateSpace}
-						onDeleteSpace={onDeleteSpace}
-						onEditSpace={onEditSpace}
-						onSelectSpace={onSelectSpace}
-						spaceColorsByPath={spaceColors}
-						spaceIconsByPath={spaceIcons}
-					/>
-				</SidebarContent>
-				<SidebarFooter className="gap-1">
-					<TrashNavButton onSelectSpace={onSelectSpace} />
-					<NavUser
-						onLogOut={logOut}
-						user={user}
-						showNotePreview={showNotePreview}
-						closeButtonOnly={closeButtonOnly}
-						syncSidebarWithActiveTab={syncSidebarWithActiveTab}
-						onSetShowNotePreview={onSetShowNotePreview}
-						onSetCloseButtonOnly={onSetCloseButtonOnly}
-						onSetSyncSidebarWithActiveTab={onSetSyncSidebarWithActiveTab}
-					/>
-				</SidebarFooter>
-				<SidebarRail />
-			</Sidebar>
+					</SidebarContent>
+					<SidebarFooter className="gap-1">
+						<TrashNavButton onSelectSpace={onSelectSpace} />
+						<NavUser
+							onLogOut={logOut}
+							user={user}
+							isSignedIn={isSignedIn}
+							isAuthLoading={isAuthLoading}
+							showNotePreview={showNotePreview}
+							closeButtonOnly={closeButtonOnly}
+							syncSidebarWithActiveTab={syncSidebarWithActiveTab}
+							onSetShowNotePreview={onSetShowNotePreview}
+							onSetCloseButtonOnly={onSetCloseButtonOnly}
+							onSetSyncSidebarWithActiveTab={onSetSyncSidebarWithActiveTab}
+						/>
+					</SidebarFooter>
+					<SidebarRail />
+				</Sidebar>
+				<SearchQueryContext.Provider value={debouncedSearchQuery}>
+					<SearchExpandPathsContext.Provider value={searchExpandPaths}>
+						<ExpandedFoldersContext.Provider value={expandedFoldersStore}>
+							<aside
+								data-open={notesSheetOpen}
+								className="paperite-note-sidebar flex h-full min-h-0 w-80 max-w-80 shrink-0 flex-col border-r border-border/60 bg-sidebar text-sidebar-foreground"
+							>
+								{/* Rigid inner card: fixed 20rem so collapsing the aside
+								clips instead of reflowing content mid-animation.
+								Without this the list visibly rewraps while sliding. */}
+								<div className="paperite-note-sidebar-inner flex h-full min-h-0 w-80 shrink-0 flex-col">
+									<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
+										<SpaceDropHeader
+											spaces={spaces}
+											spaceColors={spaceColors}
+											spaceIcons={spaceIcons}
+											user={user}
+											spacePreviewModes={spacePreviewModes}
+											showNotePreview={showNotePreview}
+											onCreateFolder={onCreateFolder}
+											onCreateNote={onCreateNote}
+											onEditSpace={onEditSpace}
+											onSetSpacePreviewMode={onSetSpacePreviewMode}
+											viewMode={viewMode}
+											onViewModeChange={onViewModeChange}
+											onSortOrderChange={onSortOrderChange}
+											onFolderFirstChange={onFolderFirstChange}
+											onEmptyTrash={onEmptyTrash}
+										/>
+										<InputGroup className="h-9">
+											<InputGroupAddon>
+												<SearchIcon className="size-4" />
+											</InputGroupAddon>
+											<InputGroupInput
+												value={searchQuery}
+												placeholder="Search..."
+												onChange={(event) => setSearchQuery(event.target.value)}
+											/>
+										</InputGroup>
+									</SidebarHeader>
+									<SidebarContent className="[mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)] [-webkit-mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)]">
+										<SidebarGroup className="px-3 pt-4 pb-8">
+											<SidebarGroupContent>
+												{debouncedSearchQuery.trim().length >= 2 ? (
+													<div className="mb-4 flex flex-col gap-1.5">
+														<p className="px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+															{ftsLoading
+																? "Searching…"
+																: ftsResults && ftsResults.length === 0
+																	? "No full-text matches"
+																	: ftsResults
+																		? `Full-text · ${ftsResults.length}`
+																		: "Full-text"}
+														</p>
+														{(ftsResults ?? []).slice(0, 40).map((hit) => (
+															<button
+																key={hit.path}
+																type="button"
+																className="flex w-full flex-col items-start gap-0.5 rounded-md border border-transparent px-3 py-2 text-left text-sm outline-none transition-colors hover:border-border/50 hover:bg-sidebar-accent"
+																onClick={() =>
+																	onOpenNote(
+																		{
+																			type: "note",
+																			path: hit.path,
+																			title: hit.title,
+																			preview: hit.preview,
+																			updatedAt: hit.updatedAt,
+																			pinned: false,
+																		},
+																		"preview",
+																	)
+																}
+																onPointerEnter={() =>
+																	onPrefetchNote?.(hit.path)
+																}
+															>
+																<span className="w-full truncate font-medium">
+																	{hit.title.trim() || "Untitled"}
+																</span>
+																{hit.preview ? (
+																	<span className="line-clamp-2 w-full text-xs text-muted-foreground">
+																		{hit.preview}
+																	</span>
+																) : null}
+															</button>
+														))}
+													</div>
+												) : null}
+												<SpaceVisibility path="Trash">
+													{trashNotes.length > 0 ? (
+														<NoteGrid
+															items={trashNotes.map((n) => ({
+																type: "note" as const,
+																title: n.title,
+																path: n.trashPath,
+																preview: n.preview,
+																updatedAt: n.deletedAt,
+																pinned: false,
+															}))}
+															onDeleteItem={() => {}}
+															onMoveItem={() => {}}
+															onOpenNote={handleOpenNote}
+															spaces={spaces}
+															spaceIcons={spaceIcons}
+															spaceColors={spaceColors}
+															showPreview={resolvedShowPreview}
+															isTrash
+															onRestoreItem={onRestoreItem}
+															onPermanentDeleteItem={onPermanentDeleteItem}
+														/>
+													) : (
+														<Empty>
+															<EmptyHeader>
+																<EmptyMedia variant="icon">
+																	<Trash2Icon />
+																</EmptyMedia>
+																<EmptyTitle>Trash is empty</EmptyTitle>
+																<EmptyDescription>
+																	Deleted notes will appear here.
+																</EmptyDescription>
+															</EmptyHeader>
+														</Empty>
+													)}
+												</SpaceVisibility>
+												{mountedSpacePaths.map((spacePath) => {
+													const entry = mountedSpaceItems.get(spacePath);
+													if (!entry) return null;
+													const { items: spaceItems } = entry;
+													return (
+														<SpaceVisibility key={spacePath} path={spacePath}>
+															{spaceItems.length > 0 ? (
+																viewMode === "grid" && spacePath === "Inbox" ? (
+																	<NoteGrid
+																		items={spaceItems}
+																		onDeleteItem={onDeleteItem}
+																		onMoveItem={onMoveItem}
+																		onOpenNote={handleOpenNote}
+																		spaces={spaces}
+																		spaceIcons={spaceIcons}
+																		spaceColors={spaceColors}
+																		showPreview={showPreviewForSpace(spacePath)}
+																	/>
+																) : (
+																	<MemoizedNoteTree
+																		canDragItems={canDragItems}
+																		items={spaceItems}
+																		onCreateFolder={onCreateFolder}
+																		onCreateNote={onCreateNote}
+																		onDeleteItem={onDeleteItem}
+																		onMoveItem={onMoveItem}
+																		onOpenNote={handleOpenNote}
+																		onPrefetchNote={onPrefetchNote}
+																		onRenameItem={onRenameItem}
+																		onToggleFolder={handleToggleFolder}
+																		parentPath={spacePath}
+																		spaces={spaces}
+																		spaceIcons={spaceIcons}
+																		spaceColors={spaceColors}
+																		showPreview={showPreviewForSpace(spacePath)}
+																		isInbox={spacePath === "Inbox"}
+																		newlyCreatedFolderPath={
+																			newlyCreatedFolderPath
+																		}
+																		onRenameComplete={onRenameComplete}
+																	/>
+																)
+															) : (
+																<Empty>
+																	<EmptyHeader>
+																		<EmptyMedia variant="icon">
+																			<FileTextIcon />
+																		</EmptyMedia>
+																		<EmptyTitle>No notes yet</EmptyTitle>
+																		<EmptyDescription>
+																			Create a note or drop one into this space.
+																		</EmptyDescription>
+																	</EmptyHeader>
+																	<EmptyContent className="flex-row justify-center">
+																		{spacePath !== "Inbox" && (
+																			<Button
+																				type="button"
+																				size="sm"
+																				variant="outline"
+																				onClick={() =>
+																					onCreateFolder(spacePath)
+																				}
+																			>
+																				<FolderPlusIcon />
+																				New folder
+																			</Button>
+																		)}
+																		<Button
+																			type="button"
+																			size="sm"
+																			onClick={() => onCreateNote(spacePath)}
+																		>
+																			<StickyNotePlusIcon />
+																			New note
+																		</Button>
+																	</EmptyContent>
+																</Empty>
+															)}
+														</SpaceVisibility>
+													);
+												})}
+											</SidebarGroupContent>
+										</SidebarGroup>
+									</SidebarContent>
+								</div>
+							</aside>
+						</ExpandedFoldersContext.Provider>
+					</SearchExpandPathsContext.Provider>
+				</SearchQueryContext.Provider>
+			</ZenSidebarWrap>
 			{tabletLayout && notesSheetOpen ? (
 				<button
 					type="button"
@@ -3018,208 +3679,6 @@ function AppSidebarImpl({
 					onClick={() => setNotesSheetOpen(false)}
 				/>
 			) : null}
-			<SearchQueryContext.Provider value={debouncedSearchQuery}>
-				<SearchExpandPathsContext.Provider value={searchExpandPaths}>
-					<ExpandedFoldersContext.Provider value={expandedFoldersStore}>
-						<aside
-							data-open={notesSheetOpen}
-							className="paperite-note-sidebar flex h-full min-h-0 w-80 max-w-80 shrink-0 flex-col border-r border-border/60 bg-sidebar text-sidebar-foreground"
-						>
-							<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
-								<SpaceDropHeader
-									spaces={spaces}
-									spaceColors={spaceColors}
-									spaceIcons={spaceIcons}
-									user={user}
-									spacePreviewModes={spacePreviewModes}
-									showNotePreview={showNotePreview}
-									onCreateFolder={onCreateFolder}
-									onCreateNote={onCreateNote}
-									onEditSpace={onEditSpace}
-									onSetSpacePreviewMode={onSetSpacePreviewMode}
-									viewMode={viewMode}
-									onViewModeChange={onViewModeChange}
-									onSortOrderChange={onSortOrderChange}
-									onFolderFirstChange={onFolderFirstChange}
-									onEmptyTrash={onEmptyTrash}
-								/>
-								<InputGroup className="h-9">
-									<InputGroupAddon>
-										<SearchIcon className="size-4" />
-									</InputGroupAddon>
-									<InputGroupInput
-										value={searchQuery}
-										placeholder="Search..."
-										onChange={(event) => setSearchQuery(event.target.value)}
-									/>
-								</InputGroup>
-							</SidebarHeader>
-							<SidebarContent className="[mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)] [-webkit-mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)]">
-								<SidebarGroup className="px-3 pt-4 pb-8">
-									<SidebarGroupContent>
-										{debouncedSearchQuery.trim().length >= 2 ? (
-											<div className="mb-4 flex flex-col gap-1.5">
-												<p className="px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-													{ftsLoading
-														? "Searching…"
-														: ftsResults && ftsResults.length === 0
-															? "No full-text matches"
-															: ftsResults
-																? `Full-text · ${ftsResults.length}`
-																: "Full-text"}
-												</p>
-												{(ftsResults ?? []).slice(0, 40).map((hit) => (
-													<button
-														key={hit.path}
-														type="button"
-														className="flex w-full flex-col items-start gap-0.5 rounded-md border border-transparent px-3 py-2 text-left text-sm outline-none transition-colors hover:border-border/50 hover:bg-sidebar-accent"
-														onClick={() =>
-															onOpenNote(
-																{
-																	type: "note",
-																	path: hit.path,
-																	title: hit.title,
-																	preview: hit.preview,
-																	updatedAt: hit.updatedAt,
-																	pinned: false,
-																},
-																"preview",
-															)
-														}
-														onPointerEnter={() => onPrefetchNote?.(hit.path)}
-													>
-														<span className="w-full truncate font-medium">
-															{hit.title.trim() || "Untitled"}
-														</span>
-														{hit.preview ? (
-															<span className="line-clamp-2 w-full text-xs text-muted-foreground">
-																{hit.preview}
-															</span>
-														) : null}
-													</button>
-												))}
-											</div>
-										) : null}
-										<SpaceVisibility path="Trash">
-											{trashNotes.length > 0 ? (
-												<NoteGrid
-													items={trashNotes.map((n) => ({
-														type: "note" as const,
-														title: n.title,
-														path: n.trashPath,
-														preview: n.preview,
-														updatedAt: n.deletedAt,
-														pinned: false,
-													}))}
-													onDeleteItem={() => {}}
-													onMoveItem={() => {}}
-													onOpenNote={handleOpenNote}
-													spaces={spaces}
-													spaceIcons={spaceIcons}
-													spaceColors={spaceColors}
-													showPreview={resolvedShowPreview}
-													isTrash
-													onRestoreItem={onRestoreItem}
-													onPermanentDeleteItem={onPermanentDeleteItem}
-												/>
-											) : (
-												<Empty>
-													<EmptyHeader>
-														<EmptyMedia variant="icon">
-															<Trash2Icon />
-														</EmptyMedia>
-														<EmptyTitle>Trash is empty</EmptyTitle>
-														<EmptyDescription>
-															Deleted notes will appear here.
-														</EmptyDescription>
-													</EmptyHeader>
-												</Empty>
-											)}
-										</SpaceVisibility>
-										{mountedSpacePaths.map((spacePath) => {
-											const entry = mountedSpaceItems.get(spacePath);
-											if (!entry) return null;
-											const { items: spaceItems } = entry;
-											return (
-												<SpaceVisibility key={spacePath} path={spacePath}>
-													{spaceItems.length > 0 ? (
-														viewMode === "grid" && spacePath === "Inbox" ? (
-															<NoteGrid
-																items={spaceItems}
-																			onDeleteItem={onDeleteItem}
-																onMoveItem={onMoveItem}
-																onOpenNote={handleOpenNote}
-																spaces={spaces}
-																spaceIcons={spaceIcons}
-																spaceColors={spaceColors}
-																showPreview={showPreviewForSpace(spacePath)}
-															/>
-														) : (
-															<MemoizedNoteTree
-																			canDragItems={canDragItems}
-																items={spaceItems}
-																onCreateFolder={onCreateFolder}
-																onCreateNote={onCreateNote}
-																onDeleteItem={onDeleteItem}
-																onMoveItem={onMoveItem}
-																onOpenNote={handleOpenNote}
-																onPrefetchNote={onPrefetchNote}
-																onRenameItem={onRenameItem}
-																onToggleFolder={handleToggleFolder}
-																parentPath={spacePath}
-																spaces={spaces}
-																spaceIcons={spaceIcons}
-																spaceColors={spaceColors}
-																showPreview={showPreviewForSpace(spacePath)}
-																isInbox={spacePath === "Inbox"}
-																newlyCreatedFolderPath={newlyCreatedFolderPath}
-																onRenameComplete={onRenameComplete}
-															/>
-														)
-													) : (
-														<Empty>
-															<EmptyHeader>
-																<EmptyMedia variant="icon">
-																	<FileTextIcon />
-																</EmptyMedia>
-																<EmptyTitle>No notes yet</EmptyTitle>
-																<EmptyDescription>
-																	Create a note or drop one into this space.
-																</EmptyDescription>
-															</EmptyHeader>
-															<EmptyContent className="flex-row justify-center">
-																{spacePath !== "Inbox" && (
-																	<Button
-																		type="button"
-																		size="sm"
-																		variant="outline"
-																		onClick={() => onCreateFolder(spacePath)}
-																	>
-																		<FolderPlusIcon />
-																		New folder
-																	</Button>
-																)}
-																<Button
-																	type="button"
-																	size="sm"
-																	onClick={() => onCreateNote(spacePath)}
-																>
-																	<StickyNotePlusIcon />
-																	New note
-																</Button>
-															</EmptyContent>
-														</Empty>
-													)}
-												</SpaceVisibility>
-											);
-										})}
-									</SidebarGroupContent>
-								</SidebarGroup>
-							</SidebarContent>
-						</aside>
-					</ExpandedFoldersContext.Provider>
-				</SearchExpandPathsContext.Provider>
-			</SearchQueryContext.Provider>
 			<SidebarDragOverlay />
 		</DndContext>
 	);

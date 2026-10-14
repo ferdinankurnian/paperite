@@ -82,6 +82,12 @@ const openDb = async () => {
 	);
 	addColumnIfMissing(db, "notes", "remote_id", "remote_id TEXT");
 	addColumnIfMissing(db, "notes", "last_synced_at", "last_synced_at INTEGER");
+	addColumnIfMissing(
+		db,
+		"notes",
+		"pinned",
+		"pinned INTEGER NOT NULL DEFAULT 0",
+	);
 	db.exec("CREATE UNIQUE INDEX IF NOT EXISTS notes_id_idx ON notes(id)");
 
 	return db;
@@ -181,7 +187,7 @@ const getIndexedNote = async (notePath, stats) => {
 	const database = await openDb();
 	const existing = database
 		.prepare(
-			"SELECT id, title, preview, mtime_ms AS mtimeMs, size FROM notes WHERE path = ?",
+			"SELECT id, title, preview, mtime_ms AS mtimeMs, size, pinned FROM notes WHERE path = ?",
 		)
 		.get(normalizedPath);
 
@@ -194,6 +200,7 @@ const getIndexedNote = async (notePath, stats) => {
 			title: existing.title,
 			preview: existing.preview,
 			updatedAt: existing.mtimeMs,
+			pinned: existing.pinned === 1,
 		};
 	}
 
@@ -203,12 +210,13 @@ const getIndexedNote = async (notePath, stats) => {
 	const title =
 		readNoteTitle(content) || toNoteTitle(path.posix.basename(normalizedPath));
 	const preview = toNotePreviewFromContent(content);
+	const pinned = content.pinned === true;
 	const metadata = extractNoteMetadata(content);
 
 	database
 		.prepare(
-			`INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version)
-		VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sync_status FROM notes WHERE path = ?), 'local'), COALESCE((SELECT sync_version FROM notes WHERE path = ?), 0) + 1)
+			`INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version, pinned)
+		VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sync_status FROM notes WHERE path = ?), 'local'), COALESCE((SELECT sync_version FROM notes WHERE path = ?), 0) + 1, ?)
 		ON CONFLICT(path) DO UPDATE SET
 			id = excluded.id,
 			title = excluded.title,
@@ -217,7 +225,8 @@ const getIndexedNote = async (notePath, stats) => {
 			size = excluded.size,
 			indexed_at = excluded.indexed_at,
 			sync_status = excluded.sync_status,
-			sync_version = excluded.sync_version`,
+			sync_version = excluded.sync_version,
+			pinned = excluded.pinned`,
 		)
 		.run(
 			id,
@@ -229,6 +238,7 @@ const getIndexedNote = async (notePath, stats) => {
 			Date.now(),
 			normalizedPath,
 			normalizedPath,
+			pinned ? 1 : 0,
 		);
 	database.prepare("DELETE FROM note_headings WHERE note_id = ?").run(id);
 	database.prepare("DELETE FROM note_tags WHERE note_id = ?").run(id);
@@ -273,6 +283,7 @@ const getIndexedNote = async (notePath, stats) => {
 		title,
 		preview,
 		updatedAt: stats.mtimeMs,
+		pinned,
 	};
 };
 
@@ -330,7 +341,7 @@ const moveIndexedPath = async (fromPath, toPath) => {
 
 	const rows = db
 		.prepare(
-			"SELECT id, path, title, preview, mtime_ms AS mtimeMs, size, indexed_at AS indexedAt, sync_status AS syncStatus, sync_version AS syncVersion, remote_id AS remoteId, last_synced_at AS lastSyncedAt FROM notes",
+			"SELECT id, path, title, preview, mtime_ms AS mtimeMs, size, indexed_at AS indexedAt, sync_status AS syncStatus, sync_version AS syncVersion, remote_id AS remoteId, last_synced_at AS lastSyncedAt, pinned FROM notes",
 		)
 		.all();
 
@@ -352,7 +363,7 @@ const moveIndexedPath = async (fromPath, toPath) => {
 
 		db.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
 		db.prepare(
-			"INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version, remote_id, last_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			"INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version, remote_id, last_synced_at, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		).run(
 			row.id || createNoteId(nextPath),
 			nextPath,
@@ -365,6 +376,7 @@ const moveIndexedPath = async (fromPath, toPath) => {
 			row.syncVersion,
 			row.remoteId,
 			row.lastSyncedAt,
+			row.pinned ?? 0,
 		);
 		db.prepare("UPDATE note_fts SET path = ?, title = ? WHERE path = ?").run(
 			nextPath,
