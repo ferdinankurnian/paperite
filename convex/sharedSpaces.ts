@@ -83,10 +83,14 @@ export const listNotes = query({
 	args: { spaceId: v.id("sharedSpaces") },
 	handler: async (ctx, args) => {
 		await requireSpaceMember(ctx, args.spaceId);
-		return ctx.db
+		const rows = await ctx.db
 			.query("sharedNotes")
 			.withIndex("by_space", (q) => q.eq("spaceId", args.spaceId))
 			.collect();
+		// Tombstoned rows stay in the table for offline convergence but are
+		// hidden from the listing (plan 020 Step 1). Existing rows without
+		// the optional field are unaffected.
+		return rows.filter((row) => row.deletedAt === undefined);
 	},
 });
 
@@ -112,6 +116,8 @@ export const upsertNote = mutation({
 				path: args.path,
 				title: args.title,
 				updatedAt: now,
+				// Re-creating a tombstoned note resurrects it.
+				deletedAt: undefined,
 			});
 			return { noteRowId: existing._id };
 		}
@@ -125,6 +131,31 @@ export const upsertNote = mutation({
 			updatedAt: now,
 		});
 		return { noteRowId };
+	},
+});
+
+export const removeNote = mutation({
+	args: {
+		spaceId: v.id("sharedSpaces"),
+		noteId: v.string(),
+	},
+	handler: async (ctx, args) => {
+		await requireSpaceMember(ctx, args.spaceId);
+		const existing = await ctx.db
+			.query("sharedNotes")
+			.withIndex("by_space_note", (q) =>
+				q.eq("spaceId", args.spaceId).eq("noteId", args.noteId),
+			)
+			.unique();
+		if (!existing) return { noteRowId: null };
+		// Tombstone, not delete: keeps the row so offline devices converge
+		// instead of resurrecting. Updates/snapshots are kept for history —
+		// a future "erase from cloud" feature must delete those explicitly.
+		await ctx.db.patch(existing._id, {
+			deletedAt: Date.now(),
+			updatedAt: Date.now(),
+		});
+		return { noteRowId: existing._id };
 	},
 });
 

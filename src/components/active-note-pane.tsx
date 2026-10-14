@@ -17,6 +17,7 @@ const MemoNoteEditor = memo(
 		prev.yDoc === next.yDoc &&
 		prev.searchQuery === next.searchQuery &&
 		prev.searchMatchIndex === next.searchMatchIndex &&
+		prev.zenMode === next.zenMode &&
 		prev.onChange === next.onChange &&
 		prev.onContentRendered === next.onContentRendered &&
 		prev.onContentSnapshot === next.onContentSnapshot &&
@@ -161,7 +162,11 @@ function ActiveNotePaneInner({
 								yDoc={yNote.doc as Y.Doc}
 								searchQuery={isActive && searchEnabled ? findText : ""}
 								searchMatchIndex={isActive ? findMatchIndex : 0}
-								zenMode={zenMode}
+								// Scope zen to the active editor like searchQuery above:
+								// inactive tabs stay memo-bailed on toggle, and pick
+								// up the current value via the isActive flip when
+								// they become active.
+								zenMode={isActive ? zenMode : undefined}
 								onChange={onChange}
 								onContentRendered={onContentRendered}
 								onContentSnapshot={onContentSnapshot}

@@ -23,6 +23,7 @@ import {
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { useAppStore } from "@/lib/stores/app-store";
 import { useEditorUiStore } from "@/lib/stores/editor-ui-store";
+import { cn } from "@/lib/utils";
 
 type NoteHeaderProps = {
 	spaceTitleFor: (path: string) => string;
@@ -185,9 +186,25 @@ function NoteHeaderHostInner(headerProps: NoteHeaderHostProps) {
 	const activeNotePath = useAppStore((s) => s.activeNotePath);
 	const zenMode = useEditorUiStore((s) => s.zenMode);
 	const lockedNotePaths = useEditorUiStore((s) => s.lockedNotePaths);
-	if (zenMode || !activeNotePath) return null;
+	if (!activeNotePath) return null;
+	// Keep the header (and TabBar with all its per-tab dnd-kit/radix wiring)
+	// mounted while zen hides it via CSS — the old `return null` remounted
+	// every tab on each toggle. This host re-rendering is trivial; the memo
+	// children bail out since their props keep identity.
 	return (
-		<NoteHeader {...headerProps} locked={lockedNotePaths.has(activeNotePath)} />
+		<div
+			className={cn(
+				"shrink-0 overflow-hidden transition-[max-height,opacity] duration-200 ease-linear",
+				zenMode ? "max-h-0 opacity-0" : "max-h-12 opacity-100",
+			)}
+			inert={zenMode ? true : undefined}
+			aria-hidden={zenMode ? true : undefined}
+		>
+			<NoteHeader
+				{...headerProps}
+				locked={lockedNotePaths.has(activeNotePath)}
+			/>
+		</div>
 	);
 }
 

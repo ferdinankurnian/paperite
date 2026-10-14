@@ -4,6 +4,7 @@ import type {
 	NoteContent as StorageNoteContent,
 	NoteSearchResult as StorageNoteSearchResult,
 	OpenNoteTab as StorageOpenNoteTab,
+	PageFormat as StoragePageFormat,
 	PaperiteAppState as StoragePaperiteAppState,
 	SidebarSortOrder as StorageSidebarSortOrder,
 	SpacePreviewMode as StorageSpacePreviewMode,
@@ -26,6 +27,7 @@ declare global {
 	interface ImportMetaEnv {
 		readonly VITE_CLERK_AUTH_CALLBACK_URL?: string;
 		readonly VITE_CONVEX_URL?: string;
+		readonly BETA_PAPERITE?: boolean;
 		readonly PAPERITE_WEB?: boolean;
 		readonly PAPERITE_API_URL?: string;
 	}
@@ -139,6 +141,10 @@ declare global {
 					notePath: string,
 					pinned: boolean,
 				) => Promise<{ pinned: boolean }>;
+				setPageFormat: (
+					notePath: string,
+					format: PageFormat,
+				) => Promise<{ ok: true; pageFormat: PageFormat }>;
 				createNote: (
 					parentPath: string,
 					title: string,
@@ -194,4 +200,5 @@ declare global {
 	type SidebarSortOrder = StorageSidebarSortOrder;
 	type SpacePreviewMode = StorageSpacePreviewMode;
 	type PaperiteAppState = StoragePaperiteAppState;
+	type PageFormat = StoragePageFormat;
 }

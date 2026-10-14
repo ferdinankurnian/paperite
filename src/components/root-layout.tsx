@@ -33,8 +33,11 @@ export function RootLayout() {
 			<KeyboardShortcutsProvider>
 				<TooltipProvider>
 					<RootKeyboardShortcuts />
-					<div className="paperite-shell flex h-svh flex-col overflow-hidden bg-background">
-						<AppTitlebar />
+					<div
+						className={`paperite-shell flex h-svh flex-col overflow-hidden bg-background${import.meta.env.PAPERITE_WEB ? " paperite-shell-web" : ""}`}
+					>
+						{/* Browser has its own chrome — custom titlebar is Electron-only. */}
+						{!import.meta.env.PAPERITE_WEB && <AppTitlebar />}
 						<div className="min-h-0 flex-1 overflow-hidden">
 							<ErrorBoundary>
 								<Outlet />

@@ -22,6 +22,8 @@ import {
 	MenubarSubTrigger,
 	MenubarTrigger,
 } from "@/components/ui/menubar";
+import { useLiveSyncPending } from "@/lib/cloud-live-sync";
+import { useCloudTransient } from "@/lib/cloud-sync-status";
 import type { CommandId } from "@/lib/commands";
 import { formatShortcut } from "@/lib/shortcuts";
 import { useAppStore } from "@/lib/stores/app-store";
@@ -104,7 +106,7 @@ export function AppTitlebar() {
 	return (
 		<header
 			className={cn(
-				"app-region-drag relative z-50 grid h-9 shrink-0 items-center border-b border-border/60 text-foreground",
+				"app-region-drag relative z-50 grid h-9 shrink-0 items-center border-b border-border/60 text-foreground transition-colors duration-200 ease-linear",
 				isMacOS ? "grid-cols-[120px_1fr_120px]" : "grid-cols-[1fr_auto_1fr]",
 				zenMode ? "bg-background" : "bg-sidebar",
 			)}
@@ -115,6 +117,7 @@ export function AppTitlebar() {
 				<div className="app-region-no-drag ml-auto flex h-full items-stretch justify-end">
 					<ExportQueue />
 					<SyncIndicator />
+					<CloudSpaceIndicator />
 				</div>
 			) : (
 				<WindowControls />
@@ -145,7 +148,10 @@ const WindowTitle = memo(function WindowTitle() {
 	);
 });
 
-function AppMenu() {
+// Memo: no props — skips re-render when AppTitlebar re-renders for zenMode.
+// Without this, every zen toggle reconciles the whole menubar including an
+// open menu portal (same output, wasted work, lights up devtools highlight).
+const AppMenu = memo(function AppMenu() {
 	const [activeSpacePath, setActiveSpacePath] = useState("Inbox");
 	const { getShortcut } = useKeyboardShortcuts();
 	const isInbox = activeSpacePath === "Inbox";
@@ -402,7 +408,7 @@ function AppMenu() {
 			</Menubar>
 		</div>
 	);
-}
+});
 
 const WindowControls = memo(function WindowControls() {
 	const closeButtonOnly = useAppStore((state) => state.closeButtonOnly);
@@ -410,6 +416,7 @@ const WindowControls = memo(function WindowControls() {
 		<div className="app-region-no-drag ml-auto flex h-full items-stretch justify-end">
 			<ExportQueue />
 			<SyncIndicator />
+			<CloudSpaceIndicator />
 			{!closeButtonOnly && (
 				<>
 					<WindowControl
@@ -516,6 +523,84 @@ function SyncIndicator() {
 					{friendlyError ? (
 						<p className="text-destructive">{friendlyError}</p>
 					) : null}
+				</div>
+			</HoverCardContent>
+		</HoverCard>
+	);
+}
+
+function CloudSpaceIndicator() {
+	const activeSpacePath = useAppStore((s) => s.activeSpacePath);
+	const cloudSpaceId = useAppStore((s) => s.cloudSpaceLinks[activeSpacePath]);
+	const transient = useCloudTransient(activeSpacePath);
+	const pending = useLiveSyncPending(activeSpacePath);
+
+	// Local-only spaces stay quiet — no icon unless the space is linked
+	// or a share/pull is in flight.
+	if (!cloudSpaceId && !transient) return null;
+
+	// Plan 020 Step 4: same queue-derived source as the dialog pill.
+	const state =
+		transient?.phase === "syncing"
+			? "linking"
+			: transient?.phase === "error"
+				? "error"
+				: pending > 0
+					? "pending"
+					: "live";
+	const label =
+		state === "linking"
+			? "Linking space to cloud"
+			: state === "error"
+				? "Cloud sync failed"
+				: state === "pending"
+					? `${pending} edit${pending === 1 ? "" : "s"} waiting to sync`
+					: "Space live — edits sync within seconds";
+
+	const Icon =
+		state === "linking" || state === "pending"
+			? CloudSync
+			: state === "error"
+				? CloudAlert
+				: CloudCheck;
+
+	return (
+		<HoverCard openDelay={150} closeDelay={80}>
+			<HoverCardTrigger asChild>
+				<button
+					type="button"
+					aria-label={label}
+					className="flex h-full w-8 items-center justify-center"
+				>
+					<Icon
+						className={cn(
+							"size-3.5",
+							(state === "linking" || state === "pending") &&
+								"animate-pulse text-sky-400",
+							state === "live" && "text-emerald-500",
+							state === "error" && "text-destructive",
+						)}
+					/>
+				</button>
+			</HoverCardTrigger>
+			<HoverCardContent side="bottom" align="end" className="w-64 text-xs">
+				<div className="space-y-1.5">
+					<div className="flex items-center justify-between gap-3">
+						<span className="font-medium text-foreground">Cloud sync</span>
+						<span className="text-muted-foreground">{label}</span>
+					</div>
+					{transient?.message ? (
+						<p className="text-destructive">{transient.message}</p>
+					) : state === "pending" ? (
+						<p className="text-muted-foreground">
+							{pending} edit{pending === 1 ? "" : "s"} waiting — will send when
+							you&apos;re back online.
+						</p>
+					) : (
+						<p className="text-muted-foreground">
+							This space is linked to its cloud copy.
+						</p>
+					)}
 				</div>
 			</HoverCardContent>
 		</HoverCard>

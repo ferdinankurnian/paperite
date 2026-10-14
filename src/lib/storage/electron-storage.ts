@@ -2,6 +2,7 @@ import type {
 	NoteContent,
 	NoteSearchResult,
 	NotesEngine,
+	PageFormat,
 	PaperiteAppState,
 	SyncEngine,
 	SyncStatus,
@@ -59,6 +60,13 @@ export class ElectronNotesEngine implements NotesEngine {
 
 	async writeNote(path: string, content: NoteContent): Promise<{ ok: true }> {
 		return requireElectron().notes.writeNote(path, content);
+	}
+
+	async setPageFormat(
+		path: string,
+		format: PageFormat,
+	): Promise<{ ok: true; pageFormat: PageFormat }> {
+		return requireElectron().notes.setPageFormat(path, format);
 	}
 
 	async pruneAssets(path: string): Promise<{ ok: true; deleted: number; skipped?: string }> {

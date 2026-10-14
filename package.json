@@ -16,11 +16,13 @@
     "files": [
       "main.js",
       "preload.js",
+      "server/**/*",
       "dist/index.html",
       "dist/popout.html",
       "dist/assets/**/*",
       "dist/*.png",
       "dist/*.svg",
+      "dist-web/**/*",
       "package.json"
     ],
     "protocols": [
@@ -49,7 +51,9 @@
     "dev:web": "vite",
     "dev:server": "PAPERITE_WEB=1 concurrently -k \"bun run dev:web\" \"wait-on http://localhost:5173 && node server/index.js --dev\"",
     "web": "node server/index.js",
-    "build": "tsc -b && vite build && electron-builder --publish never",
+    "serve": "node server/index.js",
+    "build": "tsc -b && vite build && PAPERITE_WEB=1 vite build --outDir dist-web && electron-builder --publish never",
+    "build:web": "tsc -b && PAPERITE_WEB=1 vite build --outDir dist-web",
     "lint": "biome check .",
     "preview": "vite preview",
     "format": "biome format --write .",

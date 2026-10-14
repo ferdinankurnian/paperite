@@ -21,6 +21,7 @@ export default defineSchema({
 		title: v.string(),
 		createdAt: v.number(),
 		updatedAt: v.number(),
+		deletedAt: v.optional(v.number()),
 	})
 		.index("by_space", ["spaceId"])
 		.index("by_space_note", ["spaceId", "noteId"]),

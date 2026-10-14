@@ -59,7 +59,11 @@ router.put("/notes/:path", async (req, res) => {
 		const normalizedContent = normalizeNoteContent(req.body);
 		let existingContent;
 
-		if (!normalizedContent.id || !normalizedContent.title) {
+		if (
+			!normalizedContent.id ||
+			!normalizedContent.title ||
+			normalizedContent.pageFormat === undefined
+		) {
 			try {
 				existingContent = await readNoteContent(normalizedPath, true);
 				if (!normalizedContent.id && existingContent.id) {
@@ -67,6 +71,12 @@ router.put("/notes/:path", async (req, res) => {
 				}
 				if (!normalizedContent.title && existingContent.title) {
 					normalizedContent.title = existingContent.title;
+				}
+				if (
+					normalizedContent.pageFormat === undefined &&
+					existingContent.pageFormat !== undefined
+				) {
+					normalizedContent.pageFormat = existingContent.pageFormat;
 				}
 			} catch {
 				// new note or missing file
@@ -111,7 +121,11 @@ router.put("/notes/:path/derived", async (req, res) => {
 		const normalizedPath = currentNotePath(req.params.path);
 		const normalizedContent = normalizeNoteContent(req.body);
 
-		if (!normalizedContent.id || !normalizedContent.title) {
+		if (
+			!normalizedContent.id ||
+			!normalizedContent.title ||
+			normalizedContent.pageFormat === undefined
+		) {
 			try {
 				const existingContent = await readNoteContent(normalizedPath, true);
 				if (!normalizedContent.id && existingContent.id) {
@@ -119,6 +133,12 @@ router.put("/notes/:path/derived", async (req, res) => {
 				}
 				if (!normalizedContent.title && existingContent.title) {
 					normalizedContent.title = existingContent.title;
+				}
+				if (
+					normalizedContent.pageFormat === undefined &&
+					existingContent.pageFormat !== undefined
+				) {
+					normalizedContent.pageFormat = existingContent.pageFormat;
 				}
 			} catch {
 				// manifest missing
@@ -147,7 +167,15 @@ router.get("/notes/:path/yjs", async (req, res) => {
 		await ensureWorkspace();
 		const result = await readLocalYNoteState(req.params.path);
 		res.setHeader("Content-Type", "application/octet-stream");
-		res.send(Buffer.from(result.snapshot));
+		// Frame: noteId (utf8, no NUL bytes) + 0x00 + snapshot.
+		// Matches WebNotesEngine.readYNote's parsing.
+		res.send(
+			Buffer.concat([
+				Buffer.from(result.noteId, "utf8"),
+				Buffer.from([0]),
+				Buffer.from(result.snapshot),
+			]),
+		);
 	} catch (error) {
 		console.error("[paperite] read-y-note error:", error);
 		res.status(500).json({ error: error.message });
@@ -168,6 +196,39 @@ router.post(
 		}
 	},
 );
+
+const normalizePageFormat = (format) => ({
+	indentation:
+		format?.indentation === "first-line" || format?.firstLineIndent === true
+			? "first-line"
+			: format?.indentation === "hanging"
+				? "hanging"
+				: "none",
+	lineHeight: format?.lineHeight === "1.5" ? "1.5" : "normal",
+	paragraphSpacing:
+		format?.paragraphSpacing === "spacious" ? "spacious" : "none",
+});
+
+router.put("/notes/:path/page-format", async (req, res) => {
+	try {
+		await ensureWorkspace();
+		const normalizedPath = currentNotePath(req.params.path);
+		const content = await readNoteContent(normalizedPath, true);
+		content.pageFormat = normalizePageFormat(req.body);
+		await ensureNoteDirectory(normalizedPath);
+		await writeRevisionSnapshot(normalizedPath, content);
+		await writeFileAtomic(
+			resolveNoteContentPath(normalizedPath),
+			serializeNoteContent(content),
+		);
+		const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+		await getIndexedNote(normalizedPath, stats);
+		res.json({ ok: true, pageFormat: content.pageFormat });
+	} catch (error) {
+		console.error("[paperite] set-page-format error:", error);
+		res.status(500).json({ error: error.message });
+	}
+});
 
 router.post("/notes", async (req, res) => {
 	try {

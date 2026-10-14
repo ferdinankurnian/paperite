@@ -7,6 +7,8 @@ export type NoteContent = {
 		attrs?: Record<string, unknown>;
 	}>;
 	text?: string;
+	/** Per-note page format override, persisted in the note file itself. */
+	pageFormat?: PageFormat;
 	[key: string]: unknown;
 };
 
@@ -98,6 +100,19 @@ export type PaperiteAppState = {
 	closeButtonOnly: boolean;
 	syncSidebarWithActiveTab: boolean;
 	defaultPageFormat: PageFormat;
+	/**
+	 * Plan 019: local space path → Convex sharedSpace Id.
+	 * No entry = local-only (Convex is never touched for that space).
+	 * Unshare drops the entry only; cloud rows are kept.
+	 */
+	cloudSpaceLinks: Record<string, string>;
+	/**
+	 * Plan 020 Step 3: cloud updateIds already applied locally, per note.
+	 * Key `${spaceId}::${noteId}` → last-seen updateIds (capped, see
+	 * normalize). Yjs merging is idempotent so a re-apply after restart is
+	 * harmless — this set is purely a perf optimization to skip known bytes.
+	 */
+	cloudSeenUpdates: Record<string, string[]>;
 };
 
 export interface NotesEngine {
@@ -111,7 +126,13 @@ export interface NotesEngine {
 	): Promise<{ ok: true; noteId: string; updatedAt: number }>;
 	writeDerivedNote(path: string, content: NoteContent): Promise<{ ok: true }>;
 	writeNote(path: string, content: NoteContent): Promise<{ ok: true }>;
-	pruneAssets?(path: string): Promise<{ ok: true; deleted: number; skipped?: string }>;
+	setPageFormat(
+		path: string,
+		format: PageFormat,
+	): Promise<{ ok: true; pageFormat: PageFormat }>;
+	pruneAssets?(
+		path: string,
+	): Promise<{ ok: true; deleted: number; skipped?: string }>;
 	createNote(
 		parentPath: string,
 		title: string,

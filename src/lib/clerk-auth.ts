@@ -13,17 +13,27 @@ const envCallbackUrl = import.meta.env.VITE_CLERK_AUTH_CALLBACK_URL;
  * used internally as the IPC payload format.)
  */
 export async function resolveAuthCallbackUrl(): Promise<string> {
-	if (envCallbackUrl) return envCallbackUrl;
+	const electronAuth = window.electron?.auth;
 
-	if (window.electron?.auth.startCallbackServer) {
+	if (electronAuth?.startCallbackServer) {
+		// Electron deep-link flow: env first, then throwaway loopback server.
+		if (envCallbackUrl) return envCallbackUrl;
+
 		try {
-			return await window.electron.auth.startCallbackServer();
+			return await electronAuth.startCallbackServer();
 		} catch {
 			// Fall through to the page-based fallbacks below.
 		}
+	} else if (envCallbackUrl && /^https?:\/\//.test(envCallbackUrl)) {
+		// Web/serve mode: only http(s) callbacks ever reach Clerk — it
+		// rejects custom schemes (paperite://) with invalid_url_scheme.
+		return envCallbackUrl;
 	}
 
-	if (import.meta.env.DEV) return "http://localhost:5173/auth-callback.html";
+	// auth-callback.html deep-links paperite://, so it's Electron-only.
+	// In web/serve the redirect must land back in this window itself.
+	if (import.meta.env.DEV && electronAuth?.startCallbackServer)
+		return "http://localhost:5173/auth-callback.html";
 	return `${window.location.origin}${window.location.pathname}`;
 }
 

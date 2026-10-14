@@ -56,6 +56,19 @@ const loadLocalEnv = () => {
 
 loadLocalEnv();
 
+// Headless mode: the packaged binary (AppImage, tarball, or `electron .`)
+// doubles as the `paperite serve` CLI. Boot the standalone server and skip
+// every window / single-instance branch below — the http server keeps the
+// event loop alive. `serve`/`--serve` may sit anywhere in argv:
+// packaged: [binary, serve, ...], dev: [electron, ., serve, ...].
+const serveArgs = process.argv.slice(1);
+const isServeMode =
+	serveArgs.includes("serve") || serveArgs.includes("--serve");
+
+if (isServeMode) {
+	require("./server/index.js");
+}
+
 const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const shouldUseMacChrome = process.platform === "darwin";
 const shouldSimulateMacChrome = process.env.IS_MACOS === "1";
@@ -248,6 +261,18 @@ const createEmptyNoteContent = (title) => ({
 	type: "doc",
 	...(title ? { title } : {}),
 	content: [{ type: "paragraph" }],
+});
+
+const normalizePageFormat = (format) => ({
+	indentation:
+		format?.indentation === "first-line" || format?.firstLineIndent === true
+			? "first-line"
+			: format?.indentation === "hanging"
+				? "hanging"
+				: "none",
+	lineHeight: format?.lineHeight === "1.5" ? "1.5" : "normal",
+	paragraphSpacing:
+		format?.paragraphSpacing === "spacious" ? "spacious" : "none",
 });
 
 const isUuidFilename = (notePath) =>
@@ -575,6 +600,9 @@ const writeDerivedNoteContent = async (notePath, content) => {
 			}
 			if (normalizedContent.pinned === undefined && existingContent.pinned !== undefined) {
 				normalizedContent.pinned = existingContent.pinned;
+			}
+			if (normalizedContent.pageFormat === undefined && existingContent.pageFormat !== undefined) {
+				normalizedContent.pageFormat = existingContent.pageFormat;
 			}
 		} catch {
 			// Keep the derived payload as-is when the manifest is missing.
@@ -2169,6 +2197,23 @@ const createWindowOptions = ({ width, height, minWidth, minHeight }) => ({
 	},
 });
 
+const revealWindow = (window, timeoutMs = 4_000) => {
+	let revealed = false;
+
+	const reveal = () => {
+		if (revealed || window.isDestroyed()) return;
+		revealed = true;
+		clearTimeout(timer);
+		window.show();
+	};
+
+	const timer = setTimeout(reveal, timeoutMs);
+
+	window.once("ready-to-show", reveal);
+	window.webContents.once("did-finish-load", reveal);
+	window.once("closed", () => clearTimeout(timer));
+};
+
 const createApplicationMenu = () => {
 	const template = [
 		...(shouldUseMacChrome
@@ -2308,7 +2353,7 @@ const createWindow = () => {
 		}),
 	);
 
-	mainWindow.once("ready-to-show", () => mainWindow.show());
+	revealWindow(mainWindow);
 
 	mainWindow.webContents.on("will-navigate", (event, url) => {
 		if (isAppUrl(url)) return;
@@ -2713,7 +2758,11 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	let existingContent;
 
 	// Preserve persisted metadata stripped by the editor body payload.
-	if (!normalizedContent.id || !normalizedContent.title) {
+	if (
+		!normalizedContent.id ||
+		!normalizedContent.title ||
+		normalizedContent.pageFormat === undefined
+	) {
 		try {
 			existingContent = await readNoteContent(normalizedPath, true);
 			if (!normalizedContent.id && existingContent.id) {
@@ -2721,6 +2770,12 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 			}
 			if (!normalizedContent.title && existingContent.title) {
 				normalizedContent.title = existingContent.title;
+			}
+			if (
+				normalizedContent.pageFormat === undefined &&
+				existingContent.pageFormat !== undefined
+			) {
+				normalizedContent.pageFormat = existingContent.pageFormat;
 			}
 		} catch {
 			// new note or missing file — id already set by createEmptyNoteContent
@@ -2765,6 +2820,20 @@ ipcMain.handle("notes:set-pinned", async (_event, notePath, pinned) => {
 	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
 	await getIndexedNote(normalizedPath, stats);
 	return { pinned: content.pinned };
+});
+
+ipcMain.handle("notes:set-page-format", async (_event, notePath, format) => {
+	await ensureWorkspace();
+	const normalizedPath = currentNotePath(notePath);
+	const content = await readNoteContent(normalizedPath, true);
+	content.pageFormat = normalizePageFormat(format);
+	await writeFileAtomic(
+		resolveNoteContentPath(normalizedPath),
+		serializeNoteContent(content),
+	);
+	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+	await getIndexedNote(normalizedPath, stats);
+	return { ok: true, pageFormat: content.pageFormat };
 });
 
 
@@ -3173,7 +3242,7 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 
 	popoutWindows.set(normalizedPath, popout);
 
-	popout.once("ready-to-show", () => popout.show());
+	revealWindow(popout);
 
 	popout.on("closed", () => {
 		popoutWindows.delete(normalizedPath);
@@ -3205,6 +3274,8 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 });
 
 app.whenReady().then(async () => {
+	// Serve mode: server/index.js owns the process lifecycle, no windows.
+	if (isServeMode) return;
 	createApplicationMenu();
 	await purgeOldTrashItems();
 	refreshWorkspaceWatchers().catch(() => undefined);
@@ -3221,8 +3292,9 @@ app.whenReady().then(async () => {
 	});
 });
 
-// linux: second-instance bukan open-url
-const gotLock = app.requestSingleInstanceLock();
+// linux: second-instance bukan open-url. Skipped in serve mode —
+// `paperite serve` must run alongside (or instead of) the desktop app.
+const gotLock = isServeMode ? true : app.requestSingleInstanceLock();
 if (!gotLock) {
 	app.quit();
 } else {

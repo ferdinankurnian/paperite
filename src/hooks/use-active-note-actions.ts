@@ -206,22 +206,38 @@ export function useActiveNoteActions(options: Options) {
 		useEditorUiStore.getState().setTitleDraft(notePath, title);
 	}, []);
 
-	const updateActivePageFormat = useCallback(
-		(patch: Partial<PageFormat>) => {
-			const notePath = optionsRef.current.activeNotePathRef.current;
-			if (!notePath) return;
-			const fallback =
-				useAppStore.getState().defaultPageFormat ?? FALLBACK_PAGE_FORMAT;
-			storeSetPageFormats((formats) => ({
-				...formats,
-				[notePath]: {
-					...(formats[notePath] ?? fallback),
-					...patch,
-				},
-			}));
-		},
-		[],
-	);
+	const updateActivePageFormat = useCallback((patch: Partial<PageFormat>) => {
+		const current = optionsRef.current;
+		const notePath = current.activeNotePathRef.current;
+		if (!notePath) return;
+		const fallback =
+			useAppStore.getState().defaultPageFormat ?? FALLBACK_PAGE_FORMAT;
+		const next: PageFormat = {
+			...(useEditorUiStore.getState().pageFormats[notePath] ?? fallback),
+			...patch,
+		};
+		storeSetPageFormats((formats) => ({
+			...formats,
+			[notePath]: next,
+		}));
+		// Keep content caches in sync so a later autosave doesn't clobber
+		// the format stored in the note file.
+		const cached = current.noteContentCache.current.get(notePath);
+		if (cached)
+			current.noteContentCache.current.set(notePath, {
+				...cached,
+				pageFormat: next,
+			});
+		const persisted = current.notePersistedCache.current.get(notePath);
+		if (persisted)
+			current.notePersistedCache.current.set(notePath, {
+				...persisted,
+				pageFormat: next,
+			});
+		// Persist into the note file itself (per-note, survives restart).
+		// Fire-and-forget: in-memory state is already updated above.
+		current.notesApi?.setPageFormat(notePath, next).catch(() => undefined);
+	}, []);
 
 	const updateNoteContent = useCallback(
 		(

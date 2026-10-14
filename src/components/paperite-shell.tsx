@@ -12,8 +12,22 @@ const sidebarProviderStyle = {
 
 function ZenAwareSidebar({ children }: { children: ReactNode }) {
 	const zenMode = useEditorUiStore((state) => state.zenMode);
-	if (zenMode) return null;
-	return children;
+	// Keep the sidebar mounted while zen is on. Unmounting here used to tear
+	// down + rebuild the whole tree on every toggle (DndContext, sensors,
+	// workspace sort/filter, Clerk/matchMedia effects) — that's what dropped
+	// frames to ~20fps on exit. The visual hide is driven by ZenSidebarWrap
+	// in app-sidebar (single collapsing box, CSS in index.css). `contents`
+	// keeps flex layout and peer selectors identical to rendering children
+	// directly; inert keeps everything out of keyboard navigation in zen.
+	return (
+		<div
+			className="contents"
+			inert={zenMode ? true : undefined}
+			aria-hidden={zenMode ? true : undefined}
+		>
+			{children}
+		</div>
+	);
 }
 
 export const PaperiteShell = memo(function PaperiteShell({

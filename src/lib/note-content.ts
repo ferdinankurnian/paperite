@@ -19,7 +19,10 @@ export function serializeNoteContent(content: NoteContent) {
 
 export function serializeNoteContentBody(content: NoteContent): string {
 	const normalized = normalizeNoteContent(content);
-	const { id, title, ...body } = normalized;
+	// id/title are metadata, pageFormat/pinned are per-note settings stored
+	// alongside the file — none of them are editor body content, so exclude
+	// them here to keep dirty-tracking focused on actual text edits.
+	const { id, title, pageFormat, pinned, ...body } = normalized;
 	return JSON.stringify(body);
 }
 

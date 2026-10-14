@@ -1,3 +1,4 @@
+import { wrapNotesEngineWithLiveSync } from "./cloud-live-sync";
 import { ElectronNotesEngine } from "./storage/electron-storage";
 import type { NotesEngine } from "./storage/types";
 import { WebNotesEngine } from "./storage/web-storage";
@@ -12,9 +13,9 @@ function resolveEngine(): NotesEngine | null {
 	resolved = true;
 
 	if (window.electron?.notes) {
-		cachedEngine = new ElectronNotesEngine();
+		cachedEngine = wrapNotesEngineWithLiveSync(new ElectronNotesEngine());
 	} else if (import.meta.env.PAPERITE_WEB) {
-		cachedEngine = new WebNotesEngine();
+		cachedEngine = wrapNotesEngineWithLiveSync(new WebNotesEngine());
 	}
 
 	return cachedEngine;

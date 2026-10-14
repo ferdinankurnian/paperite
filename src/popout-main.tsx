@@ -58,6 +58,7 @@ function PopoutNote() {
 	const [noteContent, setNoteContent] = useState(() =>
 		createEmptyNoteContent(),
 	);
+	const [pageFormat, setPageFormat] = useState<PageFormat>(defaultPageFormat);
 	const [noteTitle, setNoteTitle] = useState("");
 	const [loadedNotePath, setLoadedNotePath] = useState<string | null>(null);
 	const [currentNotePath, setCurrentNotePath] = useState<string | null>(
@@ -96,6 +97,8 @@ function PopoutNote() {
 			setNoteContent(content);
 			noteContentRef.current = content;
 			setLoadedNotePath(notePath);
+			if (content.pageFormat)
+				setPageFormat({ ...defaultPageFormat, ...content.pageFormat });
 			const titleFromContent =
 				typeof content.title === "string" ? content.title : "";
 			setNoteTitle(
@@ -198,7 +201,7 @@ function PopoutNote() {
 									content={noteContent}
 									notePath={currentNotePath || notePath}
 									noteTitle={noteTitle}
-									pageFormat={defaultPageFormat}
+									pageFormat={pageFormat}
 									readOnly={false}
 									searchQuery=""
 									searchMatchIndex={0}

@@ -29,6 +29,8 @@ export const defaultAppState: PaperiteAppState = {
 		lineHeight: "normal",
 		paragraphSpacing: "none",
 	},
+	cloudSpaceLinks: {},
+	cloudSeenUpdates: {},
 };
 
 type AppStore = PaperiteAppState & {
@@ -49,6 +51,9 @@ type AppStore = PaperiteAppState & {
 	setSpacePreviewMode: (spacePath: string, mode: SpacePreviewMode) => void;
 	setSpaceSortOrder: (spacePath: string, order: SidebarSortOrder) => void;
 	setSpaceFolderFirst: (spacePath: string, folderFirst: boolean) => void;
+	setCloudSpaceLink: (spacePath: string, spaceId: string) => void;
+	removeCloudSpaceLink: (spacePath: string) => void;
+	addSeenCloudUpdates: (key: string, updateIds: string[]) => void;
 };
 
 function pickState(s: AppStore): PaperiteAppState {
@@ -70,6 +75,8 @@ function pickState(s: AppStore): PaperiteAppState {
 		closeButtonOnly: s.closeButtonOnly,
 		syncSidebarWithActiveTab: s.syncSidebarWithActiveTab,
 		defaultPageFormat: s.defaultPageFormat,
+		cloudSpaceLinks: s.cloudSpaceLinks,
+		cloudSeenUpdates: s.cloudSeenUpdates,
 	};
 }
 
@@ -115,6 +122,31 @@ export const useAppStore = create<AppStore>((set, get) => ({
 		set((s) => ({
 			spaceFolderFirst: { ...s.spaceFolderFirst, [spacePath]: folderFirst },
 		})),
+
+	setCloudSpaceLink: (spacePath, spaceId) =>
+		set((s) => ({
+			cloudSpaceLinks: { ...s.cloudSpaceLinks, [spacePath]: spaceId },
+		})),
+
+	removeCloudSpaceLink: (spacePath) =>
+		set((s) => {
+			if (!(spacePath in s.cloudSpaceLinks)) return s;
+			const next = { ...s.cloudSpaceLinks };
+			delete next[spacePath];
+			return { cloudSpaceLinks: next };
+		}),
+
+	addSeenCloudUpdates: (key, updateIds) =>
+		set((s) => {
+			if (updateIds.length === 0) return s;
+			const prev = s.cloudSeenUpdates[key] ?? [];
+			const prevSet = new Set(prev);
+			const fresh = updateIds.filter((id) => !prevSet.has(id));
+			if (fresh.length === 0) return s;
+			// Cap at 500 ids per note (plan 020 Step 3); keep the newest.
+			const next = [...prev, ...fresh].slice(-500);
+			return { cloudSeenUpdates: { ...s.cloudSeenUpdates, [key]: next } };
+		}),
 }));
 
 /** Snapshot of persisted fields only (for writeAppState). */

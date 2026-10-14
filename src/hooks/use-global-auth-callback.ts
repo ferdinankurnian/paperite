@@ -32,7 +32,14 @@ export async function completeAuthCallbackUrl(url: string): Promise<void> {
 export function useGlobalAuthCallback() {
 	useEffect(() => {
 		if (!isClerkConfigured()) return;
-		if (!window.electron?.auth && !window.electron?.onAuthCallback) return;
+		// Serve/web mode has no Electron bridge — the __clerk_ URL fallback
+		// below IS the flow there, so don't bail.
+		if (
+			!window.electron?.auth &&
+			!window.electron?.onAuthCallback &&
+			!import.meta.env.PAPERITE_WEB
+		)
+			return;
 
 		let cancelled = false;
 

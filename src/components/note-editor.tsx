@@ -348,6 +348,9 @@ function createBaseExtensions() {
 			underline: false,
 			undoRedo: false,
 			codeBlock: false,
+			// Explicit Link.configure below; leaving StarterKit's on
+			// registers 'link' twice (tiptap warns + double handling).
+			link: false,
 		}),
 		CodeBlockLowlight.extend({
 			addNodeView() {
@@ -809,13 +812,13 @@ export function NoteEditor({
 	}
 
 	return (
-		<div className="relative flex min-h-0 flex-1 overflow-hidden">
-			<div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto overscroll-contain">
+		<div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+			<div className="flex min-h-0 w-full flex-1 flex-col overflow-y-auto overscroll-x-none overscroll-y-auto">
 				<div className="mx-auto flex w-full max-w-4xl flex-1 flex-col">
 					{readOnly ? (
 						<h1
 							aria-label="Note title"
-							className={`mx-8 mb-4 w-[calc(100%-4rem)] select-text text-3xl font-semibold leading-tight tracking-normal md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
+							className={`mx-8 mb-4 w-[calc(100%-4rem)] select-text text-3xl font-semibold leading-tight tracking-normal transition-[margin-top] duration-200 ease-linear md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
 						>
 							{draftTitle.trim() || "Untitled"}
 						</h1>
@@ -824,7 +827,7 @@ export function NoteEditor({
 							ref={titleInputRef}
 							value={draftTitle}
 							aria-label="Note title"
-							className={`mx-8 mb-4 w-[calc(100%-4rem)] resize-none bg-transparent text-3xl font-semibold leading-tight tracking-normal outline-none placeholder:text-muted-foreground md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
+							className={`mx-8 mb-4 w-[calc(100%-4rem)] resize-none bg-transparent text-3xl font-semibold leading-tight tracking-normal outline-none transition-[margin-top] duration-200 ease-linear placeholder:text-muted-foreground md:mx-14 md:w-[calc(100%-7rem)] lg:mx-20 lg:w-[calc(100%-10rem)] ${zenMode ? "mt-16 md:mt-20" : "mt-10"}`}
 							rows={1}
 							placeholder="Untitled"
 							onBlur={commitTitle}
@@ -865,7 +868,9 @@ export function NoteEditor({
 								role="application"
 								tabIndex={0}
 								className={cn(
-									"paperite-tiptap flex min-h-0 flex-1 select-text px-8 pb-44 md:px-14 lg:px-20",
+									// pb-[40vh]: viewport-relative overscroll room so the last
+									// line can travel up (Obsidian-style), on any screen height.
+									"paperite-tiptap flex min-h-0 flex-1 select-text px-8 pb-[40vh] md:px-14 lg:px-20",
 									pageFormat.lineHeight === "1.5" &&
 										"paperite-tiptap-leading-compact",
 									pageFormat.paragraphSpacing === "none" &&
@@ -982,11 +987,11 @@ export function NoteEditor({
 						</ContextMenuContent>
 					</ContextMenu>
 				</div>
-				<div className="pointer-events-none absolute right-0 bottom-0 left-0 z-20 h-24 bg-gradient-to-t from-background via-background/80 to-transparent" />
-				{editor && !readOnly ? (
-					<FormatMenu editor={editor} notePath={notePath} />
-				) : null}
 			</div>
+			<div className="pointer-events-none absolute right-0 bottom-0 left-0 z-20 h-24 bg-gradient-to-t from-background via-background/80 to-transparent" />
+			{editor && !readOnly ? (
+				<FormatMenu editor={editor} notePath={notePath} />
+			) : null}
 			{linkHover ? (
 				<LinkHoverCard hover={linkHover} onClose={() => setLinkHover(null)} />
 			) : null}
@@ -1175,7 +1180,7 @@ function FormatMenu({
 	};
 
 	return (
-		<div className="sticky right-0 bottom-4 left-0 z-30 mx-auto mt-[-3rem] w-full max-w-4xl px-8 md:px-14 lg:px-20">
+		<div className="absolute right-0 bottom-4 left-0 z-30 mx-auto w-full max-w-4xl px-8 md:px-14 lg:px-20">
 			<div
 				className="app-region-no-drag no-scrollbar flex w-full items-center gap-1 overflow-x-auto overflow-y-hidden rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 [&>*]:shrink-0"
 				onPointerDown={(event) => event.stopPropagation()}
