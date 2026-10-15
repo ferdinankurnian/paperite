@@ -1,4 +1,7 @@
 import * as Y from "yjs";
+import { getDeviceId } from "@/lib/device-id";
+import { getNotesEngine } from "@/lib/notes-engine";
+import type { WorkspaceItem, WorkspaceNote } from "@/lib/storage/types";
 import {
 	appendSharedUpdate,
 	createSharedSpace,
@@ -7,10 +10,7 @@ import {
 	listSharedUpdates,
 	upsertSharedNote,
 	writeSharedSnapshot,
-} from "@/lib/convex";
-import { getDeviceId } from "@/lib/device-id";
-import { getNotesEngine } from "@/lib/notes-engine";
-import type { WorkspaceItem, WorkspaceNote } from "@/lib/storage/types";
+} from "@/lib/sync-provider";
 import { parentPath } from "@/lib/workspace-paths";
 
 export { getDeviceId };

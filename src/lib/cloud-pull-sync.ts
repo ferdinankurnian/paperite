@@ -1,5 +1,9 @@
 import * as Y from "yjs";
 import { setCloudTransient } from "@/lib/cloud-sync-status";
+import { getDeviceId } from "@/lib/device-id";
+import { getNotesEngine } from "@/lib/notes-engine";
+import type { WorkspaceItem } from "@/lib/storage/types";
+import { useAppStore } from "@/lib/stores/app-store";
 import {
 	humanizeShareError,
 	listSharedNotes,
@@ -7,11 +11,7 @@ import {
 	type SharedNoteRow,
 	watchSharedNotes,
 	watchSharedUpdates,
-} from "@/lib/convex";
-import { getDeviceId } from "@/lib/device-id";
-import { getNotesEngine } from "@/lib/notes-engine";
-import type { WorkspaceItem } from "@/lib/storage/types";
-import { useAppStore } from "@/lib/stores/app-store";
+} from "@/lib/sync-provider";
 import { parentPath } from "@/lib/workspace-paths";
 import { cloudRemoteOrigin, getLiveYDoc } from "@/lib/y-note-store";
 
