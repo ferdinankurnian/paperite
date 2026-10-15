@@ -397,13 +397,6 @@ const readNoteContent = async (notePath, ensureId) => {
 	}
 };
 
-const syncNoteId = (notePath, content) => {
-	const normalized = normalizeNoteContent(content);
-	return typeof normalized.id === "string" && normalized.id
-		? normalized.id
-		: revisionKey(currentNotePath(notePath));
-};
-
 const syncNoteDirectory = (noteId) => path.join(syncNotesRoot(), noteId);
 const syncNoteSnapshotPath = (noteId) =>
 	path.join(syncNoteDirectory(noteId), "snapshot.bin");
@@ -434,12 +427,44 @@ const withYNoteWriteLock = (lockKey, task) => {
 	return next;
 };
 
+// Mirror of server/lib/yjs-persist.js withNoteWriteLock (022: every fix
+// lands in both copies until phase 2b deletes one). Run `task` under the
+// path lock, then — once the stable noteId is known — under the id lock
+// too. Nested locks use different keys so there is no self-deadlock; the
+// outer path lock makes id resolution itself race-free.
+const withNoteWriteLock = (normalizedPath, task) => {
+	const pathKey = `path:${normalizedPath}`;
+	return withYNoteWriteLock(pathKey, () => {
+		const noteId = yPathToNoteId.get(normalizedPath);
+		if (!noteId) return task();
+		return withYNoteWriteLock(`id:${noteId}`, task);
+	});
+};
+
 // Stable per-note identity: two path spellings (or a pre/post-rename path)
 // for one note must share one snapshot lineage, or concurrent writers fork
 // it. Populated by every op below.
 const registerYNotePath = (noteId, normalizedPath) => {
 	if (!noteId || !normalizedPath) return;
 	yPathToNoteId.set(normalizedPath, noteId);
+};
+
+// Rename rekey for the Electron copy of the Y map (mirror of
+// registerNotePathRedirect in server/lib/yjs-persist.js — 022: every fix
+// lands in both copies until phase 2b deletes one). Moves the entry and
+// the whole subtree so a renamed folder keeps its snapshot lineage.
+const registerYNotePathRedirect = (fromPath, toPath) => {
+	if (!fromPath || !toPath || fromPath === toPath) return;
+	for (const [notePath, noteId] of [...yPathToNoteId]) {
+		if (notePath !== fromPath && !notePath.startsWith(`${fromPath}/`)) {
+			continue;
+		}
+		yPathToNoteId.delete(notePath);
+		yPathToNoteId.set(
+			notePath === fromPath ? toPath : toPath + notePath.slice(fromPath.length),
+			noteId,
+		);
+	}
 };
 
 const yConflictError = (message) => {
@@ -618,7 +643,7 @@ const encodeYNoteFromContent = (content) => {
 
 const writeLocalYNoteSnapshot = (notePath, content) => {
 	const normalizedPath = currentNotePath(notePath);
-	return withYNoteWriteLock(normalizedPath, () =>
+	return withNoteWriteLock(normalizedPath, () =>
 		writeLocalYNoteSnapshotLocked(normalizedPath, content),
 	);
 };
@@ -627,7 +652,10 @@ const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 	const normalizedContent = normalizeNoteContent(content);
 	if (!normalizedContent.id) normalizedContent.id = crypto.randomUUID();
 
-	const noteId = syncNoteId(normalizedPath, normalizedContent);
+	const noteId = await resolveStableYNoteIdLocked(
+		normalizedPath,
+		normalizedContent,
+	);
 	const noteDirectory = syncNoteDirectory(noteId);
 	const updatesDirectory = syncNoteUpdatesDirectory(noteId);
 	const encoded = encodeYNoteFromContent(normalizedContent);
@@ -706,16 +734,17 @@ const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 
 const ensureLocalYNoteSnapshot = (notePath, content) => {
 	const normalizedPath = currentNotePath(notePath);
-	return withYNoteWriteLock(normalizedPath, () =>
+	return withNoteWriteLock(normalizedPath, () =>
 		ensureLocalYNoteSnapshotLocked(normalizedPath, content),
 	);
 };
 
 const ensureLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
-	const noteId = syncNoteId(normalizedPath, content);
+	const noteId = await resolveStableYNoteIdLocked(normalizedPath, content);
 
 	try {
 		await fs.access(syncNoteSnapshotPath(noteId));
+		registerYNotePath(noteId, normalizedPath);
 		return;
 	} catch (error) {
 		if (error?.code !== "ENOENT") throw error;
@@ -726,7 +755,7 @@ const ensureLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 
 const readLocalYNoteState = (notePath) => {
 	const normalizedPath = currentNotePath(notePath);
-	return withYNoteWriteLock(normalizedPath, () =>
+	return withNoteWriteLock(normalizedPath, () =>
 		readLocalYNoteStateLocked(normalizedPath),
 	);
 };
@@ -748,7 +777,7 @@ const readLocalYNoteStateLocked = async (normalizedPath) => {
 
 const readLocalYNoteDiff = (notePath, stateVector) => {
 	const normalizedPath = currentNotePath(notePath);
-	return withYNoteWriteLock(normalizedPath, () =>
+	return withNoteWriteLock(normalizedPath, () =>
 		readLocalYNoteDiffLocked(normalizedPath, stateVector),
 	);
 };
@@ -800,7 +829,7 @@ const isYSnapshotConverged = (snapshot, clientSv) => {
 
 const appendLocalYNoteUpdate = (notePath, update) => {
 	const normalizedPath = currentNotePath(notePath);
-	return withYNoteWriteLock(normalizedPath, () =>
+	return withNoteWriteLock(normalizedPath, () =>
 		appendLocalYNoteUpdateLocked(normalizedPath, update),
 	);
 };
@@ -3305,6 +3334,7 @@ ipcMain.handle("notes:rename-item", async (_event, itemPath, nextName) => {
 		resolveWorkspacePath(nextPath),
 	);
 	await moveIndexedPath(current, nextPath);
+	registerYNotePathRedirect(current, nextPath);
 	if (popoutWindows.has(current)) {
 		const win = popoutWindows.get(current);
 		popoutWindows.delete(current);
@@ -3331,6 +3361,7 @@ ipcMain.handle("notes:move-item", async (_event, itemPath, nextParentPath) => {
 		resolveWorkspacePath(nextPath),
 	);
 	await moveIndexedPath(current, nextPath);
+	registerYNotePathRedirect(current, nextPath);
 	if (popoutWindows.has(current)) {
 		const win = popoutWindows.get(current);
 		popoutWindows.delete(current);

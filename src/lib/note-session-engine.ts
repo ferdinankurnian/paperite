@@ -18,8 +18,6 @@ export class NoteSessionEngine {
 	readonly loadedYNoteCache = new Map<string, LoadedYNote>();
 	readonly notePersistedCache = new Map<string, NoteContent>();
 	readonly noteWriteQueue = new Map<string, Promise<void>>();
-	/** Old path → current path. Keeps queues/caches converged across rename. */
-	readonly notePathRedirects = new Map<string, string>();
 
 	private readonly noteContentInFlight = new Map<string, Promise<NoteContent>>();
 	private readonly yNoteInFlight = new Map<string, Promise<LoadedYNote | null>>();
@@ -34,42 +32,11 @@ export class NoteSessionEngine {
 		this.notesApi = notesApi;
 	}
 
+	// Rename convergence lives in one place: moveNoteRuntimeState
+	// (use-note-autosave) rekeys every cache + the live Y maps. This
+	// resolver is pure canonicalization.
 	resolveNotePath(notePath: string): string {
-		let current = canonicalNotePath(notePath);
-		const seen = new Set<string>();
-		while (this.notePathRedirects.has(current) && !seen.has(current)) {
-			seen.add(current);
-			current = this.notePathRedirects.get(current) as string;
-		}
-		return current;
-	}
-
-	registerRedirect(fromPath: string, toPath: string) {
-		const from = canonicalNotePath(fromPath);
-		const to = canonicalNotePath(toPath);
-		if (from === to) return;
-		this.notePathRedirects.set(from, to);
-		this.moveNoteState(from, to);
-	}
-
-	/** Move every per-note entry (caches, queues, in-flight) across a rename. */
-	moveNoteState(fromPath: string, toPath: string) {
-		const from = canonicalNotePath(fromPath);
-		const to = canonicalNotePath(toPath);
-		if (from === to) return;
-		const move = <T>(cache: Map<string, T>) => {
-			if (cache.has(from) && !cache.has(to)) {
-				cache.set(to, cache.get(from) as T);
-			}
-			cache.delete(from);
-		};
-		move(this.noteContentCache);
-		move(this.noteLiveContentGetters);
-		move(this.loadedYNoteCache);
-		move(this.notePersistedCache);
-		move(this.noteWriteQueue);
-		move(this.noteContentInFlight);
-		move(this.yNoteInFlight);
+		return canonicalNotePath(notePath);
 	}
 
 	clearNoteState(notePath: string) {

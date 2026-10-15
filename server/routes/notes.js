@@ -28,7 +28,7 @@ const {
 const {
 	readLocalYNoteState,
 	ensureLocalYNoteSnapshot,
-	withYNoteWriteLock,
+	withNoteWriteLock,
 } = require("../lib/yjs-persist");
 const { getIndexedNote, deleteIndexedPath } = require("../lib/sqlite");
 
@@ -79,8 +79,8 @@ router.put("/notes/:path", async (req, res) => {
 		// merge converges concurrent updates instead of clobbering them,
 		// and a locked index is a hard 409, not a silent split.
 		const { writeLocalYNoteSnapshotLocked } = require("../lib/yjs-persist");
-		const result = await withYNoteWriteLock(
-			`path:${normalizedPath}`,
+		const result = await withNoteWriteLock(
+			normalizedPath,
 			async () => {
 				const normalizedContent = normalizeNoteContent(req.body);
 				let existingContent;
@@ -133,8 +133,8 @@ router.put("/notes/:path", async (req, res) => {
 				);
 				// CRDT merge (not overwrite): concurrent Y updates converge
 				// instead of being clobbered by this PUT. Locked variant —
-				// the outer withYNoteWriteLock is the single critical
-				// section (nesting the same key would deadlock).
+				// the outer withNoteWriteLock (path + id) is the single
+				// critical section (nesting the same key would deadlock).
 				const snapshot = await writeLocalYNoteSnapshotLocked(
 					normalizedPath,
 					normalizedContent,
@@ -160,7 +160,7 @@ router.put("/notes/:path/derived", async (req, res) => {
 		const normalizedPath = currentNotePath(req.params.path);
 		// Derived writes (Y-doc owners) must not clobber the Y snapshot:
 		// same per-note lock, file + index only, snapshot untouched.
-		await withYNoteWriteLock(`path:${normalizedPath}`, async () => {
+		await withNoteWriteLock(normalizedPath, async () => {
 			const normalizedContent = normalizeNoteContent(req.body);
 
 			if (
@@ -239,8 +239,8 @@ router.post(
 			// Single critical section: snapshot merge + note.json projection
 			// + index. Invalid bytes are an explicit 409 conflict; a locked
 			// index is a hard 409 — never silent loss, never split state.
-			const result = await withYNoteWriteLock(
-				`path:${normalizedPath}`,
+			const result = await withNoteWriteLock(
+				normalizedPath,
 				async () => {
 					const appended = await appendLocalYNoteUpdateLocked(
 						normalizedPath,
@@ -305,8 +305,8 @@ router.put("/notes/:path/page-format", async (req, res) => {
 	try {
 		await ensureWorkspace();
 		const normalizedPath = currentNotePath(req.params.path);
-		const result = await withYNoteWriteLock(
-			`path:${normalizedPath}`,
+		const result = await withNoteWriteLock(
+			normalizedPath,
 			async () => {
 				const content = await readNoteContent(normalizedPath, true);
 				content.pageFormat = normalizePageFormat(req.body);
@@ -337,7 +337,7 @@ router.post("/notes", async (req, res) => {
 			crypto.randomUUID(),
 		);
 		const { writeLocalYNoteSnapshotLocked } = require("../lib/yjs-persist");
-		await withYNoteWriteLock(`path:${notePath}`, async () => {
+		await withNoteWriteLock(notePath, async () => {
 			await ensureNoteDirectory(notePath);
 			const content = createEmptyNoteContent(noteTitle);
 			await writeFileAtomic(

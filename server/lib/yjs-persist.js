@@ -370,7 +370,10 @@ const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 	const normalizedContent = normalizeNoteContent(content);
 	if (!normalizedContent.id) normalizedContent.id = crypto.randomUUID();
 
-	const noteId = syncNoteId(normalizedPath, normalizedContent);
+	const noteId = await resolveStableNoteIdLocked(
+		normalizedPath,
+		normalizedContent,
+	);
 	const noteDirectory = syncNoteDirectory(noteId);
 	const updatesDirectory = syncNoteUpdatesDirectory(noteId);
 	const encoded = encodeYNoteFromContent(normalizedContent);
@@ -443,7 +446,7 @@ const ensureLocalYNoteSnapshot = (notePath, content) => {
 };
 
 const ensureLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
-	const noteId = syncNoteId(normalizedPath, content);
+	const noteId = await resolveStableNoteIdLocked(normalizedPath, content);
 
 	try {
 		await fs.access(syncNoteSnapshotPath(noteId));

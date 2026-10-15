@@ -4,6 +4,8 @@ import type { NoteContent, WorkspaceSnapshot } from "@/lib/storage/types";
 import { noteContentPreview, serializeNoteContentBody } from "@/lib/note-content";
 import { getSyncEngine } from "@/lib/sync-engine";
 import type { LoadedYNote } from "@/lib/y-note-store";
+import { destroyLiveYDoc, rekeyLiveYDoc } from "@/lib/y-note-store";
+import { rekeyLocalLiveNote } from "@/lib/local-live-sync";
 import { type SaveStatus, useEditorUiStore } from "@/lib/stores/editor-ui-store";
 
 type Ref<T> = { current: T };
@@ -392,13 +394,31 @@ export function useNoteAutosave(options: Options) {
   			}
   			for (const [notePath, yNote] of [...loadedYNoteCache.current]) {
   				if (!isSameOrChildPath(fromPath, notePath)) continue;
-  				loadedYNoteCache.current.delete(notePath);
-  				if (!loadedYNoteCache.current.has(movePath(notePath, fromPath, toPath))) {
-  					loadedYNoteCache.current.set(movePath(notePath, fromPath, toPath), yNote);
-  				} else {
-  					yNote.destroy();
-  				}
-  			}
+				const nextPath = movePath(notePath, fromPath, toPath);
+				loadedYNoteCache.current.delete(notePath);
+				if (!loadedYNoteCache.current.has(nextPath)) {
+					// The destroy closure captured the old path — rebind it so closing
+					// the renamed note cleans the NEW live-doc registration instead of
+					// leaking it (ghost entry).
+					const { doc } = yNote;
+					loadedYNoteCache.current.set(nextPath, {
+						...yNote,
+						destroy: () => {
+							destroyLiveYDoc(nextPath, doc);
+							doc.destroy();
+						},
+					});
+				} else {
+					yNote.destroy();
+				}
+			}
+
+			// Live Y state must follow the rename too: the open Y.Doc keeps
+			// writing to its bound path and the live sub keeps polling it.
+			// Without this the old path holds a ghost doc/sub while the new
+			// path starts empty (split state, dead poll).
+			rekeyLiveYDoc(fromPath, toPath);
+			rekeyLocalLiveNote(fromPath, toPath);
 
   			for (const [notePath, content] of pendingAutosaves) {
   				noteContentCache.current.set(notePath, content);

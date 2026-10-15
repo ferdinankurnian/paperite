@@ -33,21 +33,48 @@ const yFragmentToNoteBody = (doc) => {
 				return [];
 			}
 			return delta.flatMap((d) => {
-				if (typeof d.insert !== "string" || d.insert.length === 0) return [];
-				const text = { type: "text", text: d.insert };
-				if (d.attributes) {
-					// ychange is ephemeral collab bookkeeping, never file content.
-					const marks = Object.keys(d.attributes)
-						.filter((attrName) => attrName !== "ychange")
-						.map((attrName) => {
-							const attrs = d.attributes[attrName];
-							const mark = { type: yAttrToMarkName(attrName) };
-							if (attrs && Object.keys(attrs).length > 0) mark.attrs = attrs;
-							return mark;
-						});
+				const marks =
+					d.attributes == null
+						? []
+						: Object.keys(d.attributes)
+							// ychange is ephemeral collab bookkeeping, never file content.
+							.filter((attrName) => attrName !== "ychange")
+							.map((attrName) => {
+								const attrs = d.attributes[attrName];
+								const mark = { type: yAttrToMarkName(attrName) };
+								if (attrs && Object.keys(attrs).length > 0)
+									mark.attrs = attrs;
+								return mark;
+							});
+				if (typeof d.insert === "string") {
+					if (d.insert.length === 0) return [];
+					const text = { type: "text", text: d.insert };
 					if (marks.length > 0) text.marks = marks;
+					return [text];
 				}
-				return [text];
+				// Object embeds ({insert: {mention: {...}}}) have no producer in
+				// the editor today (inline atoms go through the XmlElement
+				// branch), but dropping them silently would make the projection
+				// lossy — a future embed would vanish from note.json on every
+				// append. Preserve as an inline TipTap node so projection
+				// round-trips instead of vanishing.
+				if (d.insert && typeof d.insert === "object" && !Array.isArray(d.insert)) {
+					const keys = Object.keys(d.insert);
+					if (keys.length === 0) return [];
+					const node = { type: keys[0] };
+					const attrs = d.insert[keys[0]];
+					if (
+						attrs &&
+						typeof attrs === "object" &&
+						!Array.isArray(attrs) &&
+						Object.keys(attrs).length > 0
+					) {
+						node.attrs = { ...attrs };
+					}
+					if (marks.length > 0) node.marks = marks;
+					return [node];
+				}
+				return [];
 			});
 		}
 		if (item instanceof Y.XmlElement) {

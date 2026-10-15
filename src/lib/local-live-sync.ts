@@ -43,6 +43,34 @@ export function detachLocalLiveNote(notePath: string, doc: Y.Doc): void {
 	liveSubs.delete(notePath);
 }
 
+/**
+ * Rename rekey: every live sub under fromPath (note or folder subtree)
+ * follows toPath, preserving timer/inFlight/queued flags and rebinding
+ * sub.notePath (refreshLiveNote reads by key). On key collision the
+ * existing sub wins and the incoming timer is cleared.
+ */
+export function rekeyLocalLiveNote(fromPath: string, toPath: string): void {
+	if (fromPath === toPath) return;
+	const isSameOrChild = (parent: string, child: string): boolean =>
+		child === parent || child.startsWith(`${parent}/`);
+	const moveChild = (child: string): string =>
+		child === fromPath ? toPath : toPath + child.slice(fromPath.length);
+	for (const [notePath, sub] of [...liveSubs]) {
+		if (!isSameOrChild(fromPath, notePath)) continue;
+		const nextPath = moveChild(notePath);
+		const hadTimer = sub.timer !== undefined;
+		if (sub.timer) clearTimeout(sub.timer);
+		sub.timer = undefined;
+		liveSubs.delete(notePath);
+		if (liveSubs.has(nextPath)) continue;
+		sub.notePath = nextPath;
+		liveSubs.set(nextPath, sub);
+		// A refresh scheduled for the old path must still happen — the
+		// rename itself is a change worth converging on.
+		if (hadTimer) scheduleLiveRefresh(nextPath);
+	}
+}
+
 function isConflictError(error: unknown): boolean {
 	const message = error instanceof Error ? error.message : String(error ?? "");
 	return /409|conflict|state vector|note not found/i.test(message);

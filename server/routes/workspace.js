@@ -27,7 +27,10 @@ const {
 	moveIndexedPath,
 	pruneIndex,
 } = require("../lib/sqlite");
-const { writeLocalYNoteSnapshot } = require("../lib/yjs-persist");
+const {
+	writeLocalYNoteSnapshot,
+	registerNotePathRedirect,
+} = require("../lib/yjs-persist");
 
 const router = express.Router();
 
@@ -181,6 +184,9 @@ router.patch("/rename", async (req, res) => {
 			resolveWorkspacePath(nextPath),
 		);
 		await moveIndexedPath(current, nextPath);
+		// Belt-and-suspenders: moveIndexedPath already redirects via sqlite,
+		// but the Y id→path map must not depend on that indirection.
+		registerNotePathRedirect(current, nextPath);
 		res.json({ path: nextPath });
 	} catch (error) {
 		console.error("[paperite] rename-item error:", error);
@@ -207,6 +213,7 @@ router.post("/move", async (req, res) => {
 			resolveWorkspacePath(nextPath),
 		);
 		await moveIndexedPath(current, nextPath);
+		registerNotePathRedirect(current, nextPath);
 		res.json({ path: nextPath });
 	} catch (error) {
 		console.error("[paperite] move-item error:", error);
