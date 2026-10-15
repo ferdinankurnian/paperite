@@ -35,12 +35,19 @@ Usage:
   paperite serve [--port <n>] [--host <addr>] [--workspace <dir>] [--open]
 
 Options:
-  --port <n>       Port to listen on (default 3000)
-  --host <addr>    Bind address (default 127.0.0.1)
+  --port <n>       Port to listen on (default 3000). On EADDRINUSE the boot
+                   fails hard — no silent port-hopping (Clerk allowlist
+                   needs a stable port).
+  --host <addr>    Bind address (default 127.0.0.1). Non-loopback prints a
+                   WARNING: serve has no auth yet.
   --workspace <dir> Notes root (default ~/Documents/Paperite)
   --open           Open the UI in the default browser (default: print URL only)
   --no-browser     Don't open a browser (default)
-  --help, -h       Show this help`;
+  --help, -h       Show this help
+
+Only one serve at a time (any port): a pid-checked lockfile in tmp guards
+serve-vs-serve, and a per-workspace lock refuses Electron+serve on the
+same workspace instead of silently splitting index.sqlite.`;
 
 const parseArgs = (argv) => {
 	const args = {
@@ -49,6 +56,7 @@ const parseArgs = (argv) => {
 		workspace: undefined,
 		open: false,
 		help: false,
+		dev: false,
 	};
 	for (let i = 2; i < argv.length; i++) {
 		if (argv[i] === "--port" && argv[i + 1]) {
@@ -64,6 +72,8 @@ const parseArgs = (argv) => {
 			args.open = true;
 		} else if (argv[i] === "--no-browser") {
 			args.open = false;
+		} else if (argv[i] === "--dev") {
+			args.dev = true;
 		} else if (argv[i] === "--help" || argv[i] === "-h") {
 			args.help = true;
 		}
@@ -79,64 +89,13 @@ const isLoopbackHost = (host) =>
 	host === "[::1]" ||
 	host.startsWith("127.");
 
-// Global single-serve guard: only one `paperite serve` at a time, any port.
-// Stale locks (crash without cleanup) are detected via pid liveness.
-const serveLockPath = () => {
-	const os = require("node:os");
-	let who = "user";
-	try {
-		who = os.userInfo().username.replace(/[^a-zA-Z0-9_-]/g, "_");
-	} catch {
-		// keep default
-	}
-	return path.join(os.tmpdir(), `paperite-serve-${who}.lock`);
-};
-
-const readServeLock = () => {
-	try {
-		return JSON.parse(fsSync.readFileSync(serveLockPath(), "utf8"));
-	} catch {
-		return null;
-	}
-};
-
-const isPidAlive = (pid) => {
-	if (!pid) return false;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch {
-		return false;
-	}
-};
-
-const acquireServeLock = (info) => {
-	const existing = readServeLock();
-	if (existing && isPidAlive(existing.pid)) {
-		const where = existing.port
-			? `http://localhost:${existing.port}`
-			: "unknown address";
-		console.error(
-			`[paperite] already serving at ${where} (pid ${existing.pid}, workspace ${existing.workspace ?? "?"}) — stop it first`,
-		);
-		process.exit(1);
-	}
-	fsSync.writeFileSync(
-		serveLockPath(),
-		JSON.stringify({ ...info, pid: process.pid }),
-	);
-};
-
-const releaseServeLock = () => {
-	try {
-		const existing = readServeLock();
-		if (existing && existing.pid === process.pid) {
-			fsSync.unlinkSync(serveLockPath());
-		}
-	} catch {
-		// best effort
-	}
-};
+// Shared lock helpers (also required by main.js) — single source of truth.
+const {
+	acquireServeLock,
+	releaseServeLock,
+	acquireWorkspaceLock,
+	releaseWorkspaceLock,
+} = require("./lib/locks");
 
 const openBrowser = (url) => {
 	const { spawn } = require("node:child_process");
@@ -166,7 +125,7 @@ const main = async () => {
 
 	if (args.help) {
 		console.log(SERVE_USAGE);
-		return;
+		process.exit(0);
 	}
 
 	const express = require("express");
@@ -179,14 +138,29 @@ const main = async () => {
 	if (args.workspace) {
 		workspace.configure(path.resolve(args.workspace));
 	}
+	const workspaceDir = workspace.workspaceRoot();
 
 	// Single serve instance — any port. Refuses with the existing address
 	// instead of splitting identity/data across two servers.
-	acquireServeLock({ port: args.port, workspace: workspace.workspaceRoot() });
+	acquireServeLock({ port: args.port, workspace: workspaceDir });
+
+	// Electron + serve on the same workspace would silently split
+	// index.sqlite (WAL tolerates light overlap, heavy writes busy-error).
+	// Refuse loudly instead.
+	acquireWorkspaceLock(workspaceDir, { mode: "serve", port: args.port });
 
 	await workspace.ensureWorkspace();
 	await workspace.purgeOldTrashItems();
-	await sqlite.openDb();
+	try {
+		await sqlite.openDb();
+	} catch (error) {
+		console.error(
+			`[paperite] could not open index.sqlite — is Paperite desktop running on the same workspace? Stop it first or use --workspace <dir>. (${error.message})`,
+		);
+		releaseWorkspaceLock(workspaceDir);
+		releaseServeLock();
+		process.exit(1);
+	}
 
 	const app = express();
 	app.use(cors());
@@ -202,31 +176,53 @@ const main = async () => {
 		res.json({ ok: true, workspace: workspace.workspaceRoot() });
 	});
 
-	// Serve static files in production. dist-web/ (PAPERITE_WEB=1 build) is
-	// preferred — plain dist/ is the Electron build and sticks on
-	// "Connecting..." (its engine bridge is missing).
-	const staticCandidates = [
-		path.join(__dirname, "..", "dist-web"),
-		path.join(__dirname, "..", "dist"),
-	];
-	let staticPath;
-	for (const candidate of staticCandidates) {
-		try {
-			await fs.access(path.join(candidate, "index.html"));
-			staticPath = candidate;
-			break;
-		} catch {
-			// try next
-		}
-	}
+	// Serve static files in production. Only dist-web/ (PAPERITE_WEB=1
+	// build) is served — plain dist/ is the Electron build and sticks on
+	// "Connecting..." (its engine bridge is missing), so it is refused
+	// with a loud log instead of silently serving a broken UI.
+	const distWebDir = path.join(__dirname, "..", "dist-web");
+	const distElectronDir = path.join(__dirname, "..", "dist");
+	const hasDistWeb = await fs
+		.access(path.join(distWebDir, "index.html"))
+		.then(() => true)
+		.catch(() => false);
+	const hasDistElectron = await fs
+		.access(path.join(distElectronDir, "index.html"))
+		.then(() => true)
+		.catch(() => false);
 
-	if (staticPath) {
-		console.log(`[paperite] serving UI from ${staticPath}`);
-		app.use(express.static(staticPath));
+	const readBuildStamp = async (dir) => {
+		try {
+			return JSON.parse(
+				await fs.readFile(path.join(dir, ".paperite-build.json"), "utf8"),
+			);
+		} catch {
+			return null;
+		}
+	};
+
+	if (args.dev) {
+		console.log("[paperite] dev mode — UI served by Vite, API only");
+	} else if (hasDistWeb) {
+		const stamp = await readBuildStamp(distWebDir);
+		if (stamp) {
+			console.log(
+				`[paperite] serving UI from dist-web/ (mode=${stamp.mode ?? "web"}${stamp.version ? `, v${stamp.version}` : ""})`,
+			);
+		} else {
+			console.log(
+				"[paperite] serving UI from dist-web/ (unstamped build — assuming web; rebuild with build:web to stamp)",
+			);
+		}
+		app.use(express.static(distWebDir));
 		// Express 5: "*" is no longer a valid path — use the splat syntax.
 		app.get("/{*any}", (_req, res) => {
-			res.sendFile(path.join(staticPath, "index.html"));
+			res.sendFile(path.join(distWebDir, "index.html"));
 		});
+	} else if (hasDistElectron) {
+		console.log(
+			"[paperite] found dist/ (Electron build) — refusing to serve it (would stick on Connecting...). Run `bun run build:web` for dist-web/. API-only mode.",
+		);
 	} else {
 		console.log("[paperite] no UI build found — API-only mode (run build:web)");
 	}
@@ -240,6 +236,27 @@ const main = async () => {
 
 	const stopWatchers = require("./lib/watchers").startWatchers(wss);
 
+	// EADDRINUSE fails hard — no silent port-hopping. A stable port is
+	// required for the Clerk dashboard allowlist. Both the http server and
+	// the ws server can emit the bind error — handle both, exit once.
+	let bootFailed = false;
+	const failBoot = (error) => {
+		if (bootFailed) return;
+		bootFailed = true;
+		if (error?.code === "EADDRINUSE") {
+			console.error(
+				`[paperite] port ${args.port} is already in use — refusing to pick another port (Clerk allowlist needs a stable port). Stop the other process or pass --port <n>.`,
+			);
+		} else {
+			console.error(`[paperite] server error: ${error?.message ?? error}`);
+		}
+		releaseWorkspaceLock(workspaceDir);
+		releaseServeLock();
+		process.exit(1);
+	};
+	server.on("error", failBoot);
+	wss.on("error", failBoot);
+
 	server.listen(args.port, args.hostname, () => {
 		const displayHost = isLoopbackHost(args.hostname)
 			? "localhost"
@@ -247,6 +264,32 @@ const main = async () => {
 		const url = `http://${displayHost}:${args.port}`;
 		console.log(`[paperite] serving at ${url}`);
 		console.log(`[paperite] workspace: ${workspace.workspaceRoot()}`);
+
+		// Refresh the serve lock with the concrete URL so a second boot can
+		// point at the running instance.
+		try {
+			const { readServeLock, serveLockPath } = require("./lib/locks");
+			const current = readServeLock();
+			if (current && current.pid === process.pid) {
+				fsSync.writeFileSync(
+					serveLockPath(),
+					JSON.stringify({ ...current, url }),
+				);
+			}
+		} catch {
+			// best effort
+		}
+		try {
+			const currentWs = require("./lib/locks").readWorkspaceLock(workspaceDir);
+			if (currentWs && currentWs.pid === process.pid) {
+				fsSync.writeFileSync(
+					require("./lib/locks").workspaceLockPath(workspaceDir),
+					JSON.stringify({ ...currentWs, url }),
+				);
+			}
+		} catch {
+			// best effort
+		}
 
 		if (!isLoopbackHost(args.hostname)) {
 			console.warn(
@@ -259,6 +302,7 @@ const main = async () => {
 
 	const shutdown = () => {
 		console.log("\n[paperite] shutting down...");
+		releaseWorkspaceLock(workspaceDir);
 		releaseServeLock();
 		stopWatchers();
 		sqlite.close();
