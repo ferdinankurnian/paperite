@@ -1,39 +1,36 @@
-import { clerk, handleClerkRedirect, loadClerk } from "@/lib/clerk";
-
-const envCallbackUrl = import.meta.env.VITE_CLERK_AUTH_CALLBACK_URL;
+import {
+	clerk,
+	handleClerkRedirect,
+	isClerkConfigured,
+	loadClerk,
+} from "@/lib/clerk";
 
 /**
  * Resolve the OAuth redirect URL to give Clerk.
  *
- * Clerk's API rejects non-http(s) schemes ("invalid_url_scheme"), so
- * `paperite://` can never be used here directly. In Electron we spin up
- * a throwaway loopback server in the main process and use its URL —
- * the callback is forwarded into the renderer over IPC, no OS deep-link
- * handler involved. (The `paperite://auth/callback?...` shape is still
- * used internally as the IPC payload format.)
+ * Per-mode, never env-shadowed:
+ * - Electron (`window.electron` present): spin up the throwaway loopback
+ *   server in the main process and use its URL. The callback is forwarded
+ *   into the renderer over IPC — no OS deep-link handler involved.
+ *   (`paperite://auth/callback?...` is still used internally as the IPC
+ *   payload shape, but it is NEVER handed to Clerk: Clerk's API rejects
+ *   non-http(s) schemes with `invalid_url_scheme`.)
+ * - Web / `paperite serve`: the redirect must land back in this window
+ *   itself — `window.location.origin + pathname`. Works on any custom
+ *   port, but that exact serve origin must be allowlisted in the Clerk
+ *   dashboard (see docs/sync.md), otherwise the redirect is rejected.
  */
 export async function resolveAuthCallbackUrl(): Promise<string> {
 	const electronAuth = window.electron?.auth;
 
 	if (electronAuth?.startCallbackServer) {
-		// Electron deep-link flow: env first, then throwaway loopback server.
-		if (envCallbackUrl) return envCallbackUrl;
-
 		try {
 			return await electronAuth.startCallbackServer();
 		} catch {
-			// Fall through to the page-based fallbacks below.
+			// Fall through to the page-based fallback below.
 		}
-	} else if (envCallbackUrl && /^https?:\/\//.test(envCallbackUrl)) {
-		// Web/serve mode: only http(s) callbacks ever reach Clerk — it
-		// rejects custom schemes (paperite://) with invalid_url_scheme.
-		return envCallbackUrl;
 	}
 
-	// auth-callback.html deep-links paperite://, so it's Electron-only.
-	// In web/serve the redirect must land back in this window itself.
-	if (import.meta.env.DEV && electronAuth?.startCallbackServer)
-		return "http://localhost:5173/auth-callback.html";
 	return `${window.location.origin}${window.location.pathname}`;
 }
 
@@ -60,3 +57,76 @@ export async function continueWithGoogle() {
 }
 
 export { handleClerkRedirect };
+
+/**
+ * Cloud gate (plan 016 revised 2026-10-15): local notes always work, but
+ * GDrive / Paperite+ / BYO require a Clerk session. Clicking one while
+ * signed out must NOT fail silently into guest mode — it stores the
+ * intent, opens the sign-in dialog, and the caller resumes the flow
+ * after `paperite:auth-success` via `takePendingCloudIntent()`.
+ */
+export type PendingCloudAction =
+	| "gdrive-connect"
+	| "paperite-join"
+	| "byo-save";
+
+export type PendingCloudIntent = {
+	action: PendingCloudAction;
+	/** BYO Convex URL draft, or the Paperite+ shared-space name. */
+	payload?: string;
+};
+
+const pendingCloudIntentKey = "paperite:pending-cloud-action";
+
+export function setPendingCloudIntent(intent: PendingCloudIntent) {
+	try {
+		window.localStorage.setItem(pendingCloudIntentKey, JSON.stringify(intent));
+	} catch {
+		// Storage unavailable — the sign-in still proceeds, the user just
+		// re-clicks the cloud button afterwards.
+	}
+}
+
+export function takePendingCloudIntent(): PendingCloudIntent | null {
+	try {
+		const raw = window.localStorage.getItem(pendingCloudIntentKey);
+		window.localStorage.removeItem(pendingCloudIntentKey);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as PendingCloudIntent;
+		if (
+			parsed?.action === "gdrive-connect" ||
+			parsed?.action === "paperite-join" ||
+			parsed?.action === "byo-save"
+		) {
+			return parsed;
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Returns true when a Clerk session is present. Otherwise stashes the
+ * intent, dispatches `paperite:open-auth`, and returns false — the
+ * caller must show a "sign in first" message, not proceed as guest.
+ * Returns false (without opening auth) when Clerk isn't configured at
+ * all: that's local-only mode, cloud stays disabled with a clear message.
+ */
+export async function ensureSignedInForCloud(
+	intent: PendingCloudIntent,
+): Promise<boolean> {
+	if (!isClerkConfigured()) return false;
+
+	try {
+		await loadClerk();
+	} catch {
+		return false;
+	}
+
+	if (clerk.session && clerk.user) return true;
+
+	setPendingCloudIntent(intent);
+	window.dispatchEvent(new Event("paperite:open-auth"));
+	return false;
+}

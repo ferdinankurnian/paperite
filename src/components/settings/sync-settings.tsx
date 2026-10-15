@@ -1,5 +1,6 @@
 import { CloudIcon } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AccountSessions } from "@/components/settings/account-sessions";
 import { Button } from "@/components/ui/button";
 import {
 	DialogDescription,
@@ -8,18 +9,35 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
-import { getSyncEngine, onSyncChanged } from "@/lib/sync-engine";
+import { clerk, isClerkConfigured, loadClerk } from "@/lib/clerk";
+import {
+	ensureSignedInForCloud,
+	takePendingCloudIntent,
+} from "@/lib/clerk-auth";
 import {
 	createSharedSpace,
-	disableCloudSync,
 	getCustomSyncUrl,
-	getSyncUrlSource,
 	resetSyncUrl,
 	setCustomSyncUrl,
-	useSyncBackendPill,
 	useSyncUrl,
+	useSyncUrlSource,
 } from "@/lib/sync-provider";
+import { getSyncEngine, onSyncChanged } from "@/lib/sync-engine";
 import driveSvg from "/drive.svg";
+
+type SyncMode = "simple" | "advanced";
+
+const syncModeStorageKey = "paperite:sync-mode";
+
+function loadSyncMode(): SyncMode {
+	try {
+		return window.localStorage.getItem(syncModeStorageKey) === "advanced"
+			? "advanced"
+			: "simple";
+	} catch {
+		return "simple";
+	}
+}
 
 export function SyncSettings() {
 	const [status, setStatus] = useState<SyncStatus | null>(null);
@@ -35,8 +53,24 @@ export function SyncSettings() {
 	const [urlDraft, setUrlDraft] = useState(() => getCustomSyncUrl() ?? "");
 	const [urlMessage, setUrlMessage] = useState<string | null>(null);
 	const syncUrl = useSyncUrl();
-	const syncPill = useSyncBackendPill();
+	const syncSource = useSyncUrlSource();
 	const syncEngine = getSyncEngine();
+
+	// Plan 016 revised 2026-10-15: local always works; GDrive / Paperite+ /
+	// BYO require a Clerk session. `clerkEnabled` is static per boot (build
+	// key), `signedIn` tracks the live session.
+	const clerkEnabled = isClerkConfigured();
+	const [signedIn, setSignedIn] = useState(false);
+	const [syncMode, setSyncModeState] = useState<SyncMode>(loadSyncMode);
+
+	const setSyncMode = (mode: SyncMode) => {
+		setSyncModeState(mode);
+		try {
+			window.localStorage.setItem(syncModeStorageKey, mode);
+		} catch {
+			// Mode preference is cosmetic — the panels still work.
+		}
+	};
 
 	const refreshStatus = useCallback(async () => {
 		const nextStatus = await syncEngine?.getStatus();
@@ -115,26 +149,162 @@ export function SyncSettings() {
 		}
 	};
 
+	// Resume the pre-login intent after `paperite:auth-success` — the user
+	// lands back in the flow they started instead of failing silently.
+	const resumeRef = useRef<() => void>(() => undefined);
+	resumeRef.current = () => {
+		const intent = takePendingCloudIntent();
+		if (!intent) return;
+		if (intent.action === "gdrive-connect") {
+			void runAction(
+				"connect",
+				() => syncEngine?.connectGoogleDrive() ?? Promise.resolve(null),
+			);
+		} else if (intent.action === "paperite-join" && intent.payload) {
+			const name = intent.payload;
+			setSharedSpaceName(name);
+			void runAction("create-shared-space", () => createSharedSpace(name));
+		} else if (intent.action === "paperite-join") {
+			resetSyncUrl();
+			setUrlDraft("");
+			setCloudMessage(
+				"Paperite+ cloud selected — you're on the default sync server.",
+			);
+			void refreshStatus().catch(() => undefined);
+		} else if (intent.action === "byo-save" && intent.payload) {
+			const url = intent.payload;
+			setUrlDraft(url);
+			try {
+				setCustomSyncUrl(url);
+				setUrlMessage("Custom sync URL saved.");
+			} catch (error) {
+				setUrlMessage(
+					error instanceof Error ? error.message : "Could not save the URL.",
+				);
+			}
+		}
+	};
+
+	useEffect(() => {
+		if (!clerkEnabled) return;
+		let cancelled = false;
+		const syncSession = () => {
+			if (!cancelled) setSignedIn(Boolean(clerk.session && clerk.user));
+		};
+		let detach: (() => void) | undefined;
+		try {
+			detach = clerk.addListener(syncSession);
+		} catch {
+			// Listener unavailable — the explicit load below still syncs once.
+		}
+		void loadClerk()
+			.then(syncSession)
+			.catch(() => undefined);
+		const onAuthSuccess = () => {
+			syncSession();
+			resumeRef.current();
+		};
+		window.addEventListener("paperite:auth-success", onAuthSuccess);
+		return () => {
+			cancelled = true;
+			detach?.();
+			window.removeEventListener("paperite:auth-success", onAuthSuccess);
+		};
+	}, [clerkEnabled]);
+
 	const googleDrive = status?.googleDrive;
-	const convexConfigured = syncUrl !== null;
+	const syncConfigured = syncUrl !== null;
 	const googleDriveEnabled = googleDrive?.enabled === true;
 	const googleDriveConnecting = busyAction === "connect" || connectPending;
 
-	const saveSyncUrl = () => {
-		setUrlMessage(null);
-		try {
-			if (!urlDraft.trim()) {
-				// Empty = local-only, cloud disabled (ignores even the default).
-				disableCloudSync();
-				setUrlMessage("Local-only mode — cloud sync disabled.");
-				return;
-			}
-			setCustomSyncUrl(urlDraft);
-			setUrlMessage(
-				getSyncUrlSource() === "custom"
-					? "Custom sync URL saved."
-					: "Back to the default sync URL.",
+	const openSignIn = () =>
+		window.dispatchEvent(new Event("paperite:open-auth"));
+
+	// Gate: cloud actions without a Clerk session are refused gently —
+	// stash the intent, open sign-in, resume after. Never fail silent.
+	const handleConnectGoogleDrive = async () => {
+		if (!clerkEnabled) {
+			setGoogleDriveMessage(
+				"Local-only mode — sign-in isn't configured in this build, so Google Drive sync is disabled.",
 			);
+			return;
+		}
+		const ok = await ensureSignedInForCloud({ action: "gdrive-connect" });
+		if (!ok) {
+			setGoogleDriveMessage(
+				"Sign in required — opening sign-in. You'll return here to connect Drive after.",
+			);
+			return;
+		}
+		await runAction(
+			"connect",
+			() => syncEngine?.connectGoogleDrive() ?? Promise.resolve(null),
+		);
+	};
+
+	const handleCreateSharedSpace = async () => {
+		const name = sharedSpaceName.trim();
+		if (!clerkEnabled) {
+			setCloudMessage(
+				"Local-only mode — sign-in isn't configured in this build, so cloud spaces are disabled.",
+			);
+			return;
+		}
+		const ok = await ensureSignedInForCloud({
+			action: "paperite-join",
+			payload: name,
+		});
+		if (!ok) {
+			setCloudMessage(
+				"Sign in required — opening sign-in. You'll return here to join Paperite+ after.",
+			);
+			return;
+		}
+		await runAction("create-shared-space", () => createSharedSpace(name));
+	};
+
+	const handleUsePaperitePlus = async () => {
+		if (!clerkEnabled) {
+			setCloudMessage(
+				"Local-only mode — sign-in isn't configured in this build, so Paperite+ is disabled.",
+			);
+			return;
+		}
+		const ok = await ensureSignedInForCloud({ action: "paperite-join" });
+		if (!ok) {
+			setCloudMessage(
+				"Sign in required — opening sign-in. You'll return here to join Paperite+ after.",
+			);
+			return;
+		}
+		resetSyncUrl();
+		setUrlDraft("");
+		setCloudMessage(
+			"Paperite+ cloud selected — you're on the default sync server.",
+		);
+	};
+
+	const saveSyncUrl = async () => {
+		setUrlMessage(null);
+		if (!clerkEnabled) {
+			setUrlMessage(
+				"Local-only mode — sign-in isn't configured in this build, so a custom server URL is disabled.",
+			);
+			return;
+		}
+		const ok = await ensureSignedInForCloud({
+			action: "byo-save",
+			payload: urlDraft,
+		});
+		if (!ok) {
+			setUrlMessage(
+				"Sign in required — opening sign-in. Your URL is kept and saved after.",
+			);
+			return;
+		}
+		try {
+			setCustomSyncUrl(urlDraft);
+			setUrlMessage("Custom sync URL saved.");
 		} catch (error) {
 			setUrlMessage(
 				error instanceof Error ? error.message : "Could not save the URL.",
@@ -157,164 +327,275 @@ export function SyncSettings() {
 				</DialogDescription>
 			</DialogHeader>
 			<div className="space-y-4">
-				<section className="rounded-xl border bg-muted/25 p-4">
-					<div className="flex items-center justify-between gap-4">
-						<div className="flex items-center gap-2">
-							<img src={driveSvg} alt="" className="size-4" />
-							<div>
-								<div className="flex items-center gap-2">
-									<h3 className="text-sm font-medium">Google Drive</h3>
+				{!clerkEnabled ? (
+					<p className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs leading-5">
+						Local-only mode — sign-in isn't configured in this build. Your notes
+						stay on this device; Google Drive, Paperite+, and custom server sync
+						are disabled.
+					</p>
+				) : !signedIn ? (
+					<div className="flex items-center justify-between gap-3 rounded-xl border p-3">
+						<p className="text-xs leading-5 text-muted-foreground">
+							You're browsing locally. Sign in to unlock Google Drive,
+							Paperite+, and custom server sync.
+						</p>
+						<Button type="button" size="sm" onClick={openSignIn}>
+							Sign in
+						</Button>
+					</div>
+				) : null}
+				<div className="grid grid-cols-2 gap-2 rounded-xl border bg-muted/25 p-1">
+					<Button
+						type="button"
+						size="sm"
+						variant={syncMode === "simple" ? "secondary" : "ghost"}
+						onClick={() => setSyncMode("simple")}
+					>
+						Simple · Paperite+
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						variant={syncMode === "advanced" ? "secondary" : "ghost"}
+						onClick={() => setSyncMode("advanced")}
+					>
+						Advanced · GDrive / BYO
+					</Button>
+				</div>
+				{syncMode === "simple" ? (
+					<section className="rounded-xl border bg-muted/25 p-4">
+						<div className="flex items-start justify-between gap-3">
+							<div className="flex items-center gap-2">
+								<CloudIcon className="size-4 text-muted-foreground" />
+								<div>
+									<h3 className="text-sm font-medium">Paperite+</h3>
+									<p className="text-xs text-muted-foreground">
+										Zero-config cloud. Sign in and sync everywhere — no server
+										thinking.
+									</p>
 								</div>
-								<p className="text-xs text-muted-foreground">
-									Personal multi-device sync through Drive app data.
-								</p>
 							</div>
+							<StatusPill
+								active={syncConfigured}
+								label={
+									syncSource === "custom"
+										? "Custom URL"
+										: syncSource === "default"
+											? "Default"
+											: "Not configured"
+								}
+							/>
 						</div>
-						<div className="flex shrink-0 items-center gap-2">
-							{googleDrive?.connected ? (
-								<Switch
-									checked={googleDriveEnabled}
-									disabled={!syncEngine || busyAction !== null}
-									onCheckedChange={(enabled) =>
-										runAction(
-											"toggle",
-											() =>
-												syncEngine?.setGoogleDriveEnabled(enabled) ??
-												Promise.resolve(null),
-										)
-									}
-									aria-label="Use Google Drive sync"
-								/>
+						{syncUrl ? (
+							<p
+								className="mt-3 truncate rounded-lg bg-muted px-2 py-1.5 font-mono text-xs"
+								title={syncUrl}
+							>
+								{syncUrl}
+							</p>
+						) : (
+							<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+								Not configured. Shared spaces won't sync until a URL is set.
+							</p>
+						)}
+						<div className="mt-3">
+							{syncSource === "default" ? (
+								<p className="text-xs text-muted-foreground">
+									Paperite+ cloud is active.
+								</p>
 							) : (
 								<Button
 									type="button"
 									size="sm"
-									disabled={
-										!syncEngine ||
-										googleDrive?.configured === false ||
-										busyAction !== null ||
-										connectPending
-									}
-									onClick={() =>
-										runAction(
-											"connect",
-											() =>
-												syncEngine?.connectGoogleDrive() ??
-												Promise.resolve(null),
-										)
-									}
+									disabled={!clerkEnabled || busyAction !== null}
+									onClick={() => void handleUsePaperitePlus()}
 								>
-									{googleDriveConnecting ? "Opening browser.." : "Connect"}
+									Use Paperite+ cloud
 								</Button>
 							)}
 						</div>
-					</div>
-					{googleDrive?.configured === false ? (
-						<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
-							Missing <code>PAPERITE_GOOGLE_CLIENT_ID</code>.
-						</p>
-					) : null}
-					{googleDrive?.connected ? (
-						<div className="mt-3 flex flex-wrap gap-2">
-							<Button
-								type="button"
-								size="sm"
-								variant="outline"
-								disabled={
-									!syncEngine || !googleDriveEnabled || busyAction !== null
-								}
-								onClick={() =>
-									runAction(
-										"sync",
-										() => syncEngine?.runGoogleDrive() ?? Promise.resolve(null),
-									)
-								}
-							>
-								{busyAction === "sync" ? "Syncing..." : "Sync now"}
-							</Button>
-							<Button
-								type="button"
-								size="sm"
-								variant="outline"
-								disabled={!syncEngine || busyAction !== null}
-								onClick={() =>
-									runAction(
-										"disconnect",
-										() =>
-											syncEngine?.disconnectGoogleDrive() ??
-											Promise.resolve(null),
-									)
-								}
-							>
-								Disconnect
-							</Button>
-						</div>
-					) : null}
-					{googleDriveMessage ? (
-						<p className="mt-3 text-xs text-muted-foreground">
-							{googleDriveMessage}
-						</p>
-					) : null}
-				</section>
-				<section className="rounded-xl border bg-muted/25 p-4">
-					<div className="flex items-start justify-between gap-3">
-						<div className="flex items-center gap-2">
-							<CloudIcon className="size-4 text-muted-foreground" />
-							<div>
-								<h3 className="text-sm font-medium">Convex Cloud</h3>
-								<p className="text-xs text-muted-foreground">
-									Sync server for shared spaces. Default is Paperite+ — paste
-									your own deployment URL for Convex BYO, or save empty for
-									local-only.
-								</p>
-							</div>
-						</div>
-						<StatusPill active={syncPill !== "Local"} label={syncPill} />
-					</div>
-					{syncUrl ? (
-						<p
-							className="mt-3 truncate rounded-lg bg-muted px-2 py-1.5 font-mono text-xs"
-							title={syncUrl}
-						>
-							{syncUrl}
-						</p>
-					) : (
-						<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
-							Local-only. Shared spaces won't sync until a URL is set.
-						</p>
-					)}
-					<div className="mt-3 flex gap-2">
-						<Input
-							value={urlDraft}
-							onChange={(event) => setUrlDraft(event.target.value)}
-							placeholder="https://<deployment>.convex.cloud (empty = local-only)"
-							disabled={busyAction !== null}
-							spellCheck={false}
-						/>
-						<Button
-							type="button"
-							size="sm"
-							disabled={busyAction !== null}
-							onClick={saveSyncUrl}
-						>
-							Save
-						</Button>
-						{getSyncUrlSource() === "custom" || syncPill === "Local" ? (
-							<Button
-								type="button"
-								size="sm"
-								variant="outline"
-								disabled={busyAction !== null}
-								onClick={resetSyncUrlToDefault}
-							>
-								Reset
-							</Button>
+						{cloudMessage ? (
+							<p className="mt-2 text-xs text-muted-foreground">
+								{cloudMessage}
+							</p>
 						) : null}
-					</div>
-					{urlMessage ? (
-						<p className="mt-2 text-xs text-muted-foreground">{urlMessage}</p>
-					) : null}
-				</section>
+					</section>
+				) : (
+					<>
+						<section className="rounded-xl border bg-muted/25 p-4">
+							<div className="flex items-center justify-between gap-4">
+								<div className="flex items-center gap-2">
+									<img src={driveSvg} alt="" className="size-4" />
+									<div>
+										<div className="flex items-center gap-2">
+											<h3 className="text-sm font-medium">Google Drive</h3>
+										</div>
+										<p className="text-xs text-muted-foreground">
+											Personal multi-device sync through Drive app data.
+										</p>
+									</div>
+								</div>
+								<div className="flex shrink-0 items-center gap-2">
+									{googleDrive?.connected ? (
+										<Switch
+											checked={googleDriveEnabled}
+											disabled={!syncEngine || busyAction !== null}
+											onCheckedChange={(enabled) =>
+												runAction(
+													"toggle",
+													() =>
+														syncEngine?.setGoogleDriveEnabled(enabled) ??
+														Promise.resolve(null),
+												)
+											}
+											aria-label="Use Google Drive sync"
+										/>
+									) : (
+										<Button
+											type="button"
+											size="sm"
+											disabled={
+												!syncEngine ||
+												!clerkEnabled ||
+												googleDrive?.configured === false ||
+												busyAction !== null ||
+												connectPending
+											}
+											onClick={() => void handleConnectGoogleDrive()}
+										>
+											{googleDriveConnecting ? "Opening browser.." : "Connect"}
+										</Button>
+									)}
+								</div>
+							</div>
+							{googleDrive?.configured === false ? (
+								<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+									Missing <code>PAPERITE_GOOGLE_CLIENT_ID</code>.
+								</p>
+							) : null}
+							{!clerkEnabled ? (
+								<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+									Disabled in local-only mode — sign-in isn't configured.
+								</p>
+							) : null}
+							{googleDrive?.connected ? (
+								<div className="mt-3 flex flex-wrap gap-2">
+									<Button
+										type="button"
+										size="sm"
+										variant="outline"
+										disabled={
+											!syncEngine || !googleDriveEnabled || busyAction !== null
+										}
+										onClick={() =>
+											runAction(
+												"sync",
+												() =>
+													syncEngine?.runGoogleDrive() ?? Promise.resolve(null),
+											)
+										}
+									>
+										{busyAction === "sync" ? "Syncing..." : "Sync now"}
+									</Button>
+									<Button
+										type="button"
+										size="sm"
+										variant="outline"
+										disabled={!syncEngine || busyAction !== null}
+										onClick={() =>
+											runAction(
+												"disconnect",
+												() =>
+													syncEngine?.disconnectGoogleDrive() ??
+													Promise.resolve(null),
+											)
+										}
+									>
+										Disconnect
+									</Button>
+								</div>
+							) : null}
+							{googleDriveMessage ? (
+								<p className="mt-3 text-xs text-muted-foreground">
+									{googleDriveMessage}
+								</p>
+							) : null}
+						</section>
+						<section className="rounded-xl border bg-muted/25 p-4">
+							<div className="flex items-start justify-between gap-3">
+								<div className="flex items-center gap-2">
+									<CloudIcon className="size-4 text-muted-foreground" />
+									<div>
+										<h3 className="text-sm font-medium">
+											Bring your own server
+										</h3>
+										<p className="text-xs text-muted-foreground">
+											Paste your own Convex deployment URL. The runtime value
+											wins over the build default.
+										</p>
+									</div>
+								</div>
+								<StatusPill
+									active={syncConfigured}
+									label={
+										syncSource === "custom"
+											? "Custom URL"
+											: syncSource === "default"
+												? "Default"
+												: "Not configured"
+									}
+								/>
+							</div>
+							{syncUrl ? (
+								<p
+									className="mt-3 truncate rounded-lg bg-muted px-2 py-1.5 font-mono text-xs"
+									title={syncUrl}
+								>
+									{syncUrl}
+								</p>
+							) : (
+								<p className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-2 text-xs">
+									Not configured. Shared spaces won't sync until a URL is set.
+								</p>
+							)}
+							<div className="mt-3 flex gap-2">
+								<Input
+									value={urlDraft}
+									onChange={(event) => setUrlDraft(event.target.value)}
+									placeholder="https://<deployment>.convex.cloud"
+									disabled={busyAction !== null}
+									spellCheck={false}
+								/>
+								<Button
+									type="button"
+									size="sm"
+									disabled={
+										!urlDraft.trim() || busyAction !== null || !clerkEnabled
+									}
+									onClick={() => void saveSyncUrl()}
+								>
+									Save
+								</Button>
+								{syncSource === "custom" ? (
+									<Button
+										type="button"
+										size="sm"
+										variant="outline"
+										disabled={busyAction !== null}
+										onClick={resetSyncUrlToDefault}
+									>
+										Reset
+									</Button>
+								) : null}
+							</div>
+							{urlMessage ? (
+								<p className="mt-2 text-xs text-muted-foreground">
+									{urlMessage}
+								</p>
+							) : null}
+						</section>
+					</>
+				)}
 				{import.meta.env.BETA_PAPERITE && (
 					<section className="rounded-xl bg-muted/45 p-4">
 						<div className="flex items-start justify-between gap-3">
@@ -328,8 +609,8 @@ export function SyncSettings() {
 								</div>
 							</div>
 							<StatusPill
-								active={convexConfigured}
-								label={convexConfigured ? "Configured" : "Missing URL"}
+								active={syncConfigured}
+								label={syncConfigured ? "Configured" : "Missing URL"}
 							/>
 						</div>
 						<div className="mt-4 flex gap-2">
@@ -337,21 +618,20 @@ export function SyncSettings() {
 								value={sharedSpaceName}
 								onChange={(event) => setSharedSpaceName(event.target.value)}
 								placeholder="Shared space name"
-								disabled={!convexConfigured || busyAction !== null}
+								disabled={
+									!syncConfigured || !clerkEnabled || busyAction !== null
+								}
 							/>
 							<Button
 								type="button"
 								size="sm"
 								disabled={
-									!convexConfigured ||
+									!syncConfigured ||
+									!clerkEnabled ||
 									!sharedSpaceName.trim() ||
 									busyAction !== null
 								}
-								onClick={() =>
-									runAction("create-shared-space", () =>
-										createSharedSpace(sharedSpaceName.trim()),
-									)
-								}
+								onClick={() => void handleCreateSharedSpace()}
 							>
 								{busyAction === "create-shared-space"
 									? "Creating..."
@@ -369,6 +649,7 @@ export function SyncSettings() {
 						) : null}
 					</section>
 				)}
+				{clerkEnabled && signedIn ? <AccountSessions /> : null}
 			</div>
 		</>
 	);
@@ -420,6 +701,9 @@ function syncErrorMessage(error: string) {
 	}
 	if (error === "google_drive_disabled") {
 		return "Turn on Google Drive sync first.";
+	}
+	if (error === "sign_in_required") {
+		return "Sign in required — opening sign-in. You'll return here to connect Drive after.";
 	}
 
 	return error;

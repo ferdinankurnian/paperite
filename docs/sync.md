@@ -93,6 +93,29 @@ updates, and snapshots. Free users are limited to two owned shared spaces
 in the `sharedSpaces.create` mutation (hosting shared spaces beyond that
 needs Paperite+; BYO operators set their own policy).
 
+## Clerk redirect allowlist (serve / web)
+
+Sign-in uses Clerk OAuth with a **per-mode** redirect URL — never an env
+override:
+
+- Electron: a throwaway loopback server
+  (`http://127.0.0.1:{randomPort}/callback`), forwarded into the renderer
+  over IPC. `paperite://` is only the internal IPC payload shape; Clerk
+  rejects non-http(s) schemes, so it is never handed to Clerk.
+- Browser / `paperite serve`: the redirect lands back in the same window —
+  `window.location.origin + pathname`.
+
+That means **every serve origin must be allowlisted in the Clerk
+dashboard**, otherwise the OAuth round-trip is rejected. When you change
+ports, update the allowlist too:
+
+1. Clerk Dashboard → your app → **Allowed origins / Redirect URLs**.
+2. Add the exact serve origin, e.g. `http://localhost:4173` — and again
+   for every custom port you serve on (`http://localhost:5180`, …).
+3. Keep `window.location.origin + pathname` reachable: serve the built app
+   from that origin, then "Continue with Google" returns signed in and a
+   reload keeps the session.
+
 ## Sync Rule
 
 Never use last-write-wins for note content. Notes synchronize through CRDT
