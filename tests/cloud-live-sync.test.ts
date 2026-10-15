@@ -27,6 +27,7 @@ test("updateId follows the device:note:counter wire contract", () => {
 test("load + remote origins never enter the push queue", () => {
 	expect(isPushableOrigin("paperite:y-note-load")).toBe(false);
 	expect(isPushableOrigin("paperite:cloud-remote")).toBe(false);
+	expect(isPushableOrigin("paperite:local-remote")).toBe(false);
 	expect(isPushableOrigin("user-typing")).toBe(true);
 	expect(isPushableOrigin(undefined)).toBe(true);
 });

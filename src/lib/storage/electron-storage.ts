@@ -44,6 +44,13 @@ export class ElectronNotesEngine implements NotesEngine {
 		return requireElectron().notes.readYNote(path);
 	}
 
+	async readYDiff(
+		path: string,
+		stateVector: Uint8Array,
+	): Promise<{ noteId: string; diff: Uint8Array }> {
+		return requireElectron().notes.readYDiff(path, stateVector);
+	}
+
 	async writeYUpdate(
 		path: string,
 		update: Uint8Array,
@@ -69,7 +76,9 @@ export class ElectronNotesEngine implements NotesEngine {
 		return requireElectron().notes.setPageFormat(path, format);
 	}
 
-	async pruneAssets(path: string): Promise<{ ok: true; deleted: number; skipped?: string }> {
+	async pruneAssets(
+		path: string,
+	): Promise<{ ok: true; deleted: number; skipped?: string }> {
 		return requireElectron().notes.pruneAssets(path);
 	}
 

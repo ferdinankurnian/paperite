@@ -120,6 +120,11 @@ export interface NotesEngine {
 	search(query: string): Promise<NoteSearchResult[]>;
 	readNote(path: string): Promise<NoteContent>;
 	readYNote(path: string): Promise<YNoteState>;
+	/** Incremental live-watch: bytes `stateVector` has not seen yet. */
+	readYDiff(
+		path: string,
+		stateVector: Uint8Array,
+	): Promise<{ noteId: string; diff: Uint8Array }>;
 	writeYUpdate(
 		path: string,
 		update: Uint8Array,

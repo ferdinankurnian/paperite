@@ -1,10 +1,15 @@
 import * as Y from "yjs";
 import { cloudRemoteOrigin, enqueueLocalYUpdate } from "@/lib/cloud-live-sync";
+import {
+	attachLocalLiveNote,
+	detachLocalLiveNote,
+	localRemoteOrigin,
+} from "@/lib/local-live-sync";
 import { getNotesEngine } from "@/lib/notes-engine";
 
 const loadOrigin = "paperite:y-note-load";
 
-export { cloudRemoteOrigin, loadOrigin };
+export { cloudRemoteOrigin, loadOrigin, localRemoteOrigin };
 
 export type LoadedYNote = {
 	noteId: string;
@@ -44,7 +49,7 @@ export async function loadYNote(notePath: string): Promise<LoadedYNote | null> {
 	}
 
 	const persistUpdate = (update: Uint8Array, origin: unknown) => {
-		if (origin === loadOrigin) return;
+		if (origin === loadOrigin || origin === localRemoteOrigin) return;
 		void notesApi.writeYUpdate(notePath, update);
 		// Plan 020 Step 2: same listener, own origin filter. Local-only
 		// notes cost one map lookup inside enqueue and return false.
@@ -53,12 +58,14 @@ export async function loadYNote(notePath: string): Promise<LoadedYNote | null> {
 
 	doc.on("update", persistUpdate);
 	liveDocs.set(notePath, doc);
+	attachLocalLiveNote(notePath, doc);
 
 	return {
 		noteId: state.noteId,
 		doc,
 		destroy: () => {
 			doc.off("update", persistUpdate);
+			detachLocalLiveNote(notePath, doc);
 			if (liveDocs.get(notePath) === doc) liveDocs.delete(notePath);
 			doc.destroy();
 		},

@@ -11,6 +11,7 @@ import {
 	upsertSharedNote,
 	writeSharedSnapshot,
 } from "@/lib/sync-provider";
+import { localRemoteOrigin } from "@/lib/local-live-sync";
 import { movePath, topLevelPath } from "@/lib/workspace-paths";
 
 /**
@@ -122,7 +123,11 @@ export function makeUpdateId(
 
 /** Pure helper (unit-tested): origins that must never enter the push queue. */
 export function isPushableOrigin(origin: unknown): boolean {
-	return origin !== loadOrigin && origin !== cloudRemoteOrigin;
+	return (
+		origin !== loadOrigin &&
+		origin !== cloudRemoteOrigin &&
+		origin !== localRemoteOrigin
+	);
 }
 
 /** Pure helper (unit-tested): batch cap for one flush. */
@@ -515,6 +520,7 @@ export function wrapNotesEngineWithLiveSync(engine: NotesEngine): NotesEngine {
 		search: (query) => engine.search(query),
 		readNote: (path) => engine.readNote(path),
 		readYNote: (path) => engine.readYNote(path),
+		readYDiff: (path, stateVector) => engine.readYDiff(path, stateVector),
 		writeYUpdate: (path, update) => engine.writeYUpdate(path, update),
 		writeDerivedNote: (path, content) => engine.writeDerivedNote(path, content),
 		writeNote: (path, content) => engine.writeNote(path, content),

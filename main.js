@@ -14,6 +14,10 @@ const {
 	dialog,
 } = require("electron");
 const Y = require("yjs");
+const {
+	yFragmentToNoteBody,
+	writeNoteBodyToYFragment,
+} = require("./server/lib/yjs-fragment");
 
 let keytar;
 
@@ -415,6 +419,7 @@ const syncNoteUpdatesDirectory = (noteId) =>
 // same snapshot, merge separately, and the loser's update vanishes from the
 // snapshot (observed as stale/corrupt snapshot.bin). Serialize per note path.
 const yNoteWriteLocks = new Map();
+const yPathToNoteId = new Map();
 
 const withYNoteWriteLock = (lockKey, task) => {
 	const previous = yNoteWriteLocks.get(lockKey) ?? Promise.resolve();
@@ -429,6 +434,161 @@ const withYNoteWriteLock = (lockKey, task) => {
 	return next;
 };
 
+// Stable per-note identity: two path spellings (or a pre/post-rename path)
+// for one note must share one snapshot lineage, or concurrent writers fork
+// it. Populated by every op below.
+const registerYNotePath = (noteId, normalizedPath) => {
+	if (!noteId || !normalizedPath) return;
+	yPathToNoteId.set(normalizedPath, noteId);
+};
+
+const yConflictError = (message) => {
+	const error = new Error(message);
+	error.code = "Y_CONFLICT";
+	error.status = 409;
+	error.retryable = false;
+	return error;
+};
+
+const readYNoteManifest = async (noteId) => {
+	try {
+		const raw = await fs.readFile(syncNoteManifestPath(noteId), "utf8");
+		const manifest = JSON.parse(raw);
+		return typeof manifest?.noteId === "string" ? manifest : null;
+	} catch (error) {
+		if (error?.code === "ENOENT") return null;
+		throw error;
+	}
+};
+
+// Prefer the id whose snapshot lineage already exists (manifest on disk),
+// then the path map, then the file's own id. Pins `content.id` in place so
+// a file that dropped its id cannot fork a second snapshot per read.
+const resolveStableYNoteIdLocked = async (normalizedPath, content) => {
+	const fileId =
+		typeof content?.id === "string" && content.id ? content.id : null;
+	if (fileId && (await readYNoteManifest(fileId))) return fileId;
+	const cached = yPathToNoteId.get(normalizedPath);
+	if (cached && (await readYNoteManifest(cached))) {
+		if (content) content.id = cached;
+		return cached;
+	}
+	if (fileId) return fileId;
+	if (cached) {
+		if (content) content.id = cached;
+		return cached;
+	}
+	return revisionKey(normalizedPath);
+};
+
+const stableYStringify = (value) => {
+	if (Array.isArray(value)) {
+		return `[${value.map(stableYStringify).join(",")}]`;
+	}
+	if (value && typeof value === "object") {
+		return `{${Object.keys(value)
+			.sort()
+			.map((key) => `${JSON.stringify(key)}:${stableYStringify(value[key])}`)
+			.join(",")}}`;
+	}
+	return JSON.stringify(value) ?? "null";
+};
+
+// Direct file writes (AI agents, serve sharing this workspace) bypass the Y
+// update path. Fold a newer note.json into the snapshot via CRDT merge so
+// live watchers see it. Our own projection writes the file BEFORE the
+// manifest, so file-newer-than-manifest means "external". When the fragment
+// already decodes to the file content (our own derived autosave), only the
+// manifest timestamp advances — no churn, no clobber.
+const foldYNoteFileIntoSnapshotLocked = async (normalizedPath, content) => {
+	const noteId =
+		typeof content?.id === "string" && content.id
+			? content.id
+			: (yPathToNoteId.get(normalizedPath) ?? null);
+	if (!noteId) return { noteId: null, folded: false };
+	const manifest = await readYNoteManifest(noteId);
+	if (!manifest) return { noteId, folded: false };
+	let stats = null;
+	try {
+		stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+	} catch (error) {
+		if (error?.code === "ENOENT") return { noteId, folded: false };
+		throw error;
+	}
+	if (!(stats.mtimeMs > manifest.updatedAt)) return { noteId, folded: false };
+	const snapshotBytes = await fs.readFile(syncNoteSnapshotPath(noteId));
+	const probe = new Y.Doc();
+	let alreadyCovered = false;
+	try {
+		Y.applyUpdate(probe, snapshotBytes);
+		const projected = yDocToNoteContentMain(probe, content);
+		alreadyCovered =
+			stableYStringify(projected) ===
+			stableYStringify(normalizeNoteContent(content));
+	} catch {
+		alreadyCovered = false;
+	} finally {
+		probe.destroy();
+	}
+	if (alreadyCovered) {
+		await writeFileAtomic(
+			syncNoteManifestPath(noteId),
+			JSON.stringify(
+				{
+					format: "yjs-v1",
+					noteId,
+					path: normalizedPath,
+					updatedAt: Date.now(),
+					snapshot: path.relative(
+						syncNoteDirectory(noteId),
+						syncNoteSnapshotPath(noteId),
+					),
+					stateVector: path.relative(
+						syncNoteDirectory(noteId),
+						syncNoteStateVectorPath(noteId),
+					),
+				},
+				null,
+				2,
+			),
+		);
+		registerYNotePath(noteId, normalizedPath);
+		return { noteId, folded: false };
+	}
+	const result = await writeLocalYNoteSnapshotLocked(normalizedPath, content);
+	return { noteId: result.noteId, folded: true };
+};
+
+// Inverse of writeYNoteContent: project a merged Y.Doc back to NoteContent
+// so note.json tracks the CRDT state across restarts. The body comes from
+// the live fragment — the `content.body` map goes stale on first keystroke.
+const yDocToNoteContentMain = (doc, fallback) => {
+	const metadata = doc.getMap("metadata");
+	const fragmentBody = yFragmentToNoteBody(doc);
+	const body =
+		fragmentBody && typeof fragmentBody === "object"
+			? { ...fragmentBody }
+			: { type: "doc", content: [{ type: "paragraph" }] };
+	const id = metadata.get("id");
+	const title = metadata.get("title");
+	const normalizedFallback = normalizeNoteContent(fallback ?? {});
+	const out = { ...body };
+	if (typeof id === "string" && id) out.id = id;
+	else if (typeof normalizedFallback.id === "string")
+		out.id = normalizedFallback.id;
+	if (typeof title === "string") out.title = title;
+	else if (typeof normalizedFallback.title === "string")
+		out.title = normalizedFallback.title;
+	if (
+		out.pageFormat === undefined &&
+		normalizedFallback.pageFormat !== undefined
+	)
+		out.pageFormat = normalizedFallback.pageFormat;
+	if (out.pinned === undefined && normalizedFallback.pinned !== undefined)
+		out.pinned = normalizedFallback.pinned;
+	return normalizeNoteContent(out);
+};
+
 const writeYNoteContent = (doc, content) => {
 	const normalized = normalizeNoteContent(content);
 	const { id, title, ...body } = normalized;
@@ -441,6 +601,9 @@ const writeYNoteContent = (doc, content) => {
 		metadata.set("updatedAt", Date.now());
 		noteContent.set("body", body);
 	});
+	// The live body lives in the fragment (keystrokes mutate it, never the
+	// map). Seed it here so full-state writes set the body deterministically.
+	writeNoteBodyToYFragment(doc, body);
 };
 
 const encodeYNoteFromContent = (content) => {
@@ -471,8 +634,49 @@ const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 	const now = Date.now();
 
 	await fs.mkdir(updatesDirectory, { recursive: true });
-	await writeFileAtomic(syncNoteSnapshotPath(noteId), encoded.state);
-	await writeFileAtomic(syncNoteStateVectorPath(noteId), encoded.stateVector);
+
+	// Merge, never blind overwrite: the fragment ops inside merge
+	// positionally (concurrent regions converge). The metadata keys are then
+	// set explicitly on top so a full-state intent wins them
+	// DETERMINISTICALLY — blind map merging coin-flips on random clientIds.
+	let snapshot = encoded.state;
+	try {
+		const existingSnapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
+		if (existingSnapshot.length > 0) {
+			const mergeDoc = new Y.Doc();
+			try {
+				Y.applyUpdate(mergeDoc, existingSnapshot);
+				Y.applyUpdate(mergeDoc, encoded.state);
+				const mergeMetadata = mergeDoc.getMap("metadata");
+				mergeDoc.transact(() => {
+					if (typeof normalizedContent.id === "string") {
+						mergeMetadata.set("id", normalizedContent.id);
+					}
+					if (typeof normalizedContent.title === "string") {
+						mergeMetadata.set("title", normalizedContent.title);
+					}
+					mergeMetadata.set("updatedAt", now);
+				});
+				snapshot = Buffer.from(Y.encodeStateAsUpdate(mergeDoc));
+			} finally {
+				mergeDoc.destroy();
+			}
+		}
+	} catch (error) {
+		if (error?.code !== "ENOENT") throw error;
+	}
+	const mergedStateVector = (() => {
+		const vectorDoc = new Y.Doc();
+		try {
+			Y.applyUpdate(vectorDoc, snapshot);
+			return Buffer.from(Y.encodeStateVector(vectorDoc));
+		} finally {
+			vectorDoc.destroy();
+		}
+	})();
+
+	await writeFileAtomic(syncNoteSnapshotPath(noteId), snapshot);
+	await writeFileAtomic(syncNoteStateVectorPath(noteId), mergedStateVector);
 	await writeFileAtomic(
 		path.join(updatesDirectory, `${now}-${process.pid}.bin`),
 		encoded.state,
@@ -495,8 +699,9 @@ const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 			2,
 		),
 	);
+	registerYNotePath(noteId, normalizedPath);
 
-	return { noteId, updatedAt: now };
+	return { noteId, updatedAt: now, merged: snapshot !== encoded.state };
 };
 
 const ensureLocalYNoteSnapshot = (notePath, content) => {
@@ -528,16 +733,69 @@ const readLocalYNoteState = (notePath) => {
 
 const readLocalYNoteStateLocked = async (normalizedPath) => {
 	const content = await readNoteContent(normalizedPath, true);
+	const noteId = await resolveStableYNoteIdLocked(normalizedPath, content);
 	await ensureLocalYNoteSnapshotLocked(normalizedPath, content);
-
-	const noteId = syncNoteId(normalizedPath, content);
+	await foldYNoteFileIntoSnapshotLocked(normalizedPath, content);
 	const snapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
+	registerYNotePath(noteId, normalizedPath);
 
 	return {
 		noteId,
 		format: "yjs-v1",
 		snapshot: new Uint8Array(snapshot),
 	};
+};
+
+const readLocalYNoteDiff = (notePath, stateVector) => {
+	const normalizedPath = currentNotePath(notePath);
+	return withYNoteWriteLock(normalizedPath, () =>
+		readLocalYNoteDiffLocked(normalizedPath, stateVector),
+	);
+};
+
+const readLocalYNoteDiffLocked = async (normalizedPath, stateVector) => {
+	const sv = Buffer.from(stateVector ?? []);
+	if (sv.length === 0) throw yConflictError("missing state vector");
+	const content = await readNoteContent(normalizedPath, true);
+	const noteId = await resolveStableYNoteIdLocked(normalizedPath, content);
+	await ensureLocalYNoteSnapshotLocked(normalizedPath, content);
+	await foldYNoteFileIntoSnapshotLocked(normalizedPath, content);
+	const snapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
+	registerYNotePath(noteId, normalizedPath);
+	let diff;
+	try {
+		diff = Buffer.from(Y.diffUpdate(snapshot, new Uint8Array(sv)));
+	} catch (error) {
+		throw yConflictError(`unreadable state vector: ${error.message}`);
+	}
+	if (isYSnapshotConverged(snapshot, new Uint8Array(sv))) {
+		return { noteId, format: "yjs-v1", diff: new Uint8Array(0) };
+	}
+	return { noteId, format: "yjs-v1", diff: new Uint8Array(diff) };
+};
+
+// Y.diffUpdate encodes "nothing new" as 2 bytes, not zero — applying that
+// would still fire update events and echo-write on every poll.
+const isYSnapshotConverged = (snapshot, clientSv) => {
+	let clientClocks;
+	try {
+		clientClocks = Y.decodeStateVector(clientSv);
+	} catch {
+		return false;
+	}
+	const probe = new Y.Doc();
+	try {
+		Y.applyUpdate(probe, Buffer.from(snapshot));
+		const serverClocks = Y.decodeStateVector(Y.encodeStateVector(probe));
+		for (const [clientId, clock] of serverClocks) {
+			if ((clientClocks.get(clientId) ?? 0) < clock) return false;
+		}
+		return true;
+	} catch {
+		return false;
+	} finally {
+		probe.destroy();
+	}
 };
 
 const appendLocalYNoteUpdate = (notePath, update) => {
@@ -548,48 +806,75 @@ const appendLocalYNoteUpdate = (notePath, update) => {
 };
 
 const appendLocalYNoteUpdateLocked = async (normalizedPath, update) => {
-	const content = await readNoteContent(normalizedPath, true);
-	await ensureLocalYNoteSnapshotLocked(normalizedPath, content);
+	const updateBuffer = Buffer.from(update ?? []);
+	if (updateBuffer.length === 0) throw yConflictError("empty yjs update");
+	if (updateBuffer.length > 10 * 1024 * 1024)
+		throw yConflictError("yjs update exceeds 10mb limit");
 
-	const noteId = syncNoteId(normalizedPath, content);
+	const content = await readNoteContent(normalizedPath, true);
+	const noteId = await resolveStableYNoteIdLocked(normalizedPath, content);
+	await ensureLocalYNoteSnapshotLocked(normalizedPath, content);
 	const noteDirectory = syncNoteDirectory(noteId);
 	const updatesDirectory = syncNoteUpdatesDirectory(noteId);
-	const updateBuffer = Buffer.from(update);
 	const now = Date.now();
 	const doc = new Y.Doc();
-	const existingSnapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
+	try {
+		const existingSnapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
+		try {
+			Y.applyUpdate(doc, existingSnapshot);
+		} catch (error) {
+			throw yConflictError(`stored snapshot is corrupt: ${error.message}`);
+		}
+		try {
+			Y.applyUpdate(doc, updateBuffer);
+		} catch (error) {
+			throw yConflictError(`invalid yjs update: ${error.message}`);
+		}
 
-	Y.applyUpdate(doc, existingSnapshot);
-	Y.applyUpdate(doc, updateBuffer);
+		const snapshot = Buffer.from(Y.encodeStateAsUpdate(doc));
+		const stateVector = Buffer.from(Y.encodeStateVector(doc));
 
-	const snapshot = Buffer.from(Y.encodeStateAsUpdate(doc));
-	const stateVector = Buffer.from(Y.encodeStateVector(doc));
+		await fs.mkdir(updatesDirectory, { recursive: true });
+		await writeFileAtomic(
+			path.join(updatesDirectory, `${now}-${process.pid}.bin`),
+			updateBuffer,
+		);
+		await writeFileAtomic(syncNoteSnapshotPath(noteId), snapshot);
+		await writeFileAtomic(syncNoteStateVectorPath(noteId), stateVector);
 
-	await fs.mkdir(updatesDirectory, { recursive: true });
-	await writeFileAtomic(
-		path.join(updatesDirectory, `${now}-${process.pid}.bin`),
-		updateBuffer,
-	);
-	await writeFileAtomic(syncNoteSnapshotPath(noteId), snapshot);
-	await writeFileAtomic(syncNoteStateVectorPath(noteId), stateVector);
-	await writeFileAtomic(
-		syncNoteManifestPath(noteId),
-		JSON.stringify(
-			{
-				format: "yjs-v1",
-				noteId,
-				path: normalizedPath,
-				updatedAt: now,
-				snapshot: path.relative(noteDirectory, syncNoteSnapshotPath(noteId)),
-				stateVector: path.relative(
-					noteDirectory,
-					syncNoteStateVectorPath(noteId),
-				),
-			},
-			null,
-			2,
-		),
-	);
+		// Project the merged CRDT state back to note.json under the same
+		// lock so a restart cannot lose Y updates. The file lands BEFORE
+		// the manifest so the fold check stays unambiguous for our writes.
+		const projected = yDocToNoteContentMain(doc, content);
+		if (!projected.id) projected.id = noteId;
+		await ensureNoteDirectory(normalizedPath);
+		await writeRevisionSnapshot(normalizedPath, projected);
+		await writeFileAtomic(
+			resolveNoteContentPath(normalizedPath),
+			serializeNoteContent(projected),
+		);
+		await writeFileAtomic(
+			syncNoteManifestPath(noteId),
+			JSON.stringify(
+				{
+					format: "yjs-v1",
+					noteId,
+					path: normalizedPath,
+					updatedAt: Date.now(),
+					snapshot: path.relative(noteDirectory, syncNoteSnapshotPath(noteId)),
+					stateVector: path.relative(
+						noteDirectory,
+						syncNoteStateVectorPath(noteId),
+					),
+				},
+				null,
+				2,
+			),
+		);
+	} finally {
+		doc.destroy();
+	}
+	registerYNotePath(noteId, normalizedPath);
 
 	return { ok: true, noteId, updatedAt: now };
 };
@@ -607,10 +892,16 @@ const writeDerivedNoteContent = async (notePath, content) => {
 			if (!normalizedContent.title && existingContent.title) {
 				normalizedContent.title = existingContent.title;
 			}
-			if (normalizedContent.pinned === undefined && existingContent.pinned !== undefined) {
+			if (
+				normalizedContent.pinned === undefined &&
+				existingContent.pinned !== undefined
+			) {
 				normalizedContent.pinned = existingContent.pinned;
 			}
-			if (normalizedContent.pageFormat === undefined && existingContent.pageFormat !== undefined) {
+			if (
+				normalizedContent.pageFormat === undefined &&
+				existingContent.pageFormat !== undefined
+			) {
 				normalizedContent.pageFormat = existingContent.pageFormat;
 			}
 		} catch {
@@ -2070,8 +2361,7 @@ const createRendererServer = () => {
 			const data = await fs.readFile(filePath);
 			const ext = path.extname(filePath).toLowerCase();
 			response.writeHead(200, {
-				"content-type":
-					rendererMimeTypes[ext] ?? "application/octet-stream",
+				"content-type": rendererMimeTypes[ext] ?? "application/octet-stream",
 				"content-length": data.length,
 				"cache-control": cacheControl,
 			});
@@ -2749,6 +3039,15 @@ ipcMain.handle("notes:write-y-update", async (_event, notePath, update) => {
 });
 
 ipcMain.handle(
+	"notes:read-y-note-diff",
+	async (_event, notePath, stateVector) => {
+		await ensureWorkspace();
+		await migrateLegacyNotes();
+		return readLocalYNoteDiff(notePath, stateVector);
+	},
+);
+
+ipcMain.handle(
 	"notes:write-derived-note",
 	async (_event, notePath, content) => {
 		await ensureWorkspace();
@@ -2816,7 +3115,6 @@ ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
 	return { ok: true };
 });
 
-
 ipcMain.handle("notes:set-pinned", async (_event, notePath, pinned) => {
 	await ensureWorkspace();
 	const normalizedPath = currentNotePath(notePath);
@@ -2845,7 +3143,6 @@ ipcMain.handle("notes:set-page-format", async (_event, notePath, format) => {
 	return { ok: true, pageFormat: content.pageFormat };
 });
 
-
 const collectReferencedAssetPaths = (node, out = new Set()) => {
 	if (node?.type === "image" && typeof node.attrs?.src === "string") {
 		const srcPath = node.attrs.src;
@@ -2859,7 +3156,8 @@ const collectReferencedAssetPaths = (node, out = new Set()) => {
 			if (assetsIdx !== -1) out.add(srcPath.slice(assetsIdx + 1));
 		}
 	}
-	for (const child of node?.content ?? []) collectReferencedAssetPaths(child, out);
+	for (const child of node?.content ?? [])
+		collectReferencedAssetPaths(child, out);
 	return out;
 };
 
@@ -2893,7 +3191,9 @@ const pruneNoteAssets = async (notePath) => {
 		if (!entry.isFile() || entry.name.startsWith(".")) continue;
 		const relative = noteAssetsDirectoryName + "/" + entry.name;
 		if (referenced.has(relative)) continue;
-		await fs.rm(path.join(assetDir, entry.name), { force: true }).catch(() => undefined);
+		await fs
+			.rm(path.join(assetDir, entry.name), { force: true })
+			.catch(() => undefined);
 		deleted += 1;
 	}
 
@@ -2947,7 +3247,6 @@ ipcMain.handle("notes:prune-assets", async (_event, notePath) => {
 	await ensureWorkspace();
 	return pruneNoteAssets(notePath);
 });
-
 
 ipcMain.handle("notes:create-note", async (_event, parentPath, title) => {
 	await ensureWorkspace();

@@ -43,8 +43,7 @@ contextBridge.exposeInMainWorld("electron", {
 	},
 	auth: {
 		getPendingCallback: () => ipcRenderer.invoke("auth:get-pending-callback"),
-		startCallbackServer: () =>
-			ipcRenderer.invoke("auth:start-callback-server"),
+		startCallbackServer: () => ipcRenderer.invoke("auth:start-callback-server"),
 	},
 	sync: {
 		getStatus: () => ipcRenderer.invoke("sync:get-status"),
@@ -68,6 +67,8 @@ contextBridge.exposeInMainWorld("electron", {
 		search: (query) => ipcRenderer.invoke("notes:search", query),
 		readNote: (path) => ipcRenderer.invoke("notes:read-note", path),
 		readYNote: (path) => ipcRenderer.invoke("notes:read-y-note", path),
+		readYDiff: (path, stateVector) =>
+			ipcRenderer.invoke("notes:read-y-note-diff", path, stateVector),
 		writeYUpdate: (path, update) =>
 			ipcRenderer.invoke("notes:write-y-update", path, update),
 		writeDerivedNote: (path, content) =>

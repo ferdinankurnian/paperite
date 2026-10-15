@@ -24,6 +24,11 @@ export function useNoteAutosave(options: Options) {
   const { notesApi, activeNotePathRef, lastPersistedContent, noteContentCache, noteLiveContentGetters, loadedYNoteCache, notePersistedCache, enqueueNoteWrite, setSaveStatus, setWorkspace, updateWorkspaceNote } = options;
   const noteAutosaveTimers = useRef(new Map<string, number>());
   const yjsDerivedAutosaveTimers = useRef(new Map<string, number>());
+  // scheduleNoteAutosave delegates to the derived writer when a live Y.Doc
+  // owns the note; the ref breaks the declaration-order cycle.
+  const scheduleYjsDerivedAutosaveRef = useRef(
+    (_notePath: string, _content: NoteContent) => {},
+  );
   	const clearNoteAutosaveTimer = useCallback((notePath: string) => {
   		const timer = noteAutosaveTimers.current.get(notePath);
   		if (timer === undefined) return;
@@ -50,6 +55,14 @@ export function useNoteAutosave(options: Options) {
 
   	const scheduleNoteAutosave = useCallback(
   		(notePath: string, content: NoteContent) => {
+  			// When a live Y.Doc owns this note, a full PUT would overwrite
+  			// the CRDT snapshot (last-write-wins). Route through the derived
+  			// writer instead — it updates note.json/index without touching
+  			// the Y snapshot, so concurrent surfaces converge.
+  			if (loadedYNoteCache.current.has(notePath)) {
+  				scheduleYjsDerivedAutosaveRef.current(notePath, content);
+  				return;
+  			}
   			clearNoteAutosaveTimer(notePath);
 
   			// Only flip to "saving" when status actually changes — same-value
@@ -107,14 +120,22 @@ export function useNoteAutosave(options: Options) {
   							);
   						});
   					})
-  					.catch(() => {
+  					.catch((error: unknown) => {
   						if (activeNotePathRef.current === notePath) setSaveStatus("error");
+  						// Hard 409 from a locked sqlite index: the write did NOT
+  						// land cleanly, so stay dirty and retry once instead of
+  						// silently marking persisted.
+  						if (isLockedError(error)) {
+  							window.setTimeout(() => {
+  								scheduleNoteAutosave(notePath, noteContentCache.current.get(notePath) ?? content);
+  							}, 1500);
+  						}
   					});
   			}, 700);
 
   			noteAutosaveTimers.current.set(notePath, timer);
   		},
-  		[clearNoteAutosaveTimer, enqueueNoteWrite],
+  		[clearNoteAutosaveTimer, enqueueNoteWrite, loadedYNoteCache],
   	);
 
   	const scheduleYjsDerivedAutosave = useCallback(
@@ -169,8 +190,13 @@ export function useNoteAutosave(options: Options) {
   							);
   						});
   					})
-  					.catch(() => {
+  					.catch((error: unknown) => {
   						if (activeNotePathRef.current === notePath) setSaveStatus("error");
+  						if (isLockedError(error)) {
+  							window.setTimeout(() => {
+  								scheduleYjsDerivedAutosaveRef.current(notePath, noteContentCache.current.get(notePath) ?? content);
+  							}, 1500);
+  						}
   					});
   			}, 700);
 
@@ -178,6 +204,10 @@ export function useNoteAutosave(options: Options) {
   		},
   		[notesApi],
   	);
+
+  	useEffect(() => {
+  		scheduleYjsDerivedAutosaveRef.current = scheduleYjsDerivedAutosave;
+  	}, [scheduleYjsDerivedAutosave]);
 
   	const registerNoteContentSnapshot = useCallback(
   		(notePath: string | null, getContent: (() => NoteContent) | null) => {
@@ -347,12 +377,35 @@ export function useNoteAutosave(options: Options) {
   			moveCache(noteContentCache.current);
   			moveCache(notePersistedCache.current);
 
+  			// Same-note state must follow the rename or the old path keeps a
+  			// stale Y.Doc/queue while the new path starts empty (split state).
+  			for (const [notePath, timer] of [...yjsDerivedAutosaveTimers.current]) {
+  				if (!isSameOrChildPath(fromPath, notePath)) continue;
+  				window.clearTimeout(timer);
+  				yjsDerivedAutosaveTimers.current.delete(notePath);
+  				yjsDerivedAutosaveTimers.current.set(movePath(notePath, fromPath, toPath), timer);
+  			}
+  			for (const [notePath, getter] of [...noteLiveContentGetters.current]) {
+  				if (!isSameOrChildPath(fromPath, notePath)) continue;
+  				noteLiveContentGetters.current.delete(notePath);
+  				noteLiveContentGetters.current.set(movePath(notePath, fromPath, toPath), getter);
+  			}
+  			for (const [notePath, yNote] of [...loadedYNoteCache.current]) {
+  				if (!isSameOrChildPath(fromPath, notePath)) continue;
+  				loadedYNoteCache.current.delete(notePath);
+  				if (!loadedYNoteCache.current.has(movePath(notePath, fromPath, toPath))) {
+  					loadedYNoteCache.current.set(movePath(notePath, fromPath, toPath), yNote);
+  				} else {
+  					yNote.destroy();
+  				}
+  			}
+
   			for (const [notePath, content] of pendingAutosaves) {
   				noteContentCache.current.set(notePath, content);
   				scheduleNoteAutosave(notePath, content);
   			}
   		},
-  		[scheduleNoteAutosave],
+  		[scheduleNoteAutosave, loadedYNoteCache, noteLiveContentGetters],
   	);
 
   useEffect(() => () => {
@@ -365,3 +418,10 @@ export function useNoteAutosave(options: Options) {
 }
 function isSameOrChildPath(parentPath: string, childPath: string) { return childPath === parentPath || childPath.startsWith(`${parentPath}/`); }
 function movePath(path: string, fromPath: string, toPath: string) { return path === fromPath ? toPath : `${toPath}/${path.slice(fromPath.length + 1)}`; }
+function isLockedError(error: unknown) {
+	if (!error || typeof error !== "object") return false;
+	const record = error as Record<string, unknown>;
+	if (record.retryable === true) return true;
+	const message = typeof record.message === "string" ? record.message : "";
+	return /409|locked|SQLITE_BUSY/i.test(message);
+}

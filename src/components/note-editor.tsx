@@ -24,7 +24,10 @@ import {
 } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Suggestion, { type SuggestionProps } from "@tiptap/suggestion";
-import { prosemirrorJSONToYDoc, yXmlFragmentToProsemirrorJSON } from "@tiptap/y-tiptap";
+import {
+	prosemirrorJSONToYDoc,
+	yXmlFragmentToProsemirrorJSON,
+} from "@tiptap/y-tiptap";
 import { common, createLowlight } from "lowlight";
 import {
 	AlignCenterIcon,
@@ -90,7 +93,11 @@ import {
 	ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { CodeBlockView } from "@/components/code-block-view";
-import { normalizeNoteContent, noteContentText, serializeNoteContent } from "@/lib/note-content";
+import {
+	normalizeNoteContent,
+	noteContentText,
+	serializeNoteContent,
+} from "@/lib/note-content";
 import { useEditorUiStore } from "@/lib/stores/editor-ui-store";
 import { cn } from "@/lib/utils";
 
@@ -116,7 +123,9 @@ export function getNoteReadOnlyController(
 }
 
 /** Fires when any editor registers/unregisters its view/edit controller. */
-export function subscribeNoteReadOnlyRegistry(listener: () => void): () => void {
+export function subscribeNoteReadOnlyRegistry(
+	listener: () => void,
+): () => void {
 	noteReadOnlyRegistryListeners.add(listener);
 	return () => {
 		noteReadOnlyRegistryListeners.delete(listener);
@@ -226,8 +235,6 @@ async function saveImageToNote(
 	}
 	return dataUrl;
 }
-
-
 
 type NoteEditorProps = {
 	content: NoteContent;
@@ -537,6 +544,10 @@ export function NoteEditor({
 	notePathRef.current = notePath;
 	onChangeRef.current = onChange;
 	readOnlyRef.current = readOnly;
+	const draftTitleRef = useRef(draftTitle);
+	draftTitleRef.current = draftTitle;
+	const onTitleChangeRef = useRef(onTitleChange);
+	onTitleChangeRef.current = onTitleChange;
 
 	const resizeTitleInput = useCallback(() => {
 		const textarea = titleInputRef.current;
@@ -723,7 +734,8 @@ export function NoteEditor({
 			return;
 		}
 
-		const getContent = () => denormalizeImagePaths(editor.getJSON() as NoteContent);
+		const getContent = () =>
+			denormalizeImagePaths(editor.getJSON() as NoteContent);
 		onContentSnapshot?.(notePath, getContent);
 
 		return () => onContentSnapshot?.(notePath, null);
@@ -758,6 +770,33 @@ export function NoteEditor({
 	useEffect(() => {
 		setDraftTitle(editableTitle(noteTitle));
 	}, [noteTitle]);
+
+	// Remote title watch: another surface (or an AI agent) retitled the note.
+	// Never fight the user — while the title box is focused with uncommitted
+	// edits, their keystrokes win and the remote title lands on next switch.
+	useEffect(() => {
+		if (!yDoc || !notePath) return;
+		const metadata = yDoc.getMap("metadata");
+		const syncRemoteTitle = () => {
+			const remote = metadata.get("title");
+			if (typeof remote !== "string" || !remote.trim()) return;
+			if (remote === lastCommittedTitleRef.current) return;
+			const active = document.activeElement;
+			if (
+				active === titleInputRef.current &&
+				draftTitleRef.current !== lastCommittedTitleRef.current
+			) {
+				return;
+			}
+			lastCommittedTitleRef.current = remote;
+			setDraftTitle(editableTitle(remote));
+			onTitleChangeRef.current(remote);
+		};
+		metadata.observe(syncRemoteTitle);
+		return () => {
+			metadata.unobserve(syncRemoteTitle);
+		};
+	}, [yDoc, notePath]);
 
 	useEffect(() => {
 		if (!linkHover) return;
@@ -897,7 +936,9 @@ export function NoteEditor({
 									title="Bold (⌘B)"
 									mark="bold"
 									icon={BoldIcon}
-									command={(instance) => instance.chain().focus().toggleBold().run()}
+									command={(instance) =>
+										instance.chain().focus().toggleBold().run()
+									}
 								/>
 								<ContextMenuFormatItem
 									editor={editor}
@@ -906,7 +947,9 @@ export function NoteEditor({
 									title="Italic (⌘I)"
 									mark="italic"
 									icon={ItalicIcon}
-									command={(instance) => instance.chain().focus().toggleItalic().run()}
+									command={(instance) =>
+										instance.chain().focus().toggleItalic().run()
+									}
 								/>
 								<ContextMenuFormatItem
 									editor={editor}
@@ -915,7 +958,9 @@ export function NoteEditor({
 									title="Underline (⌘U)"
 									mark="underline"
 									icon={UnderlineIcon}
-									command={(instance) => instance.chain().focus().toggleUnderline().run()}
+									command={(instance) =>
+										instance.chain().focus().toggleUnderline().run()
+									}
 								/>
 								<ContextMenuFormatItem
 									editor={editor}
@@ -924,7 +969,9 @@ export function NoteEditor({
 									title="Strikethrough (⌘⇧X)"
 									mark="strike"
 									icon={StrikethroughIcon}
-									command={(instance) => instance.chain().focus().toggleStrike().run()}
+									command={(instance) =>
+										instance.chain().focus().toggleStrike().run()
+									}
 								/>
 							</ContextMenuGroup>
 							<ContextMenuSeparator />
@@ -959,8 +1006,8 @@ export function NoteEditor({
 							</ContextMenuItem>
 							<ContextMenuItem
 								onSelect={() => {
-								editor?.chain().focus().selectAll().run();
-							}}
+									editor?.chain().focus().selectAll().run();
+								}}
 							>
 								Select all
 								<ContextMenuShortcut>⌘A</ContextMenuShortcut>
@@ -974,7 +1021,9 @@ export function NoteEditor({
 							</ContextMenuItem>
 							<ContextMenuItem
 								disabled={readOnly}
-								onSelect={() => editor?.chain().focus().toggleBlockquote().run()}
+								onSelect={() =>
+									editor?.chain().focus().toggleBlockquote().run()
+								}
 							>
 								Quote
 							</ContextMenuItem>
@@ -1000,13 +1049,13 @@ export function NoteEditor({
 }
 
 function ContextMenuFormatItem({
-		editor,
-		readOnly,
-		label,
-		title,
-		mark,
-		icon: Icon,
-		command,
+	editor,
+	readOnly,
+	label,
+	title,
+	mark,
+	icon: Icon,
+	command,
 }: {
 	editor: TiptapEditor;
 	readOnly: boolean;
@@ -1016,10 +1065,11 @@ function ContextMenuFormatItem({
 	icon: ComponentType<{ className?: string }>;
 	command: (editor: TiptapEditor) => boolean;
 }) {
-	const active = useEditorState({
-		editor,
-		selector: ({ editor: instance }) => instance.isActive(mark),
-	}) ?? false;
+	const active =
+		useEditorState({
+			editor,
+			selector: ({ editor: instance }) => instance.isActive(mark),
+		}) ?? false;
 
 	return (
 		<ContextMenuItem
@@ -1129,11 +1179,7 @@ function FormatMenu({
 				reader.result,
 				file.name || "image",
 			);
-			editor
-				.chain()
-				.focus()
-				.setImage({ src, alt: file.name })
-				.run();
+			editor.chain().focus().setImage({ src, alt: file.name }).run();
 			setImagePopoverOpen(false);
 		});
 		reader.readAsDataURL(file);
@@ -1185,10 +1231,7 @@ function FormatMenu({
 				className="app-region-no-drag no-scrollbar flex w-full items-center gap-1 overflow-x-auto overflow-y-hidden rounded-lg bg-popover p-1 text-popover-foreground shadow-[0_12px_36px_rgb(0_0_0/0.22),0_0_0_1px_rgb(255_255_255/0.08)] ring-1 ring-foreground/10 [&>*]:shrink-0"
 				onPointerDown={(event) => event.stopPropagation()}
 			>
-				<BlockStyleSelect
-					editor={editor}
-					toolbarState={toolbarState}
-				/>
+				<BlockStyleSelect editor={editor} toolbarState={toolbarState} />
 				<span className="mx-0.5 h-5 w-px bg-border" />
 				<FormatButton
 					label="Bold"
@@ -1617,7 +1660,6 @@ function FormatButton({
 	disabled?: boolean;
 	active: boolean;
 }) {
-
 	return (
 		<ToolbarTooltip label={label}>
 			<button
@@ -1889,17 +1931,14 @@ function createSearchHighlightExtension(
 
 								const query = searchQueryRef.current.trim();
 								const matches = findSearchMatches(view.state.doc, query);
-								useEditorUiStore
-									.getState()
-									.setFindMatchCount(matches.length);
+								useEditorUiStore.getState().setFindMatchCount(matches.length);
 
 								const matchIndex = normalizeMatchIndex(
 									searchMatchIndexRef.current,
 									matches.length,
 								);
 								const navigationChanged =
-									query !== previousQuery ||
-									matchIndex !== previousMatchIndex;
+									query !== previousQuery || matchIndex !== previousMatchIndex;
 								previousQuery = query;
 								previousMatchIndex = matchIndex;
 
