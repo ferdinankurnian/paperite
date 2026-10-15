@@ -95,6 +95,9 @@ const {
 	releaseServeLock,
 	acquireWorkspaceLock,
 	releaseWorkspaceLock,
+	readServeLock,
+	readWorkspaceLock,
+	isPidAlive,
 } = require("./lib/locks");
 
 const openBrowser = (url) => {
@@ -140,14 +143,49 @@ const main = async () => {
 	}
 	const workspaceDir = workspace.workspaceRoot();
 
+	// Lock order matters: the workspace check runs BEFORE the serve lock
+	// is taken. acquireWorkspaceLock exits the process on conflict, so
+	// taking the serve lock first would leave a stale serve lock pointing
+	// at a dead pid. Fail fast on both with zero side effects, then take
+	// both locks (workspace first, serve second).
+	const existingServe = readServeLock();
+	if (existingServe && isPidAlive(existingServe.pid)) {
+		const where =
+			existingServe.url ??
+			(existingServe.port
+				? `http://localhost:${existingServe.port}`
+				: "unknown address");
+		console.error(
+			`[paperite] already serving at ${where} (pid ${existingServe.pid}, workspace ${existingServe.workspace ?? "?"}) — stop it first`,
+		);
+		process.exit(1);
+	}
+	const existingWs = readWorkspaceLock(workspaceDir);
+	if (existingWs && isPidAlive(existingWs.pid)) {
+		const holder =
+			existingWs.mode === "serve"
+				? `paperite serve at ${existingWs.url ?? (existingWs.port ? `http://localhost:${existingWs.port}` : "unknown address")}`
+				: "Paperite desktop";
+		console.error(
+			`[paperite] workspace is already open by ${holder} (pid ${existingWs.pid}).`,
+		);
+		console.error(
+			"[paperite] paperite serve refuses to open the same workspace twice — sharing index.sqlite splits state.",
+		);
+		console.error(
+			"[paperite] stop the other process first, or use --workspace <dir> for a separate workspace.",
+		);
+		process.exit(1);
+	}
+
+	// Electron + serve on the same workspace would silently split
+	// index.sqlite. Both acquires re-check liveness (race-safe); on
+	// conflict they refuse loudly instead of splitting state.
+	acquireWorkspaceLock(workspaceDir, { mode: "serve", port: args.port });
+
 	// Single serve instance — any port. Refuses with the existing address
 	// instead of splitting identity/data across two servers.
 	acquireServeLock({ port: args.port, workspace: workspaceDir });
-
-	// Electron + serve on the same workspace would silently split
-	// index.sqlite (WAL tolerates light overlap, heavy writes busy-error).
-	// Refuse loudly instead.
-	acquireWorkspaceLock(workspaceDir, { mode: "serve", port: args.port });
 
 	await workspace.ensureWorkspace();
 	await workspace.purgeOldTrashItems();

@@ -54,12 +54,14 @@ Options: `--port` (default 3000), `--host` (default 127.0.0.1),
 On `EADDRINUSE` the boot fails hard — it never silently hops ports,
 because the Clerk dashboard allowlist needs a stable port.
 
-Only one serve instance at a time (any port): a pid-checked lockfile in
-tmp guards serve-vs-serve, and a per-workspace `.paperite/active.lock`
-refuses Electron+serve on the same workspace instead of silently
-splitting `index.sqlite`. A second boot points you at the running
-address + workspace instead of starting a second backend. Use
-`--workspace <dir>` for an isolated second instance.
+Only one serve instance at a time (any port, any workspace): a pid-checked
+lockfile in tmp guards serve-vs-serve, and a per-workspace
+`.paperite/active.lock` refuses Electron+serve on the same workspace
+instead of silently splitting `index.sqlite`. A second serve boot points
+you at the running address + workspace instead of starting a second
+backend — there is no isolated-second-serve via `--workspace`.
+`--workspace <dir>` only selects which workspace this single serve opens
+(e.g. to dodge a workspace held by the Electron desktop).
 Non-loopback `--host` prints a warning: serve has no auth yet, so don't
 expose it to a network you don't trust.
 

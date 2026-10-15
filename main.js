@@ -59,14 +59,20 @@ loadLocalEnv();
 // Headless mode: the packaged binary (AppImage, tarball, or `electron .`)
 // doubles as the `paperite serve` CLI. Boot the standalone server and skip
 // every window / single-instance branch below — the http server keeps the
-// event loop alive. `serve`/`--serve` may sit anywhere in argv:
+// event loop alive. `serve` must be the first user arg:
 // packaged: [binary, serve, ...], dev: [electron, ., serve, ...].
+// A bare includes() check is too wide: `paperite --workspace serve` (a
+// directory literally named "serve") must boot Electron, not headless.
 // `paperite` with no args boots normal Electron; only an explicit serve
 // token enters headless mode. server/index.js owns help/lock/port errors
 // and exits the process itself, so Electron must not create windows after.
-const serveArgs = process.argv.slice(1);
+const serveRawArgs = process.argv.slice(1);
+const serveUserArgs =
+	serveRawArgs[0] === "." || serveRawArgs[0]?.endsWith(".js")
+		? serveRawArgs.slice(1)
+		: serveRawArgs;
 const isServeMode =
-	serveArgs.includes("serve") || serveArgs.includes("--serve");
+	serveUserArgs[0] === "serve" || serveUserArgs[0] === "--serve";
 
 if (isServeMode) {
 	require("./server/index.js");
