@@ -1,5 +1,12 @@
 export type SyncProviderKind = "google-drive" | "convex";
 
+// Cloud-backend kinds behind ONE SyncProvider contract (plan 018). The wire
+// contract itself lives in `@/lib/sync-provider` (and eventually in the
+// `paperite-server` repo as `@paperite/server-api`); this module only
+// describes doc-level pull/push, which is backend-agnostic. `SyncProviderKind`
+// above stays untouched so existing GDrive/Convex call sites keep compiling.
+export type CloudBackendKind = "convex" | "local";
+
 export type SyncSpaceKind = "personal" | "collaborative";
 
 export type SyncSpace = {

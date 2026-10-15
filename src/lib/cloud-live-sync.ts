@@ -1,16 +1,16 @@
 import { useSyncExternalStore } from "react";
 import * as Y from "yjs";
 import { setCloudTransient } from "@/lib/cloud-sync-status";
+import { getDeviceId } from "@/lib/device-id";
+import type { NotesEngine, WorkspaceItem } from "@/lib/storage/types";
+import { useAppStore } from "@/lib/stores/app-store";
 import {
 	appendSharedUpdate,
 	humanizeShareError,
 	removeSharedNote,
 	upsertSharedNote,
 	writeSharedSnapshot,
-} from "@/lib/convex";
-import { getDeviceId } from "@/lib/device-id";
-import type { NotesEngine, WorkspaceItem } from "@/lib/storage/types";
-import { useAppStore } from "@/lib/stores/app-store";
+} from "@/lib/sync-provider";
 import { movePath, topLevelPath } from "@/lib/workspace-paths";
 
 /**
