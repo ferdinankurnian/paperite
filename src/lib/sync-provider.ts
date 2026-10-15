@@ -217,6 +217,11 @@ export function setSyncKind(kind: SyncBackendKind) {
 }
 
 export function setCustomSyncUrl(raw: string) {
+	// No Clerk check here by design (accepted risk, explicit): this only
+	// stores a local preference — it grants zero access by itself. Cloud
+	// mutations ride the Clerk JWT and fail `not_authenticated` without a
+	// session (see getConvexClient); the Settings UI + intent resume is
+	// the UX gate that keeps unsigned users from even reaching this.
 	const normalized = normalizeSyncUrl(raw);
 	if (!normalized) {
 		throw new Error(

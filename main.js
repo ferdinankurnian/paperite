@@ -3003,6 +3003,13 @@ ipcMain.handle("sync:set-google-drive-enabled", async (_event, enabled) => {
 });
 
 ipcMain.handle("sync:connect-google-drive", async () => {
+	// Accepted risk (explicit): this IPC performs Google OAuth with no
+	// Clerk check — main cannot verify a renderer-owned Clerk session.
+	// Enforcement lives in the renderer: the Settings UI gate (lapis 1)
+	// and ElectronSyncEngine.connectGoogleDrive (lapis 2, same file as the
+	// bridge). Raw IPC from DevTools stays possible, but that is the same
+	// trust boundary as reading ~/Documents/Paperite directly — no
+	// privilege is escalated beyond what the local user already has.
 	await ensureWorkspace();
 	return startGoogleDriveConnection();
 });

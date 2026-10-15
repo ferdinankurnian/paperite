@@ -11,6 +11,7 @@ import type {
 	WorkspaceSnapshot,
 	YNoteState,
 } from "./types";
+import { ensureSignedInForCloud } from "@/lib/clerk-auth";
 
 // These engines are only ever constructed by getNotesEngine()/getTrashEngine()/
 // getSyncEngine() after confirming window.electron exists (see notes-engine.ts,
@@ -162,6 +163,15 @@ export class ElectronSyncEngine implements SyncEngine {
 	async connectGoogleDrive(): Promise<
 		{ ok: true } | { ok: false; error: string }
 	> {
+		// Engine-level gate (lapis 2; the Settings UI gate is lapis 1):
+		// Google OAuth binds Drive without any Clerk involvement, so every
+		// in-app path through the engine must hold a Clerk session first.
+		// Raw IPC (DevTools) can still reach main directly — accepted risk,
+		// documented at the main handler: same-machine trust boundary.
+		const allowed = await ensureSignedInForCloud({
+			action: "gdrive-connect",
+		});
+		if (!allowed) return { ok: false, error: "sign_in_required" };
 		return requireElectron().sync.connectGoogleDrive();
 	}
 

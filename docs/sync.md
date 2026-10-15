@@ -1,7 +1,9 @@
 # Sync Architecture
 
 Paperite is powerful and flexible — local is the base, sync is your choice.
-Clerk login (Avalid account) is mandatory. No guest mode.
+Local-first: notes always work without login. Clerk sign-in is required
+only for Google Drive, Paperite+, and custom server sync — never for
+local notes.
 
 ## Modes
 
@@ -65,7 +67,7 @@ Self-host the open-source backend. Two backend kinds behind one
 `SyncProvider` contract — see `plans/018-paperite-server.md`:
 
 - BYO Convex deployment (pick your own region, e.g. us-east-1) + BYO Clerk issuer
-- Own machine (VPS / old PC) as Yjs websocket sync hub (`paperite serve --sync`)
+- Own machine (VPS / old PC) as Yjs websocket sync hub (`paperite serve`)
 
 ```txt
 paperite (desktop) ──┐

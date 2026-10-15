@@ -14,7 +14,9 @@ Paperite is fast, flexible, and extensible:
 - **Advanced when you want it** → bring your own storage / server
 - **Fast on low-spec machines** → if it runs flawless on weak hardware, it's good enough
 
-Clerk login (Avalid account) is required. It binds your identity, your GDrive, and your devices together. No anonymous guest mode — this is for safety, device management, and conflict tracking.
+Local-first: your notes always work without login. Clerk sign-in is required
+only for Google Drive, Paperite+, and custom server sync — it binds your
+identity, your GDrive, and your devices together for those flows.
 
 ## Sync modes
 
@@ -96,7 +98,8 @@ Produces `AppImage`, `deb`, and `tar.gz` in `dist/`.
 
 ## Authentication
 
-Clerk login is mandatory (no guest mode).
+Local notes need no login. Clerk sign-in is required only for Google Drive,
+Paperite+, and custom server sync.
 
 Set your Clerk publishable key in `.env`:
 
