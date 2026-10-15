@@ -61,6 +61,9 @@ loadLocalEnv();
 // every window / single-instance branch below — the http server keeps the
 // event loop alive. `serve`/`--serve` may sit anywhere in argv:
 // packaged: [binary, serve, ...], dev: [electron, ., serve, ...].
+// `paperite` with no args boots normal Electron; only an explicit serve
+// token enters headless mode. server/index.js owns help/lock/port errors
+// and exits the process itself, so Electron must not create windows after.
 const serveArgs = process.argv.slice(1);
 const isServeMode =
 	serveArgs.includes("serve") || serveArgs.includes("--serve");
@@ -3276,6 +3279,36 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 app.whenReady().then(async () => {
 	// Serve mode: server/index.js owns the process lifecycle, no windows.
 	if (isServeMode) return;
+	// Same-workspace Electron+serve would silently split index.sqlite.
+	// Serve holds a per-workspace active.lock — refuse loudly instead.
+	try {
+		const locks = require("./server/lib/locks");
+		const root = workspaceRoot();
+		const wsLock = locks.readWorkspaceLock(root);
+		if (wsLock && locks.isPidAlive(wsLock.pid)) {
+			const holder =
+				wsLock.mode === "serve"
+					? `paperite serve at ${wsLock.url ?? (wsLock.port ? `http://localhost:${wsLock.port}` : "unknown address")}`
+					: "another Paperite process";
+			const message = `Workspace is already open by ${holder} (pid ${wsLock.pid}). Stop paperite serve first, or launch with a separate workspace — sharing index.sqlite splits state.`;
+			console.error(`[paperite] ${message}`);
+			try {
+				dialog.showErrorBox("Paperite workspace is busy", message);
+			} catch {
+				// headless / stub harness — console error is the signal
+			}
+			app.quit();
+			return;
+		}
+		locks.acquireWorkspaceLock(root, { mode: "electron" });
+	} catch (error) {
+		// Lock refusal already exits inside acquireWorkspaceLock; any other
+		// error here must not silently continue with a split sqlite.
+		if (error?.code !== undefined) throw error;
+		console.error(`[paperite] workspace lock failed: ${error.message}`);
+		app.quit();
+		return;
+	}
 	createApplicationMenu();
 	await purgeOldTrashItems();
 	refreshWorkspaceWatchers().catch(() => undefined);
@@ -3293,7 +3326,9 @@ app.whenReady().then(async () => {
 });
 
 // linux: second-instance bukan open-url. Skipped in serve mode —
-// `paperite serve` must run alongside (or instead of) the desktop app.
+// serve owns its own global lockfile (tmp, pid-checked); Electron keeps
+// the single-instance lock. Workspace-level Electron+serve coexistence is
+// refused via .paperite/active.lock (see whenReady above), not silently split.
 const gotLock = isServeMode ? true : app.requestSingleInstanceLock();
 if (!gotLock) {
 	app.quit();
@@ -3324,5 +3359,22 @@ app.on("window-all-closed", () => {
 	workspaceWatchers.clear();
 	indexDb?.close();
 	indexDb = undefined;
+	try {
+		if (!isServeMode) {
+			require("./server/lib/locks").releaseWorkspaceLock(workspaceRoot());
+		}
+	} catch {
+		// best effort
+	}
 	if (process.platform !== "darwin") app.quit();
+});
+
+app.on("will-quit", () => {
+	try {
+		if (!isServeMode) {
+			require("./server/lib/locks").releaseWorkspaceLock(workspaceRoot());
+		}
+	} catch {
+		// best effort
+	}
 });

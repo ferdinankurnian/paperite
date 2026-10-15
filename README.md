@@ -46,10 +46,20 @@ browser (same notes, same `~/Documents/Paperite`):
 ./scripts/paperite.sh serve --workspace ~/Notes   # tarball
 ```
 
+`paperite` with no args boots the Electron desktop app. `paperite serve`
+boots headless: prints the URL and blocks.
+
 Options: `--port` (default 3000), `--host` (default 127.0.0.1),
 `--workspace <dir>`, `--open`, `--no-browser`, `--help`.
-Only one serve instance at a time (any port) — a second boot points you at
-the running one instead of splitting state.
+On `EADDRINUSE` the boot fails hard — it never silently hops ports,
+because the Clerk dashboard allowlist needs a stable port.
+
+Only one serve instance at a time (any port): a pid-checked lockfile in
+tmp guards serve-vs-serve, and a per-workspace `.paperite/active.lock`
+refuses Electron+serve on the same workspace instead of silently
+splitting `index.sqlite`. A second boot points you at the running
+address + workspace instead of starting a second backend. Use
+`--workspace <dir>` for an isolated second instance.
 Non-loopback `--host` prints a warning: serve has no auth yet, so don't
 expose it to a network you don't trust.
 
@@ -59,8 +69,10 @@ Dev equivalent (Vite on 5173 proxies `/api` to the server on 3000):
 bun run dev:server
 ```
 
-The web UI needs its own build (`bun run build:web` → `dist-web/`);
-serving plain `dist/` shows the Electron shell stuck on "Connecting...".
+The web UI needs its own build (`bun run build:web` → `dist-web/` with a
+`.paperite-build.json` stamp); serve prefers `dist-web/`, refuses plain
+`dist/` (Electron shell stuck on "Connecting..."), else runs API-only
+with a log line.
 
 Login is required even in serve mode. Google Drive bind additionally needs
 the serve origin allowlisted in the Clerk dashboard.
