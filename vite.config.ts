@@ -19,6 +19,13 @@ export default defineConfig({
 		// works with same-origin BASE_URL. No prod impact.
 		proxy: {
 			"/api": "http://localhost:3000",
+			// Live-watch socket: the serve WebSocketServer accepts upgrades
+			// on any path, so a dedicated path keeps vite HMR untouched.
+			"/paperite-live": {
+				target: "http://localhost:3000",
+				ws: true,
+				changeOrigin: true,
+			},
 		},
 	},
 	resolve: {

@@ -116,6 +116,10 @@ declare global {
 				search: (query: string) => Promise<NoteSearchResult[]>;
 				readNote: (path: string) => Promise<NoteContent>;
 				readYNote: (path: string) => Promise<YNoteState>;
+				readYDiff: (
+					path: string,
+					stateVector: Uint8Array,
+				) => Promise<{ noteId: string; diff: Uint8Array }>;
 				writeYUpdate: (
 					path: string,
 					update: Uint8Array,

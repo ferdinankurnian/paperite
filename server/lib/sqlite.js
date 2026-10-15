@@ -26,6 +26,7 @@ const openDb = async () => {
 	db.exec(`
 		PRAGMA journal_mode = WAL;
 		PRAGMA synchronous = NORMAL;
+		PRAGMA busy_timeout = 0;
 		CREATE TABLE IF NOT EXISTS notes (
 			id TEXT NOT NULL UNIQUE,
 			path TEXT PRIMARY KEY,
@@ -100,6 +101,47 @@ const addColumnIfMissing = (database, table, column, definition) => {
 };
 
 const createNoteId = (notePath) => revisionKey(notePath);
+
+// Electron + `paperite serve` share one sqlite file in WAL mode. A second
+// writer racing the first gets SQLITE_BUSY — that must surface as a hard,
+// retryable 409, never as a half-written row set (notes updated while FTS
+// lags, or vice versa). All mutating paths below run inside BEGIN IMMEDIATE
+// transactions so a lock fails before any partial state lands.
+const isSqliteBusyError = (error) =>
+	error?.code === "SQLITE_BUSY" ||
+	error?.code === "SQLITE_LOCKED" ||
+	/database (is locked|table is locked)/i.test(error?.message ?? "");
+
+const lockedIndexError = (operation) => {
+	const error = new Error(`note index locked during ${operation} — retry`);
+	error.code = "PAPERITE_LOCKED";
+	error.status = 409;
+	error.retryable = true;
+	return error;
+};
+
+const runInImmediateTransaction = (database, operation, task) => {
+	try {
+		database.exec("BEGIN IMMEDIATE");
+	} catch (error) {
+		if (isSqliteBusyError(error)) throw lockedIndexError(operation);
+		throw error;
+	}
+	try {
+		const result = task();
+		database.exec("COMMIT");
+		return result;
+	} catch (error) {
+		try {
+			database.exec("ROLLBACK");
+		} catch {
+			// best effort — the original error is what matters
+		}
+		if (error?.code === "PAPERITE_LOCKED") throw error;
+		if (isSqliteBusyError(error)) throw lockedIndexError(operation);
+		throw error;
+	}
+};
 
 const createAvailableNoteId = (database, notePath) => {
 	const baseId = createNoteId(notePath);
@@ -213,9 +255,10 @@ const getIndexedNote = async (notePath, stats) => {
 	const pinned = content.pinned === true;
 	const metadata = extractNoteMetadata(content);
 
-	database
-		.prepare(
-			`INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version, pinned)
+	runInImmediateTransaction(database, "index-note", () => {
+		database
+			.prepare(
+				`INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version, pinned)
 		VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT sync_status FROM notes WHERE path = ?), 'local'), COALESCE((SELECT sync_version FROM notes WHERE path = ?), 0) + 1, ?)
 		ON CONFLICT(path) DO UPDATE SET
 			id = excluded.id,
@@ -227,57 +270,58 @@ const getIndexedNote = async (notePath, stats) => {
 			sync_status = excluded.sync_status,
 			sync_version = excluded.sync_version,
 			pinned = excluded.pinned`,
-		)
-		.run(
-			id,
-			normalizedPath,
-			title,
-			preview,
-			stats.mtimeMs,
-			stats.size,
-			Date.now(),
-			normalizedPath,
-			normalizedPath,
-			pinned ? 1 : 0,
+			)
+			.run(
+				id,
+				normalizedPath,
+				title,
+				preview,
+				stats.mtimeMs,
+				stats.size,
+				Date.now(),
+				normalizedPath,
+				normalizedPath,
+				pinned ? 1 : 0,
+			);
+		database.prepare("DELETE FROM note_headings WHERE note_id = ?").run(id);
+		database.prepare("DELETE FROM note_tags WHERE note_id = ?").run(id);
+		database.prepare("DELETE FROM note_tasks WHERE note_id = ?").run(id);
+		database.prepare("DELETE FROM note_backlinks WHERE note_id = ?").run(id);
+
+		const insertHeading = database.prepare(
+			"INSERT INTO note_headings (note_id, depth, text, line) VALUES (?, ?, ?, ?)",
 		);
-	database.prepare("DELETE FROM note_headings WHERE note_id = ?").run(id);
-	database.prepare("DELETE FROM note_tags WHERE note_id = ?").run(id);
-	database.prepare("DELETE FROM note_tasks WHERE note_id = ?").run(id);
-	database.prepare("DELETE FROM note_backlinks WHERE note_id = ?").run(id);
+		const insertTag = database.prepare(
+			"INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)",
+		);
+		const insertTask = database.prepare(
+			"INSERT INTO note_tasks (note_id, text, checked, line) VALUES (?, ?, ?, ?)",
+		);
+		const insertBacklink = database.prepare(
+			"INSERT OR IGNORE INTO note_backlinks (note_id, target) VALUES (?, ?)",
+		);
 
-	const insertHeading = database.prepare(
-		"INSERT INTO note_headings (note_id, depth, text, line) VALUES (?, ?, ?, ?)",
-	);
-	const insertTag = database.prepare(
-		"INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)",
-	);
-	const insertTask = database.prepare(
-		"INSERT INTO note_tasks (note_id, text, checked, line) VALUES (?, ?, ?, ?)",
-	);
-	const insertBacklink = database.prepare(
-		"INSERT OR IGNORE INTO note_backlinks (note_id, target) VALUES (?, ?)",
-	);
+		for (const heading of metadata.headings) {
+			insertHeading.run(id, heading.depth, heading.text, heading.line);
+		}
 
-	for (const heading of metadata.headings) {
-		insertHeading.run(id, heading.depth, heading.text, heading.line);
-	}
+		for (const tag of metadata.tags) {
+			insertTag.run(id, tag);
+		}
 
-	for (const tag of metadata.tags) {
-		insertTag.run(id, tag);
-	}
+		for (const task of metadata.tasks) {
+			insertTask.run(id, task.text, task.checked ? 1 : 0, task.line);
+		}
 
-	for (const task of metadata.tasks) {
-		insertTask.run(id, task.text, task.checked ? 1 : 0, task.line);
-	}
+		for (const backlink of metadata.backlinks) {
+			insertBacklink.run(id, backlink);
+		}
 
-	for (const backlink of metadata.backlinks) {
-		insertBacklink.run(id, backlink);
-	}
-
-	database.prepare("DELETE FROM note_fts WHERE path = ?").run(normalizedPath);
-	database
-		.prepare("INSERT INTO note_fts (path, title, content) VALUES (?, ?, ?)")
-		.run(normalizedPath, title, plainText);
+		database.prepare("DELETE FROM note_fts WHERE path = ?").run(normalizedPath);
+		database
+			.prepare("INSERT INTO note_fts (path, title, content) VALUES (?, ?, ?)")
+			.run(normalizedPath, title, plainText);
+	});
 
 	return {
 		title,
@@ -319,17 +363,19 @@ const deleteIndexedPath = async (itemPath) => {
 
 	const normalized = currentNotePath(itemPath);
 	const rows = db.prepare("SELECT id, path FROM notes").all();
+	const targets = rows.filter((row) => isDescendantPath(normalized, row.path));
+	if (targets.length === 0) return;
 
-	for (const row of rows) {
-		if (!isDescendantPath(normalized, row.path)) continue;
-
-		db.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
-		db.prepare("DELETE FROM note_headings WHERE note_id = ?").run(row.id);
-		db.prepare("DELETE FROM note_tags WHERE note_id = ?").run(row.id);
-		db.prepare("DELETE FROM note_tasks WHERE note_id = ?").run(row.id);
-		db.prepare("DELETE FROM note_backlinks WHERE note_id = ?").run(row.id);
-		db.prepare("DELETE FROM note_fts WHERE path = ?").run(row.path);
-	}
+	runInImmediateTransaction(db, "delete-index", () => {
+		for (const row of targets) {
+			db.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
+			db.prepare("DELETE FROM note_headings WHERE note_id = ?").run(row.id);
+			db.prepare("DELETE FROM note_tags WHERE note_id = ?").run(row.id);
+			db.prepare("DELETE FROM note_tasks WHERE note_id = ?").run(row.id);
+			db.prepare("DELETE FROM note_backlinks WHERE note_id = ?").run(row.id);
+			db.prepare("DELETE FROM note_fts WHERE path = ?").run(row.path);
+		}
+	});
 };
 
 const moveIndexedPath = async (fromPath, toPath) => {
@@ -361,47 +407,58 @@ const moveIndexedPath = async (fromPath, toPath) => {
 			nextTitle = toNoteTitle(path.posix.basename(nextPath));
 		}
 
-		db.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
-		db.prepare(
-			"INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version, remote_id, last_synced_at, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-		).run(
-			row.id || createNoteId(nextPath),
-			nextPath,
-			nextTitle,
-			row.preview,
-			row.mtimeMs,
-			row.size,
-			row.indexedAt,
-			row.syncStatus,
-			row.syncVersion,
-			row.remoteId,
-			row.lastSyncedAt,
-			row.pinned ?? 0,
-		);
-		db.prepare("UPDATE note_fts SET path = ?, title = ? WHERE path = ?").run(
-			nextPath,
-			nextTitle,
-			row.path,
-		);
+		runInImmediateTransaction(db, "move-index", () => {
+			db.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
+			db.prepare(
+				"INSERT INTO notes (id, path, title, preview, mtime_ms, size, indexed_at, sync_status, sync_version, remote_id, last_synced_at, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			).run(
+				row.id || createNoteId(nextPath),
+				nextPath,
+				nextTitle,
+				row.preview,
+				row.mtimeMs,
+				row.size,
+				row.indexedAt,
+				row.syncStatus,
+				row.syncVersion,
+				row.remoteId,
+				row.lastSyncedAt,
+				row.pinned ?? 0,
+			);
+			db.prepare("UPDATE note_fts SET path = ?, title = ? WHERE path = ?").run(
+				nextPath,
+				nextTitle,
+				row.path,
+			);
+		});
+		try {
+			require("./yjs-persist").registerNotePathRedirect(row.path, nextPath);
+		} catch {
+			// redirect map is best-effort; the index move already landed
+		}
 	}
 };
 
 const pruneIndex = async (knownNotePaths) => {
 	const database = await openDb();
 	const rows = database.prepare("SELECT id, path FROM notes").all();
+	const stale = rows.filter((row) => !knownNotePaths.has(row.path));
+	if (stale.length === 0) return;
 
-	for (const row of rows) {
-		if (knownNotePaths.has(row.path)) continue;
-
-		database.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
-		database.prepare("DELETE FROM note_headings WHERE note_id = ?").run(row.id);
-		database.prepare("DELETE FROM note_tags WHERE note_id = ?").run(row.id);
-		database.prepare("DELETE FROM note_tasks WHERE note_id = ?").run(row.id);
-		database
-			.prepare("DELETE FROM note_backlinks WHERE note_id = ?")
-			.run(row.id);
-		database.prepare("DELETE FROM note_fts WHERE path = ?").run(row.path);
-	}
+	runInImmediateTransaction(database, "prune-index", () => {
+		for (const row of stale) {
+			database.prepare("DELETE FROM notes WHERE path = ?").run(row.path);
+			database
+				.prepare("DELETE FROM note_headings WHERE note_id = ?")
+				.run(row.id);
+			database.prepare("DELETE FROM note_tags WHERE note_id = ?").run(row.id);
+			database.prepare("DELETE FROM note_tasks WHERE note_id = ?").run(row.id);
+			database
+				.prepare("DELETE FROM note_backlinks WHERE note_id = ?")
+				.run(row.id);
+			database.prepare("DELETE FROM note_fts WHERE path = ?").run(row.path);
+		}
+	});
 };
 
 const close = () => {
@@ -419,4 +476,5 @@ module.exports = {
 	moveIndexedPath,
 	pruneIndex,
 	close,
+	isSqliteBusyError,
 };

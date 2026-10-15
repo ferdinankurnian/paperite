@@ -65,6 +65,22 @@ export class WebNotesEngine implements NotesEngine {
 		return { noteId, format: "yjs-v1", snapshot };
 	}
 
+	async readYDiff(
+		path: string,
+		stateVector: Uint8Array,
+	): Promise<{ noteId: string; diff: Uint8Array }> {
+		const sv = toBase64Url(stateVector);
+		const res = await fetch(
+			`${BASE_URL}/api/notes/${encodeURIComponent(path)}/yjs/diff?sv=${encodeURIComponent(sv)}`,
+		);
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			throw new Error(`API error ${res.status}: ${body}`);
+		}
+		const noteId = res.headers.get("X-Note-Id") ?? "";
+		return { noteId, diff: new Uint8Array(await res.arrayBuffer()) };
+	}
+
 	async writeYUpdate(
 		path: string,
 		update: Uint8Array,
@@ -94,7 +110,9 @@ export class WebNotesEngine implements NotesEngine {
 		});
 	}
 
-	async pruneAssets(_path: string): Promise<{ ok: true; deleted: number; skipped?: string }> {
+	async pruneAssets(
+		_path: string,
+	): Promise<{ ok: true; deleted: number; skipped?: string }> {
 		return { ok: true, deleted: 0 };
 	}
 
@@ -205,4 +223,13 @@ export class WebTrashEngine {
 	async emptyTrash(): Promise<{ ok: true }> {
 		return api("/api/trash", { method: "DELETE" });
 	}
+}
+
+function toBase64Url(bytes: Uint8Array): string {
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary)
+		.replaceAll("+", "-")
+		.replaceAll("/", "_")
+		.replace(/=+$/g, "");
 }
