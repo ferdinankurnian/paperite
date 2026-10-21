@@ -1,5 +1,7 @@
 /// <reference types="vite/client" />
 
+import type { CredentialStoreResult } from "@/lib/credential-store";
+import type { DeviceAuthStatus } from "@/lib/device-auth";
 import type {
 	NoteContent as StorageNoteContent,
 	NoteSearchResult as StorageNoteSearchResult,
@@ -34,6 +36,7 @@ declare global {
 
 	interface Window {
 		electron?: {
+			workspaceMode?: "local" | "attached";
 			platform: {
 				isMacOS: boolean;
 			};
@@ -73,24 +76,61 @@ declare global {
 			auth: {
 				getPendingCallback: () => Promise<string | null>;
 				startCallbackServer: () => Promise<string>;
+				onBridgeSessionRequest: (
+					callback: (request: {
+						requestId: string;
+						includeToken: boolean;
+					}) => void,
+				) => () => void;
+				respondBridgeSession: (
+					requestId: string,
+					result: Record<string, unknown>,
+				) => void;
+				onBridgeSessionsRequest: (
+					callback: (request: {
+						requestId: string;
+						action?: string;
+						sessionId?: string;
+						metadata?: Record<string, unknown>;
+					}) => void,
+				) => () => void;
+				respondBridgeSessions: (
+					requestId: string,
+					result: Record<string, unknown>,
+				) => void;
+				onBridgeSignOutRequest: (
+					callback: (requestId: string) => void,
+				) => () => void;
+				respondBridgeSignOut: (
+					requestId: string,
+					result: Record<string, unknown>,
+				) => void;
+				getDeviceStatus: () => Promise<DeviceAuthStatus>;
+				claimDevice: (userId: string) => Promise<DeviceAuthStatus>;
+				clearDevice: () => Promise<DeviceAuthStatus>;
+				enableFileStorage: () => Promise<DeviceAuthStatus>;
 			};
 			sync: {
 				getStatus: () => Promise<SyncStatus>;
-				setGoogleDriveEnabled: (
-					enabled: boolean,
-				) => Promise<{ ok: true; googleDriveEnabled: boolean }>;
-				connectGoogleDrive: () => Promise<
-					{ ok: true } | { ok: false; error: string }
-				>;
-				runGoogleDrive: () => Promise<
-					| { ok: true; uploaded: number; downloaded: number }
-					| { ok: false; error: string }
-				>;
-				disconnectGoogleDrive: () => Promise<{ ok: true }>;
+			};
+			personalServer: {
+				getCredential: (connectionId: string) => Promise<string | null>;
+				saveCredential: (
+					connectionId: string,
+					credential: string,
+				) => Promise<CredentialStoreResult>;
+				deleteCredential: (
+					connectionId: string,
+				) => Promise<CredentialStoreResult>;
 			};
 			openExternal: (url: string) => Promise<void>;
 			app: {
 				setTitle: (title: string) => Promise<{ ok: true }>;
+				getDeviceInfo: () => Promise<{
+					hostname: string;
+					platform: string;
+					arch: string;
+				}>;
 			};
 			window: {
 				getState: () => Promise<{ isMaximized: boolean }>;

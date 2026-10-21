@@ -152,6 +152,108 @@ test("direct file write (AI agent) folds into snapshot and appears in diff", asy
 	expect(watcher.getMap("metadata").get("title")).toBe("agent title");
 });
 
+test("fold replaces the body instead of appending (no duplication)", async () => {
+	const notePath = "Inbox/NoDupNote";
+	await seedNote(notePath, noteContent("nodup-id", "v0", "base"));
+
+	const { writeFileAtomic, serializeNoteContent, resolveNoteContentPath } =
+		workspace;
+	const agentContent = noteContent("nodup-id", "agent title", "agent body");
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	await writeFileAtomic(
+		resolveNoteContentPath(notePath),
+		serializeNoteContent(agentContent),
+	);
+
+	const folded = await yjsPersist.readLocalYNoteState(notePath);
+	// Exact match: the old "base" paragraph must be gone, not kept next to
+	// the folded body. (The old test only asserted `contains`, which let an
+	// append-instead-of-replace merge slip through and duplicate the note on
+	// every save/fold pass without bound.)
+	expect(fragmentText(folded.snapshot)).toBe("agent body");
+});
+
+test("repeated folds of unchanged file content are idempotent", async () => {
+	const notePath = "Inbox/IdempotentNote";
+	await seedNote(notePath, noteContent("idem-id", "v0", "base"));
+
+	const { writeFileAtomic, serializeNoteContent, resolveNoteContentPath } =
+		workspace;
+	const agentContent = noteContent("idem-id", "agent title", "agent body");
+
+	// Fold three times (file keeps looking "newer" than the manifest), like
+	// the poll loop does across derived autosaves.
+	for (let i = 0; i < 3; i++) {
+		await new Promise((resolve) => setTimeout(resolve, 15));
+		await writeFileAtomic(
+			resolveNoteContentPath(notePath),
+			serializeNoteContent(agentContent),
+		);
+		await yjsPersist.readLocalYNoteState(notePath);
+	}
+
+	const final = await yjsPersist.readLocalYNoteState(notePath);
+	expect(fragmentText(final.snapshot)).toBe("agent body");
+});
+
+test("derived autosave attr shape does not fold (no cursor teleport)", async () => {
+	const notePath = "Inbox/NoTeleportNote";
+	// File shape EXACTLY as the TipTap editor saves it: every paragraph
+	// carries attrs.textAlign (null when unset). y-prosemirror skips null
+	// attrs when encoding, so the live fragment never has them — that shape
+	// difference must not count as a fold trigger. Before the
+	// canonicalFoldContent fix, every save echo replayed the whole body
+	// (delete + fresh-ID insert) and teleported the live cursor to the end
+	// of the document even though the text was byte-identical.
+	const editorFile = (id: string, title: string, texts: string[]) => ({
+		id,
+		title,
+		type: "doc",
+		content: texts.map((text) => ({
+			type: "paragraph",
+			attrs: { textAlign: null },
+			...(text ? { content: [{ type: "text", text }] } : {}),
+		})),
+	});
+
+	await seedNote(notePath, editorFile("teleport-id", "Untitled", ["satu"]));
+
+	// Live surface types a second paragraph (attr-less, like y-prosemirror
+	// encodes it) and persists the keystroke.
+	const base = await yjsPersist.readLocalYNoteState(notePath);
+	const live = new Y.Doc();
+	Y.applyUpdate(live, base.snapshot);
+	const keystroke = typeParagraph(base.snapshot, "dua");
+	await yjsPersist.appendLocalYNoteUpdate(notePath, keystroke);
+	Y.applyUpdate(live, keystroke);
+	const liveVector = Y.encodeStateVector(live);
+
+	const snapshotBefore = (await yjsPersist.readLocalYNoteState(notePath))
+		.snapshot;
+
+	// Derived autosave rewrites note.json from editor state (WITH
+	// textAlign:null on every paragraph, including the just-typed one)
+	// without touching the snapshot — then the file watcher asks for a diff.
+	const { writeFileAtomic, serializeNoteContent, resolveNoteContentPath } =
+		workspace;
+	await new Promise((resolve) => setTimeout(resolve, 15));
+	await writeFileAtomic(
+		resolveNoteContentPath(notePath),
+		serializeNoteContent(editorFile("teleport-id", "Untitled", ["satu", "dua"])),
+	);
+
+	const delta = await yjsPersist.readLocalYNoteDiff(notePath, liveVector);
+	// Converged: no fold replay, so no delete+insert hits the live doc and
+	// the cursor stays where the user left it.
+	expect(delta.diff.length).toBe(0);
+
+	const snapshotAfter = (await yjsPersist.readLocalYNoteState(notePath))
+		.snapshot;
+	expect(Buffer.from(snapshotAfter)).toEqual(Buffer.from(snapshotBefore));
+	expect(fragmentText(snapshotAfter)).toBe("satu\ndua");
+	live.destroy();
+});
+
 test("diff returns only unseen bytes and empty diff when converged", async () => {
 	const notePath = "Inbox/DiffNote";
 	await seedNote(notePath, noteContent("diff-id", "v0", "base"));

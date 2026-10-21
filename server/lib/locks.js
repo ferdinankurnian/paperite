@@ -45,18 +45,36 @@ const serveLockAddress = (lock) => {
 // Stale locks (crash without cleanup) are detected via pid liveness.
 // Exits the process on conflict — callers must not continue.
 const acquireServeLock = (info) => {
-	const existing = readServeLock();
-	if (existing && isPidAlive(existing.pid)) {
-		const where = serveLockAddress(existing);
-		console.error(
-			`[paperite] already serving at ${where} (pid ${existing.pid}, workspace ${existing.workspace ?? "?"}) — stop it first`,
-		);
-		process.exit(1);
+	const lock = serveLockPath();
+	const payload = JSON.stringify({ ...info, pid: process.pid, startedAt: Date.now() });
+	for (let attempt = 0; attempt < 2; attempt += 1) {
+		try {
+			const fd = fsSync.openSync(lock, "wx");
+			try {
+				fsSync.writeFileSync(fd, payload);
+			} finally {
+				fsSync.closeSync(fd);
+			}
+			return;
+		} catch (error) {
+			if (error?.code !== "EEXIST") throw error;
+			const existing = readServeLock();
+			if (existing && isPidAlive(existing.pid)) {
+				const where = serveLockAddress(existing);
+				console.error(
+					`[paperite] already serving at ${where} (pid ${existing.pid}, workspace ${existing.workspace ?? "?"}) — stop it first`,
+				);
+				process.exit(1);
+			}
+			try {
+				fsSync.unlinkSync(lock);
+			} catch {
+				// Another contender may be replacing the stale lock; retry the
+				// exclusive create and let the winner be authoritative.
+			}
+		}
 	}
-	fsSync.writeFileSync(
-		serveLockPath(),
-		JSON.stringify({ ...info, pid: process.pid, startedAt: Date.now() }),
-	);
+	throw new Error("could not acquire serve lock");
 };
 
 const releaseServeLock = () => {
@@ -88,13 +106,8 @@ const readWorkspaceLock = (workspaceDir) => {
 };
 
 const acquireWorkspaceLock = (workspaceDir, info) => {
-	let existing = null;
-	try {
-		existing = readWorkspaceLock(workspaceDir);
-	} catch {
-		existing = null;
-	}
-	if (existing && isPidAlive(existing.pid)) {
+	const lock = workspaceLockPath(workspaceDir);
+	const reportConflict = (existing) => {
 		const holder =
 			existing.mode === "serve"
 				? `paperite serve at ${existing.url ?? (existing.port ? `http://localhost:${existing.port}` : "unknown address")}`
@@ -111,15 +124,34 @@ const acquireWorkspaceLock = (workspaceDir, info) => {
 			`[paperite] stop the other process first, or use --workspace <dir> for a separate workspace.`,
 		);
 		process.exit(1);
-	}
+	};
 	try {
 		fsSync.mkdirSync(path.join(workspaceDir, ".paperite"), {
 			recursive: true,
 		});
-		fsSync.writeFileSync(
-			workspaceLockPath(workspaceDir),
-			JSON.stringify({ ...info, pid: process.pid, startedAt: Date.now() }),
-		);
+		const payload = JSON.stringify({ ...info, pid: process.pid, startedAt: Date.now() });
+		for (let attempt = 0; attempt < 2; attempt += 1) {
+			try {
+				const fd = fsSync.openSync(lock, "wx");
+				try {
+					fsSync.writeFileSync(fd, payload);
+				} finally {
+					fsSync.closeSync(fd);
+				}
+				return;
+			} catch (error) {
+				if (error?.code !== "EEXIST") throw error;
+				const existing = readWorkspaceLock(workspaceDir);
+				if (existing && isPidAlive(existing.pid)) reportConflict(existing);
+				try {
+					fsSync.unlinkSync(lock);
+				} catch {
+					// Retry the exclusive create; a concurrent winner will be
+					// reported deterministically on the next iteration.
+				}
+			}
+		}
+		throw new Error("could not acquire workspace lock");
 	} catch (error) {
 		console.error(`[paperite] could not lock workspace: ${error.message}`);
 		process.exit(1);

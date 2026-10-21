@@ -1,5 +1,5 @@
 import { useRouterState } from "@tanstack/react-router";
-import { CloudAlert, CloudCheck, CloudOff, CloudSync } from "lucide-react";
+import { CloudAlert, CloudCheck, CloudSync } from "lucide-react";
 import { memo, useEffect, useState } from "react";
 import { ExportQueue } from "@/components/export-queue";
 import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
@@ -28,7 +28,7 @@ import type { CommandId } from "@/lib/commands";
 import { formatShortcut } from "@/lib/shortcuts";
 import { useAppStore } from "@/lib/stores/app-store";
 import { useEditorUiStore } from "@/lib/stores/editor-ui-store";
-import { getSyncEngine, onSyncChanged } from "@/lib/sync-engine";
+import { getCloudSpaceId } from "@/lib/space-sync-targets";
 import { cn } from "@/lib/utils";
 
 const fallbackTitle = "Paperite";
@@ -116,7 +116,6 @@ export function AppTitlebar() {
 			{isMacOS ? (
 				<div className="app-region-no-drag ml-auto flex h-full items-stretch justify-end">
 					<ExportQueue />
-					<SyncIndicator />
 					<CloudSpaceIndicator />
 				</div>
 			) : (
@@ -415,7 +414,6 @@ const WindowControls = memo(function WindowControls() {
 	return (
 		<div className="app-region-no-drag ml-auto flex h-full items-stretch justify-end">
 			<ExportQueue />
-			<SyncIndicator />
 			<CloudSpaceIndicator />
 			{!closeButtonOnly && (
 				<>
@@ -441,97 +439,9 @@ const WindowControls = memo(function WindowControls() {
 	);
 });
 
-function SyncIndicator() {
-	const [status, setStatus] = useState<SyncStatus | null>(null);
-	const syncEngine = getSyncEngine();
-
-	useEffect(() => {
-		const refreshStatus = () => {
-			syncEngine
-				?.getStatus()
-				.then(setStatus)
-				.catch(() => undefined);
-		};
-
-		refreshStatus();
-		return onSyncChanged(refreshStatus);
-	}, [syncEngine]);
-
-	const googleDrive = status?.googleDrive;
-	if (!googleDrive?.configured || !googleDrive.connected) return null;
-
-	const state = googleDrive.lastError
-		? "error"
-		: googleDrive.syncing
-			? "syncing"
-			: googleDrive.enabled
-				? "synced"
-				: "paused";
-	const label =
-		state === "error"
-			? "Sync error"
-			: state === "syncing"
-				? "Syncing"
-				: state === "paused"
-					? "Sync off"
-					: "Synced";
-	const lastSynced = googleDrive.lastSyncedAt
-		? new Date(googleDrive.lastSyncedAt).toLocaleTimeString([], {
-				hour: "2-digit",
-				minute: "2-digit",
-			})
-		: "Not yet";
-	const friendlyError = googleDrive.lastError
-		? friendlySyncError(googleDrive.lastError)
-		: null;
-
-	const Icon =
-		state === "syncing"
-			? CloudSync
-			: state === "synced"
-				? CloudCheck
-				: state === "paused"
-					? CloudOff
-					: CloudAlert;
-
-	return (
-		<HoverCard openDelay={150} closeDelay={80}>
-			<HoverCardTrigger asChild>
-				<button
-					type="button"
-					aria-label={label}
-					className="flex h-full w-8 items-center justify-center"
-				>
-					<Icon
-						className={cn(
-							"size-3.5",
-							state === "syncing" && "animate-pulse text-sky-400",
-							state === "synced" && "text-emerald-500",
-							state === "paused" && "text-amber-500",
-							state === "error" && "text-destructive",
-						)}
-					/>
-				</button>
-			</HoverCardTrigger>
-			<HoverCardContent side="bottom" align="end" className="w-64 text-xs">
-				<div className="space-y-1.5">
-					<div className="flex items-center justify-between gap-3">
-						<span className="font-medium text-foreground">Google Drive</span>
-						<span className="text-muted-foreground">{label}</span>
-					</div>
-					<p className="text-muted-foreground">Last synced: {lastSynced}</p>
-					{friendlyError ? (
-						<p className="text-destructive">{friendlyError}</p>
-					) : null}
-				</div>
-			</HoverCardContent>
-		</HoverCard>
-	);
-}
-
 function CloudSpaceIndicator() {
 	const activeSpacePath = useAppStore((s) => s.activeSpacePath);
-	const cloudSpaceId = useAppStore((s) => s.cloudSpaceLinks[activeSpacePath]);
+	const cloudSpaceId = useAppStore((s) => getCloudSpaceId(s, activeSpacePath));
 	const transient = useCloudTransient(activeSpacePath);
 	const pending = useLiveSyncPending(activeSpacePath);
 
@@ -605,24 +515,6 @@ function CloudSpaceIndicator() {
 			</HoverCardContent>
 		</HoverCard>
 	);
-}
-
-function friendlySyncError(error: string) {
-	if (
-		error.includes("Properties and app properties are limited to 124 bytes")
-	) {
-		return "Sync metadata is too large. Shorten the note path or sync again after the Drive metadata fix.";
-	}
-
-	if (error.includes("Google Drive API has not been used")) {
-		return "Google Drive API is disabled for this project. Enable it in Google Cloud, then sync again.";
-	}
-
-	if (error.includes("insufficient") || error.includes("permission")) {
-		return "Google Drive needs permission again. Disconnect, reconnect, then sync.";
-	}
-
-	return "Google Drive sync failed. Try syncing again.";
 }
 
 const WindowControl = memo(function WindowControl({

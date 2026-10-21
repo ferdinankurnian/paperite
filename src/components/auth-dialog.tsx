@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { DesktopSignInPrompt } from "@/components/desktop-signin-prompt";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -7,6 +8,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import { isBrowserRenderer } from "@/lib/auth-bridge";
 import { isClerkConfigured } from "@/lib/clerk";
 import { continueWithGoogle } from "@/lib/clerk-auth";
 
@@ -20,6 +22,7 @@ export function AuthDialog({
 	const [isLoading, setIsLoading] = useState(false);
 	const [errorMessage, setErrorMessage] = useState<string | null>(null);
 	const [canRetry, setCanRetry] = useState(false);
+	const isBrowser = isBrowserRenderer();
 
 	// Auth callbacks are handled globally (RootLayout). This dialog only
 	// reflects the result.
@@ -96,27 +99,33 @@ export function AuthDialog({
 					</DialogHeader>
 
 					<div className="mt-6">
-						<Button
-							type="button"
-							onClick={loginWithGoogle}
-							className="h-11 w-full gap-2 bg-[#f4f3ef] text-[#161718] transition-[transform,background-color,box-shadow] hover:bg-white hover:shadow-lg active:scale-[0.98]"
-							disabled={isLoading}
-						>
-							<img src="google.svg" alt="" className="size-4" />
-							{isLoading ? "Opening browser..." : "Continue with Google"}
-						</Button>
-						{isLoading && canRetry ? (
-							<p className="mt-3 text-center text-xs text-muted-foreground">
-								No browser opened?{" "}
-								<button
+						{isBrowser ? (
+							<DesktopSignInPrompt onSignedIn={() => onOpenChange(false)} />
+						) : (
+							<>
+								<Button
 									type="button"
 									onClick={loginWithGoogle}
-									className="underline underline-offset-2 transition-colors hover:text-foreground"
+									className="h-11 w-full gap-2 bg-[#f4f3ef] text-[#161718] transition-[transform,background-color,box-shadow] hover:bg-white hover:shadow-lg active:scale-[0.98]"
+									disabled={isLoading}
 								>
-									Click here to open it again
-								</button>
-							</p>
-						) : null}
+									<img src="google.svg" alt="" className="size-4" />
+									{isLoading ? "Opening browser..." : "Continue with Google"}
+								</Button>
+								{isLoading && canRetry ? (
+									<p className="mt-3 text-center text-xs text-muted-foreground">
+										No browser opened?{" "}
+										<button
+											type="button"
+											onClick={loginWithGoogle}
+											className="underline underline-offset-2 transition-colors hover:text-foreground"
+										>
+											Click here to open it again
+										</button>
+									</p>
+								) : null}
+							</>
+						)}
 						{errorMessage ? (
 							<p className="mt-3 text-center text-xs text-destructive">
 								{errorMessage}

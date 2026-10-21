@@ -1,3 +1,4 @@
+import { getBridgeSession, isBrowserRenderer } from "@/lib/auth-bridge";
 import {
 	clerk,
 	handleClerkRedirect,
@@ -44,6 +45,12 @@ export async function resolveAuthCallbackUrl(): Promise<string> {
  * `external_account_not_found` (see Clerk Logs: oauth_callback.failed).
  */
 export async function continueWithGoogle() {
+	if (isBrowserRenderer()) {
+		throw new Error(
+			"Sign in from the Paperite desktop app — the browser follows that session.",
+		);
+	}
+
 	await loadClerk();
 	const signUp = clerk.client?.signUp;
 	if (!signUp) throw new Error("Clerk sign-up is unavailable.");
@@ -60,15 +67,12 @@ export { handleClerkRedirect };
 
 /**
  * Cloud gate (plan 016 revised 2026-10-15): local notes always work, but
- * GDrive / Paperite+ / BYO require a Clerk session. Clicking one while
+ * Paperite+ / BYO require a Clerk session. Clicking one while
  * signed out must NOT fail silently into guest mode — it stores the
  * intent, opens the sign-in dialog, and the caller resumes the flow
  * after `paperite:auth-success` via `takePendingCloudIntent()`.
  */
-export type PendingCloudAction =
-	| "gdrive-connect"
-	| "paperite-join"
-	| "byo-save";
+export type PendingCloudAction = "paperite-join" | "byo-save";
 
 export type PendingCloudIntent = {
 	action: PendingCloudAction;
@@ -93,11 +97,7 @@ export function takePendingCloudIntent(): PendingCloudIntent | null {
 		window.localStorage.removeItem(pendingCloudIntentKey);
 		if (!raw) return null;
 		const parsed = JSON.parse(raw) as PendingCloudIntent;
-		if (
-			parsed?.action === "gdrive-connect" ||
-			parsed?.action === "paperite-join" ||
-			parsed?.action === "byo-save"
-		) {
+		if (parsed?.action === "paperite-join" || parsed?.action === "byo-save") {
 			return parsed;
 		}
 		return null;
@@ -117,6 +117,14 @@ export async function ensureSignedInForCloud(
 	intent: PendingCloudIntent,
 ): Promise<boolean> {
 	if (!isClerkConfigured()) return false;
+
+	if (isBrowserRenderer()) {
+		const bridge = await getBridgeSession();
+		if (bridge?.signedIn) return true;
+		setPendingCloudIntent(intent);
+		window.dispatchEvent(new Event("paperite:open-auth"));
+		return false;
+	}
 
 	try {
 		await loadClerk();

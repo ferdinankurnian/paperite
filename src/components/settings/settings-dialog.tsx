@@ -1,16 +1,10 @@
 import {
 	CloudIcon,
 	FileTextIcon,
-	IndentIcon,
 	KeyboardIcon,
-	LaptopIcon,
 	LogOutIcon,
-	MoonIcon,
 	PaletteIcon,
-	PanelLeftIcon,
 	SparklesIcon,
-	SunIcon,
-	UserRoundIcon,
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { AccountSessions } from "@/components/settings/account-sessions";
@@ -22,23 +16,22 @@ import { Button } from "@/components/ui/button";
 import {
 	Dialog,
 	DialogContent,
-	DialogDescription,
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { isBrowserRenderer } from "@/lib/auth-bridge";
+import { useDeviceLabel } from "@/lib/device-info";
 import type { PageFormat } from "@/lib/storage/types";
 import { useAppStore } from "@/lib/stores/app-store";
 import closeBtnAll from "/previews/close-btn-all.png";
 import closeBtnCloseOnly from "/previews/close-btn-close-only.png";
-import notePreviewsHide from "/previews/note-previews-hide.png";
-import notePreviewsShow from "/previews/note-previews-show.png";
 
 const themes = [
-	{ icon: SunIcon, label: "Light", value: "light" },
-	{ icon: MoonIcon, label: "Dark", value: "dark" },
-	{ icon: LaptopIcon, label: "System", value: "system" },
+	{ label: "Light", value: "light" },
+	{ label: "Dark", value: "dark" },
+	{ label: "System", value: "system" },
 ] as const;
 
 // Deterministic gibberish that keeps the email shape (@ and dots) but
@@ -93,6 +86,7 @@ export function SettingsDialog({
 	const [showEmail, setShowEmail] = useState(false);
 	const fakeEmail = useMemo(() => scrambleEmail(user.email), [user.email]);
 	const { theme, setTheme } = useTheme();
+	const deviceLabel = useDeviceLabel();
 	const defaultPageFormat = useAppStore((s) => s.defaultPageFormat);
 	const setDefaultPageFormat = useAppStore((s) => s.setDefaultPageFormat);
 
@@ -100,14 +94,42 @@ export function SettingsDialog({
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="h-[min(560px,calc(100svh-2rem))] max-w-3xl gap-0 overflow-hidden p-0 sm:max-w-5xl">
 				<div className="grid min-h-0 grid-cols-[225px_minmax(0,1fr)]">
-					<aside className="border-r bg-muted/35 p-2">
-						<p className="px-2 py-2 text-lg font-semibold">Settings</p>
+					<aside className="bg-muted/35 p-2">
+						{betaEnabled ? (
+							<Button
+								type="button"
+								variant={activeTab === "account" ? "secondary" : "ghost"}
+								onClick={() => onActiveTabChange("account")}
+								size="lg"
+								className="h-auto w-full justify-start gap-2.5 py-2 focus-visible:border-transparent focus-visible:ring-0"
+							>
+								<Avatar className="size-8 shrink-0 rounded-full">
+									<AvatarImage src={user.avatar} alt={user.name} />
+									<AvatarFallback className="rounded-full text-xs">
+										{user.name
+											.split(" ")
+											.map((n) => n[0])
+											.join("")
+											.slice(0, 2)
+											.toUpperCase()}
+									</AvatarFallback>
+								</Avatar>
+								<span className="grid min-w-0 flex-1 text-left leading-tight">
+									<span className="truncate text-sm font-medium">
+										{user.name}
+									</span>
+									<span className="truncate text-xs text-muted-foreground">
+										{deviceLabel}
+									</span>
+								</span>
+							</Button>
+						) : null}
 						<Button
 							type="button"
 							variant={activeTab === "general" ? "secondary" : "ghost"}
 							onClick={() => onActiveTabChange("general")}
 							size="lg"
-							className="w-full justify-start"
+							className="w-full justify-start focus-visible:border-transparent focus-visible:ring-0"
 						>
 							<PaletteIcon className="size-4" />
 							General
@@ -117,7 +139,7 @@ export function SettingsDialog({
 							variant={activeTab === "note" ? "secondary" : "ghost"}
 							onClick={() => onActiveTabChange("note")}
 							size="lg"
-							className="w-full justify-start"
+							className="w-full justify-start focus-visible:border-transparent focus-visible:ring-0"
 						>
 							<FileTextIcon className="size-4" />
 							Note
@@ -127,7 +149,7 @@ export function SettingsDialog({
 							variant={activeTab === "keyboard" ? "secondary" : "ghost"}
 							onClick={() => onActiveTabChange("keyboard")}
 							size="lg"
-							className="w-full justify-start"
+							className="w-full justify-start focus-visible:border-transparent focus-visible:ring-0"
 						>
 							<KeyboardIcon className="size-4" />
 							Keyboard
@@ -137,42 +159,24 @@ export function SettingsDialog({
 							variant={activeTab === "sync" ? "secondary" : "ghost"}
 							onClick={() => onActiveTabChange("sync")}
 							size="lg"
-							className="w-full justify-start"
+							className="w-full justify-start focus-visible:border-transparent focus-visible:ring-0"
 						>
 							<CloudIcon className="size-4" />
 							Sync
 						</Button>
-						{betaEnabled ? (
-							<Button
-								type="button"
-								variant={activeTab === "account" ? "secondary" : "ghost"}
-								onClick={() => onActiveTabChange("account")}
-								size="lg"
-								className="w-full justify-start"
-							>
-								<UserRoundIcon className="size-4" />
-								Account
-							</Button>
-						) : null}
 					</aside>
 					<div className="min-w-0 overflow-y-auto p-5 sm:p-6">
 						{activeTab === "general" && (
 							<>
-								<DialogHeader className="mb-5 gap-1">
+								<DialogHeader className="mb-5">
 									<DialogTitle className="text-lg">General</DialogTitle>
-									<DialogDescription>
-										Manage your Paperite preferences.
-									</DialogDescription>
 								</DialogHeader>
-								<section className="rounded-xl bg-muted/45 p-4">
-									<div className="mb-3 flex items-center gap-2">
-										<PaletteIcon className="size-4 text-muted-foreground" />
-										<div>
-											<h3 className="text-sm font-medium">Theme</h3>
-											<p className="text-xs text-muted-foreground">
-												Choose your preferred color scheme.
-											</p>
-										</div>
+								<section className="flex items-center justify-between gap-4 rounded-xl bg-muted/45 p-4">
+									<div>
+										<h3 className="text-sm font-medium">Theme</h3>
+										<p className="text-xs text-muted-foreground">
+											Choose your preferred color scheme.
+										</p>
 									</div>
 									<Tabs
 										value={theme}
@@ -180,14 +184,13 @@ export function SettingsDialog({
 											setTheme(value as "light" | "dark" | "system")
 										}
 									>
-										<TabsList className="grid h-10 w-full grid-cols-3">
-											{themes.map(({ icon: Icon, label, value }) => (
+										<TabsList className="grid h-10 w-64 grid-cols-3">
+											{themes.map(({ label, value }) => (
 												<TabsTrigger
 													key={value}
 													value={value}
-													className="h-full gap-1.5 transition-[color,background-color,box-shadow,transform] active:scale-[0.96]"
+													className="h-full transition-[color,background-color,box-shadow,transform] active:scale-[0.96]"
 												>
-													<Icon className="size-4" />
 													{label}
 												</TabsTrigger>
 											))}
@@ -202,44 +205,21 @@ export function SettingsDialog({
 												Show note content previews in the sidebar.
 											</p>
 										</div>
-										<div className="flex gap-2">
-											<button
-												type="button"
-												onClick={() => onSetShowNotePreview(true)}
-												className={`group relative overflow-hidden rounded-lg border-2 transition-all ${
-													showNotePreview
-														? "border-primary ring-2 ring-primary/20"
-														: "border-transparent hover:border-muted-foreground/20"
-												}`}
-											>
-												<img
-													src={notePreviewsShow}
-													alt="Show"
-													className="h-16 w-20 object-cover object-left"
-												/>
-												<span className="block py-1 text-center text-[10px] font-medium">
+										<Tabs
+											value={showNotePreview ? "show" : "none"}
+											onValueChange={(value) =>
+												onSetShowNotePreview(value === "show")
+											}
+										>
+											<TabsList className="grid h-9 w-48 grid-cols-2">
+												<TabsTrigger value="show" className="h-full">
 													Show
-												</span>
-											</button>
-											<button
-												type="button"
-												onClick={() => onSetShowNotePreview(false)}
-												className={`group relative overflow-hidden rounded-lg border-2 transition-all ${
-													!showNotePreview
-														? "border-primary ring-2 ring-primary/20"
-														: "border-transparent hover:border-muted-foreground/20"
-												}`}
-											>
-												<img
-													src={notePreviewsHide}
-													alt="Hide"
-													className="h-16 w-20 object-cover object-left"
-												/>
-												<span className="block py-1 text-center text-[10px] font-medium">
-													Hide
-												</span>
-											</button>
-										</div>
+												</TabsTrigger>
+												<TabsTrigger value="none" className="h-full">
+													None
+												</TabsTrigger>
+											</TabsList>
+										</Tabs>
 									</div>
 								</section>
 								<section className="mt-4 rounded-xl bg-muted/45 p-4">
@@ -292,8 +272,7 @@ export function SettingsDialog({
 								</section>
 								<section className="mt-4 rounded-xl bg-muted/45 p-4">
 									<div className="flex items-center justify-between gap-4">
-										<div className="flex items-center gap-2">
-											<PanelLeftIcon className="size-4 text-muted-foreground" />
+										<div>
 											<div>
 												<h3 className="text-sm font-medium">
 													Follow active tab
@@ -304,27 +283,32 @@ export function SettingsDialog({
 												</p>
 											</div>
 										</div>
-										<Switch
-											checked={syncSidebarWithActiveTab}
-											onCheckedChange={(checked) =>
-												onSetSyncSidebarWithActiveTab(checked)
+										<Tabs
+											value={syncSidebarWithActiveTab ? "follow" : "stay"}
+											onValueChange={(value) =>
+												onSetSyncSidebarWithActiveTab(value === "follow")
 											}
-										/>
+										>
+											<TabsList className="grid h-9 w-48 grid-cols-2">
+												<TabsTrigger value="follow" className="h-full">
+													Follow
+												</TabsTrigger>
+												<TabsTrigger value="stay" className="h-full">
+													Stay
+												</TabsTrigger>
+											</TabsList>
+										</Tabs>
 									</div>
 								</section>
 							</>
 						)}
 						{activeTab === "note" && (
 							<>
-								<DialogHeader className="mb-5 gap-1">
+								<DialogHeader className="mb-5">
 									<DialogTitle className="text-lg">Note</DialogTitle>
-									<DialogDescription>
-										Manage your note preferences and defaults.
-									</DialogDescription>
 								</DialogHeader>
 								<section className="rounded-xl bg-muted/45 p-4">
-									<div className="mb-3 flex items-center gap-2">
-										<IndentIcon className="size-4 text-muted-foreground" />
+									<div className="mb-3">
 										<div>
 											<h3 className="text-sm font-medium">Note defaults</h3>
 											<p className="text-xs text-muted-foreground">
@@ -421,17 +405,32 @@ export function SettingsDialog({
 												</TabsList>
 											</Tabs>
 										</div>
+										<div className="flex items-center justify-between gap-4">
+											<div>
+												<p className="text-sm font-medium">
+													Block drag handles
+												</p>
+												<p className="text-xs text-muted-foreground">
+													Show grips to reorder blocks. Per-note setup can
+													override this.
+												</p>
+											</div>
+											<Switch
+												checked={defaultPageFormat.dragHandle}
+												onCheckedChange={(dragHandle) =>
+													setDefaultPageFormat({ dragHandle })
+												}
+												aria-label="Block drag handles default"
+											/>
+										</div>
 									</div>
 								</section>
 							</>
 						)}
 						{betaEnabled && activeTab === "account" && (
 							<>
-								<DialogHeader className="mb-5 gap-1">
+								<DialogHeader className="mb-5">
 									<DialogTitle className="text-lg">Account</DialogTitle>
-									<DialogDescription>
-										Manage your account and preferences.
-									</DialogDescription>
 								</DialogHeader>
 								<section className="rounded-xl bg-muted/45 p-4">
 									<div className="flex items-center justify-between gap-3">
@@ -472,16 +471,22 @@ export function SettingsDialog({
 												)}
 											</div>
 										</div>
-										<Button
-											type="button"
-											variant="destructive"
-											size="sm"
-											className="shrink-0"
-											onClick={onRequestLogOut}
-										>
-											<LogOutIcon className="size-4" />
-											Sign Out
-										</Button>
+										{isBrowserRenderer() ? (
+											<p className="shrink-0 text-xs text-muted-foreground">
+												Signed in via the desktop app
+											</p>
+										) : (
+											<Button
+												type="button"
+												variant="destructive"
+												size="sm"
+												className="shrink-0"
+												onClick={onRequestLogOut}
+											>
+												<LogOutIcon className="size-4" />
+												Sign Out
+											</Button>
+										)}
 									</div>
 								</section>
 								<section className="mt-4 rounded-xl bg-muted/45 p-4">

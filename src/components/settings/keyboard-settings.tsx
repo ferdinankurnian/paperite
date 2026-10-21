@@ -2,11 +2,7 @@ import { RotateCcwIcon, SearchIcon } from "lucide-react";
 import { type KeyboardEvent, useMemo, useState } from "react";
 import { useKeyboardShortcuts } from "@/components/keyboard-shortcuts-provider";
 import { Button } from "@/components/ui/button";
-import {
-	DialogDescription,
-	DialogHeader,
-	DialogTitle,
-} from "@/components/ui/dialog";
+import { DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
 	type CommandDefinition,
@@ -109,11 +105,8 @@ export function KeyboardSettings() {
 
 	return (
 		<>
-			<DialogHeader className="mb-5 gap-1">
+			<DialogHeader className="mb-5">
 				<DialogTitle className="text-lg">Keyboard</DialogTitle>
-				<DialogDescription>
-					Customize Paperite shortcuts. Changes are saved immediately.
-				</DialogDescription>
 			</DialogHeader>
 			<div className="mb-4 flex items-center gap-2">
 				<div className="relative min-w-0 flex-1">
@@ -133,7 +126,7 @@ export function KeyboardSettings() {
 			<div className="space-y-4">
 				{Object.entries(groupedCommands).map(([category, categoryCommands]) => (
 					<section key={category} className="space-y-2">
-						<h3 className="px-1 text-xs font-medium text-muted-foreground uppercase tracking-wide">
+						<h3 className="px-1 text-xs font-medium text-muted-foreground">
 							{category}
 						</h3>
 						<div className="overflow-hidden rounded-xl bg-muted/45">

@@ -6,6 +6,10 @@ import type {
 	WorkspaceSnapshot,
 	WorkspaceSpace,
 } from "@/lib/storage/types";
+import {
+	normalizeSpaceSyncTargets,
+	type ConnectionMetadata,
+} from "@/lib/space-sync-targets";
 import { topLevelPath, unique } from "@/lib/workspace-paths";
 
 export function normalizePageFormat(
@@ -21,6 +25,7 @@ export function normalizePageFormat(
 		lineHeight: format?.lineHeight === "1.5" ? "1.5" : "normal",
 		paragraphSpacing:
 			format?.paragraphSpacing === "spacious" ? "spacious" : "none",
+		dragHandle: format?.dragHandle === true,
 	};
 }
 
@@ -50,7 +55,9 @@ export function normalizeAppState(state: PaperiteAppState): PaperiteAppState {
 		closeButtonOnly: state.closeButtonOnly === true,
 		syncSidebarWithActiveTab: state.syncSidebarWithActiveTab !== false,
 		defaultPageFormat: normalizePageFormat(state.defaultPageFormat),
-		cloudSpaceLinks: normalizeCloudSpaceLinks(
+		connections: normalizeConnections(state.connections),
+		spaceSyncTargets: normalizeSpaceSyncTargets(
+			(state as Partial<PaperiteAppState>).spaceSyncTargets,
 			(state as Partial<PaperiteAppState>).cloudSpaceLinks,
 		),
 		cloudSeenUpdates: normalizeCloudSeenUpdates(
@@ -106,8 +113,9 @@ export function reconcileAppState(
 		closeButtonOnly: state.closeButtonOnly,
 		syncSidebarWithActiveTab: state.syncSidebarWithActiveTab,
 		defaultPageFormat: state.defaultPageFormat,
-		cloudSpaceLinks: reconcileCloudSpaceLinks(
-			state.cloudSpaceLinks ?? {},
+		connections: state.connections,
+		spaceSyncTargets: reconcileSpaceSyncTargets(
+			state.spaceSyncTargets,
 			workspace.spaces,
 		),
 		cloudSeenUpdates: normalizeCloudSeenUpdates(state.cloudSeenUpdates),
@@ -268,29 +276,28 @@ function isSortOrder(order: unknown): order is SidebarSortOrder {
 	);
 }
 
-function normalizeCloudSpaceLinks(
-	links: Record<string, string> | undefined,
-): Record<string, string> {
-	if (!links || typeof links !== "object") return {};
-	const next: Record<string, string> = {};
-	for (const [spacePath, spaceId] of Object.entries(links)) {
-		if (typeof spacePath !== "string" || !spacePath) continue;
-		if (typeof spaceId !== "string" || !spaceId) continue;
-		next[spacePath] = spaceId;
+function reconcileSpaceSyncTargets(
+	targets: PaperiteAppState["spaceSyncTargets"],
+	spaces: WorkspaceSpace[],
+) {
+	const spacePaths = new Set(spaces.map((space) => space.path));
+	const next: PaperiteAppState["spaceSyncTargets"] = {};
+	for (const [spacePath, target] of Object.entries(targets ?? {})) {
+		if (!spacePaths.has(spacePath)) continue;
+		next[spacePath] = target;
 	}
 	return next;
 }
 
-function reconcileCloudSpaceLinks(
-	links: Record<string, string>,
-	spaces: WorkspaceSpace[],
-) {
-	const spacePaths = new Set(spaces.map((space) => space.path));
-	const next: Record<string, string> = {};
-	for (const [spacePath, spaceId] of Object.entries(links)) {
-		if (!spacePaths.has(spacePath)) continue;
-		if (!spaceId) continue;
-		next[spacePath] = spaceId;
+function normalizeConnections(
+	connections: Record<string, ConnectionMetadata> | undefined,
+): Record<string, ConnectionMetadata> {
+	if (!connections || typeof connections !== "object") return {};
+	const next: Record<string, ConnectionMetadata> = {};
+	for (const [connectionId, connection] of Object.entries(connections)) {
+		if (!connection || connection.connectionId !== connectionId) continue;
+		if (!connection.displayLabel || !connection.kind) continue;
+		next[connectionId] = connection;
 	}
 	return next;
 }

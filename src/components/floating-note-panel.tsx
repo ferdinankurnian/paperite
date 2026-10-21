@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import type { PageFormat } from "@/lib/storage/types";
 import { useAppStore } from "@/lib/stores/app-store";
 import {
@@ -22,6 +23,7 @@ const FALLBACK_PAGE_FORMAT: PageFormat = {
 	indentation: "none",
 	lineHeight: "normal",
 	paragraphSpacing: "none",
+	dragHandle: false,
 };
 
 type Props = {
@@ -130,6 +132,19 @@ export function FloatingNotePanel(p: Props) {
 							value={pageFormat.indentation}
 							onChange={(indentation) => p.onFormat({ indentation })}
 						/>
+						<div className="flex items-center justify-between gap-3 pt-1">
+							<div className="min-w-0">
+								<p className="font-medium">Block drag handles</p>
+								<p className="text-muted-foreground text-xs">
+									Show a grip to reorder blocks.
+								</p>
+							</div>
+							<Switch
+								checked={pageFormat.dragHandle}
+								onCheckedChange={(dragHandle) => p.onFormat({ dragHandle })}
+								aria-label="Block drag handles"
+							/>
+						</div>
 					</div>
 				</>
 			) : displayMode === "info" ? (

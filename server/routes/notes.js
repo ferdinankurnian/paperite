@@ -24,6 +24,8 @@ const {
 	isDescendantPath,
 	uniquePath,
 	noteContentPath,
+	noteAssetsPath,
+	noteAssetsDirectoryName,
 } = require("../lib/workspace");
 const {
 	readLocalYNoteState,
@@ -299,6 +301,7 @@ const normalizePageFormat = (format) => ({
 	lineHeight: format?.lineHeight === "1.5" ? "1.5" : "normal",
 	paragraphSpacing:
 		format?.paragraphSpacing === "spacious" ? "spacious" : "none",
+	dragHandle: format?.dragHandle === true,
 });
 
 router.put("/notes/:path/page-format", async (req, res) => {
@@ -324,6 +327,47 @@ router.put("/notes/:path/page-format", async (req, res) => {
 		res.json({ ok: true, pageFormat: result });
 	} catch (error) {
 		sendNoteError(res, error);
+	}
+});
+
+router.put("/notes/:path/pinned", async (req, res) => {
+	try {
+		await ensureWorkspace();
+		const normalizedPath = currentNotePath(req.params.path);
+		const content = await readNoteContent(normalizedPath, true);
+		content.pinned = req.body?.pinned === true;
+		await writeFileAtomic(
+			resolveNoteContentPath(normalizedPath),
+			serializeNoteContent(content),
+		);
+		const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+		await getIndexedNote(normalizedPath, stats);
+		res.json({ pinned: content.pinned });
+	} catch (error) {
+		sendNoteError(res, error);
+	}
+});
+
+router.post("/notes/:path/assets", async (req, res) => {
+	try {
+		await ensureWorkspace();
+		const normalizedPath = currentNotePath(req.params.path);
+		const imageDataUrl = req.body?.imageDataUrl;
+		const match = typeof imageDataUrl === "string"
+			? imageDataUrl.match(/^data:image\/(\w+);base64,(.+)$/)
+			: null;
+		if (!match) throw new Error("Invalid image data URL");
+		const ext = match[1] === "jpeg" ? "jpg" : match[1];
+		const safeName = String(req.body?.filename || "image")
+			.replace(/[^a-zA-Z0-9._-]/g, "_")
+			.replace(/\.[^.]+$/, "");
+		const assetFilename = `${safeName || "image"}-${crypto.randomUUID()}.${ext}`;
+		const assetDir = resolveWorkspacePath(noteAssetsPath(normalizedPath));
+		await fs.mkdir(assetDir, { recursive: true });
+		await fs.writeFile(path.join(assetDir, assetFilename), Buffer.from(match[2], "base64"));
+		res.json({ path: `${noteAssetsDirectoryName}/${assetFilename}` });
+	} catch (error) {
+		res.status(500).json({ error: error.message });
 	}
 });
 

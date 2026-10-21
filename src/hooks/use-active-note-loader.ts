@@ -1,4 +1,10 @@
-import { useEffect, useRef, type MutableRefObject, type Dispatch, type SetStateAction } from "react";
+import {
+	useEffect,
+	useRef,
+	type MutableRefObject,
+	type Dispatch,
+	type SetStateAction,
+} from "react";
 import { normalizePageFormat } from "@/lib/app-state-reconcile";
 import type { NotesEngine } from "@/lib/notes-engine";
 import {
@@ -8,7 +14,10 @@ import {
 } from "@/lib/note-content";
 import type { NoteContent } from "@/lib/storage/types";
 import { useAppStore } from "@/lib/stores/app-store";
-import { useEditorUiStore, type SaveStatus } from "@/lib/stores/editor-ui-store";
+import {
+	useEditorUiStore,
+	type SaveStatus,
+} from "@/lib/stores/editor-ui-store";
 import type { LoadedYNote } from "@/lib/y-note-store";
 
 type RefMap<T> = MutableRefObject<Map<string, T>>;
@@ -29,7 +38,7 @@ type Options = {
 	tryMarkEditorReady: (path: string) => void;
 	setNotePreviews: Dispatch<SetStateAction<Record<string, string>>>;
 	setSaveStatus: (status: SaveStatus) => void;
-	omitExact: <T,>(record: Record<string, T>, path: string) => Record<string, T>;
+	omitExact: <T>(record: Record<string, T>, path: string) => Record<string, T>;
 };
 
 /** Write active-note content into refs/caches without Index setState. */
@@ -64,7 +73,8 @@ function syncPageFormatOverride(notePath: string, content: NoteContent) {
 		prev &&
 		prev.indentation === next.indentation &&
 		prev.lineHeight === next.lineHeight &&
-		prev.paragraphSpacing === next.paragraphSpacing
+		prev.paragraphSpacing === next.paragraphSpacing &&
+		prev.dragHandle === next.dragHandle
 	) {
 		return;
 	}
@@ -96,7 +106,9 @@ export function useActiveNoteLoader(options: Options) {
 			window.electron?.app.setTitle("Paperite");
 			return;
 		}
-		const tab = useAppStore.getState().openTabs.find((t) => t.path === activeNotePath);
+		const tab = useAppStore
+			.getState()
+			.openTabs.find((t) => t.path === activeNotePath);
 		const title = `${(tab?.title || "Untitled").trim() || "Untitled"} - Paperite`;
 		document.title = title;
 		window.dispatchEvent(new Event("paperite:title-change"));
@@ -172,7 +184,8 @@ export function useActiveNoteLoader(options: Options) {
 
 			if (cancelled) return;
 
-			const currentCachedContent = current.noteContentCache.current.get(notePath);
+			const currentCachedContent =
+				current.noteContentCache.current.get(notePath);
 			const currentPersistedContent =
 				current.notePersistedCache.current.get(notePath);
 			const readSerialized = serializeNoteContent(content);

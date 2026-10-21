@@ -1,4 +1,27 @@
-# 018 — `paperite serve` (headless mode, t3-style)
+# Plan 022 — `paperite serve` (headless mode, t3-style)
+
+## Status
+
+- **Status**: DONE (serve path complete; Phase 2b remains explicitly deferred)
+- **Priority**: P1
+
+## Completion update — 2026-10-18
+
+The headless path is implemented and verified: `build:web` produces the
+stamped browser bundle, `server/index.js` handles `serve` flags and locks,
+the web API/Yjs framing and rename payloads are aligned, the dev API proxy is
+configured, and the tarball launcher is present at `scripts/paperite.sh`.
+Isolated browser smoke covered workspace load, note creation/editing,
+autosave, reload, and the drag-handle flow without touching the user's
+workspace.
+
+A fresh rerun from the current managed shell could not bind loopback
+(`listen EPERM`); that is an environment restriction, not an application
+failure. The earlier T3 preview smoke remains the runtime evidence.
+
+The full `main.js` backend extraction is still the documented Phase 2b
+follow-up because it requires an Electron smoke pass; it is not silently
+counted as complete.
 
 ## Goal
 
@@ -15,7 +38,7 @@ real; the gaps are protocol drift, auth, CLI, and distribution.
 
 - LAN token auth / pairing URLs — tracked as follow-up, but `--host 0.0.0.0`
   ships with a loud warning until it lands.
-- Google Drive sync, popout windows, asset endpoints over serve.
+- popout windows and asset endpoints over serve.
 - Background service (`t3 service install` analog) — future.
 - `npx paperite` — user explicitly doesn't want npx distribution.
 

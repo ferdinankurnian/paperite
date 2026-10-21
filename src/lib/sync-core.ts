@@ -1,10 +1,9 @@
-export type SyncProviderKind = "google-drive" | "convex";
+export type SyncProviderKind = "convex";
 
 // Cloud-backend kinds behind ONE SyncProvider contract (plan 018). The wire
 // contract itself lives in `@/lib/sync-provider` (and eventually in the
 // `paperite-server` repo as `@paperite/server-api`); this module only
-// describes doc-level pull/push, which is backend-agnostic. `SyncProviderKind`
-// above stays untouched so existing GDrive/Convex call sites keep compiling.
+// describes doc-level pull/push, which is backend-agnostic.
 export type CloudBackendKind = "convex" | "local";
 
 export type SyncSpaceKind = "personal" | "collaborative";
@@ -52,13 +51,6 @@ export type SyncProvider = {
 	push(update: SyncUpdate): Promise<void>;
 	writeSnapshot(snapshot: SyncSnapshot): Promise<void>;
 };
-
-export const personalDriveSpace = {
-	id: "personal",
-	kind: "personal",
-	provider: "google-drive",
-	name: "Personal",
-} satisfies SyncSpace;
 
 export function createSyncUpdateId(deviceId: string, sequence: number) {
 	return `${deviceId}-${sequence.toString().padStart(12, "0")}`;

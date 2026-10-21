@@ -1,4 +1,10 @@
 import { create } from "zustand";
+import {
+	bindSpaceToTarget,
+	type ConnectionMetadata,
+	LOCAL_ONLY_TARGET,
+	type SpaceSyncTarget,
+} from "@/lib/space-sync-targets";
 import type {
 	OpenNoteTab,
 	PageFormat,
@@ -28,8 +34,10 @@ export const defaultAppState: PaperiteAppState = {
 		indentation: "none",
 		lineHeight: "normal",
 		paragraphSpacing: "none",
+		dragHandle: false,
 	},
-	cloudSpaceLinks: {},
+	connections: {},
+	spaceSyncTargets: {},
 	cloudSeenUpdates: {},
 };
 
@@ -51,6 +59,14 @@ type AppStore = PaperiteAppState & {
 	setSpacePreviewMode: (spacePath: string, mode: SpacePreviewMode) => void;
 	setSpaceSortOrder: (spacePath: string, order: SidebarSortOrder) => void;
 	setSpaceFolderFirst: (spacePath: string, folderFirst: boolean) => void;
+	setConnection: (connection: ConnectionMetadata) => void;
+	removeConnection: (connectionId: string) => void;
+	setSpaceSyncTarget: (
+		spacePath: string,
+		target: Omit<SpaceSyncTarget, "updatedAt">,
+	) => void;
+	removeSpaceSyncTarget: (spacePath: string) => void;
+	setLocalOnly: (spacePath: string) => void;
 	setCloudSpaceLink: (spacePath: string, spaceId: string) => void;
 	removeCloudSpaceLink: (spacePath: string) => void;
 	addSeenCloudUpdates: (key: string, updateIds: string[]) => void;
@@ -75,7 +91,8 @@ function pickState(s: AppStore): PaperiteAppState {
 		closeButtonOnly: s.closeButtonOnly,
 		syncSidebarWithActiveTab: s.syncSidebarWithActiveTab,
 		defaultPageFormat: s.defaultPageFormat,
-		cloudSpaceLinks: s.cloudSpaceLinks,
+		connections: s.connections,
+		spaceSyncTargets: s.spaceSyncTargets,
 		cloudSeenUpdates: s.cloudSeenUpdates,
 	};
 }
@@ -123,17 +140,50 @@ export const useAppStore = create<AppStore>((set, get) => ({
 			spaceFolderFirst: { ...s.spaceFolderFirst, [spacePath]: folderFirst },
 		})),
 
+	setConnection: (connection) =>
+		set((s) => ({
+			connections: { ...s.connections, [connection.connectionId]: connection },
+		})),
+
+	removeConnection: (connectionId) =>
+		set((s) => {
+			const nextConnections = { ...s.connections };
+			delete nextConnections[connectionId];
+			return { connections: nextConnections };
+		}),
+
+	setSpaceSyncTarget: (spacePath, target) =>
+		set((s) => ({
+			spaceSyncTargets: bindSpaceToTarget(s, spacePath, target),
+		})),
+
+	removeSpaceSyncTarget: (spacePath) =>
+		set((s) => {
+			if (!s.spaceSyncTargets[spacePath]) return s;
+			const next = { ...s.spaceSyncTargets };
+			delete next[spacePath];
+			return { spaceSyncTargets: next };
+		}),
+
+	setLocalOnly: (spacePath) =>
+		set((s) => ({
+			spaceSyncTargets: bindSpaceToTarget(s, spacePath, LOCAL_ONLY_TARGET),
+		})),
+
 	setCloudSpaceLink: (spacePath, spaceId) =>
 		set((s) => ({
-			cloudSpaceLinks: { ...s.cloudSpaceLinks, [spacePath]: spaceId },
+			spaceSyncTargets: bindSpaceToTarget(s, spacePath, {
+				kind: "paperite-cloud",
+				remoteSpaceId: spaceId,
+			}),
 		})),
 
 	removeCloudSpaceLink: (spacePath) =>
 		set((s) => {
-			if (!(spacePath in s.cloudSpaceLinks)) return s;
-			const next = { ...s.cloudSpaceLinks };
+			if (!s.spaceSyncTargets[spacePath]) return s;
+			const next = { ...s.spaceSyncTargets };
 			delete next[spacePath];
-			return { cloudSpaceLinks: next };
+			return { spaceSyncTargets: next };
 		}),
 
 	addSeenCloudUpdates: (key, updateIds) =>

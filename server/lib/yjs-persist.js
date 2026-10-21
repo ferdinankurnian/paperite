@@ -240,6 +240,45 @@ const stableStringify = (value) => {
 	return JSON.stringify(value) ?? "null";
 };
 
+// y-prosemirror skips null-valued attributes when encoding ProseMirror → Y
+// (createTypeFromElementNode: `val !== null`), but the editor serializes
+// defaults like `textAlign: null` into note.json on every save. Without
+// canonicalization the fold "already covered" check below sees a phantom
+// diff on every derived autosave and replays the whole body (delete +
+// fresh-ID insert) — the live cursor teleports to the end of the document
+// even though the text is byte-identical. Strip null attrs (and attrs left
+// empty by that) on both sides before comparing: a null attr is
+// ProseMirror's spelling of "default", so it must never count as news.
+const canonicalFoldContent = (value) => {
+	if (Array.isArray(value)) return value.map(canonicalFoldContent);
+	if (value !== null && typeof value === "object") {
+		const out = {};
+		for (const key of Object.keys(value)) {
+			let entry = value[key];
+			if (
+				key === "attrs" &&
+				entry !== null &&
+				typeof entry === "object" &&
+				!Array.isArray(entry)
+			) {
+				const attrs = {};
+				for (const [attrKey, attrVal] of Object.entries(entry)) {
+					if (attrVal !== null && attrVal !== undefined) {
+						attrs[attrKey] = attrVal;
+					}
+				}
+				if (Object.keys(attrs).length === 0) continue;
+				entry = attrs;
+			} else {
+				entry = canonicalFoldContent(entry);
+			}
+			out[key] = entry;
+		}
+		return out;
+	}
+	return value;
+};
+
 // AI agents (and anything else writing files directly) bypass the Y update
 // path: they rewrite note.json without touching the snapshot. If note.json
 // is newer than the snapshot manifest, fold it into the snapshot via CRDT
@@ -278,8 +317,8 @@ const foldNoteFileIntoSnapshotLocked = async (normalizedPath, content) => {
 		Y.applyUpdate(probe, snapshotBytes);
 		const projected = yDocToNoteContent(probe, content);
 		alreadyCovered =
-			stableStringify(projected) ===
-			stableStringify(normalizeNoteContent(content));
+			stableStringify(canonicalFoldContent(projected)) ===
+			stableStringify(canonicalFoldContent(normalizeNoteContent(content)));
 	} catch {
 		alreadyCovered = false;
 	} finally {
@@ -381,12 +420,15 @@ const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 
 	await fs.mkdir(updatesDirectory, { recursive: true });
 
-	// Never last-write-wins by accident: merge the incoming full state into
-	// the stored snapshot via CRDT apply instead of overwriting it. The
-	// fragment ops inside merge positionally (concurrent regions converge);
-	// the metadata keys are then set explicitly on top so the incoming
-	// full-state intent wins them DETERMINISTICALLY — blind map merging
-	// would coin-flip on random clientIds instead.
+	// Full-state intent wins the body DETERMINISTICALLY: replay the incoming
+	// body into the stored lineage with a real delete+insert in ONE
+	// transaction, so old items are tombstoned instead of kept alongside the
+	// new ones. A raw CRDT apply of a fresh full state on top of existing
+	// state APPENDED the body (fresh inserts share the null left-origin with
+	// the stored head, so both survive the merge) — every fold/save pass
+	// duplicated the note without bound. Causal keystroke deltas still merge
+	// via appendLocalYNoteUpdate; this path is only for whole-file states
+	// (PUT, agent fold, first seed), where the file is the source of truth.
 	let snapshot = encoded.state;
 	let merged = false;
 	try {
@@ -395,9 +437,11 @@ const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 			const doc = new Y.Doc();
 			try {
 				Y.applyUpdate(doc, existingSnapshot);
-				Y.applyUpdate(doc, encoded.state);
-				const metadata = doc.getMap("metadata");
+				const { id, title, ...body } = normalizedContent;
 				doc.transact(() => {
+					writeNoteBodyToYFragment(doc, body);
+					doc.getMap("content").set("body", body);
+					const metadata = doc.getMap("metadata");
 					if (typeof normalizedContent.id === "string") {
 						metadata.set("id", normalizedContent.id);
 					}

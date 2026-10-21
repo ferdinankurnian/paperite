@@ -11,6 +11,7 @@
 
 ## Status
 
+- **Status**: DONE (functional equivalent landed; implementation superseded the draft BridgeExtension architecture)
 - **Priority**: P1
 - **Effort**: M
 - **Risk**: MED
@@ -18,6 +19,20 @@
 - **Category**: feature parity (desktop TipTap → mobile)
 - **Target project**: `paperite-rn`
 - **Planned at**: 2026-08-01
+
+## Completion update — 2026-10-18
+
+The current `paperite-mobile` implementation has the requested alignment
+feature and a safer shared-schema path: `lib/editor/note-schema.ts` registers
+TipTap `TextAlign` for headings and paragraphs, `editor-web/editor.ts`
+exposes left/center/right/justify commands and state, and
+`components/app/EditorToolbar.tsx` renders the four controls. The editor is
+bundled through `bun run build:editor` into `lib/editor/tiptap-bundle.ts`.
+
+This intentionally differs from the stale `paperite-rn` instructions: the
+working app does not use the proposed `TextAlignBridge`/`customSource` pair,
+but it provides the same user-facing and schema behavior without a second
+TipTap bundle.
 
 ## Why this matters
 

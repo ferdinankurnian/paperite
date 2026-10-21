@@ -3,11 +3,11 @@
 Status: **LOCKED** (product decisions, revised 2026-10-15)
 Priority: P0
 
-Philosophy: Paperite is a powerful, flexible notes app — not just "local-first". Local is the base because servers aren't free. Sync is a choice: GDrive, Paperite+ cloud, or BYO paperite-server. Privacy first — accounts are not discoverable.
+Philosophy: Paperite is a powerful, flexible notes app — not just "local-first". Local is the base because servers aren't free. Sync is a choice: Paperite+ cloud or BYO paperite-server. Privacy first — accounts are not discoverable.
 
 **Locked decisions (2026-10-15):**
-- Clerk login (Avalid account) is **mandatory**. No guest mode. Identity binds GDrive + devices + entitlements.
-- Onboarding asks first: **Simple (Paperite+)** vs **Advanced (GDrive / BYO server)**. Default path is Simple.
+- Clerk login (Avalid account) is **mandatory**. No guest mode. Identity binds cloud devices + entitlements.
+- Onboarding asks first: **Simple (Paperite+)** vs **Advanced (BYO server)**. Default path is Simple.
 - Paperite takes the big risk: sync abstraction supports Convex OR local Yjs server, plugins + database views are core vision (compete with Notion), not phase-2 nice-to-haves.
 
 ---
@@ -30,7 +30,6 @@ Sharing spaces, inviting members, and publishing notes all require Paperite+.
 
 - Every user logs in with Clerk (Avalid). No anonymous / guest mode.
 - Clerk identity is the anchor for:
-  - GDrive bind (OAuth token stored per Clerk user, see plan 019)
   - Device management (list / revoke devices per account)
   - Paperite+ entitlements (`has Paperite+?`)
   - Shared-space membership + invite acceptance
@@ -44,7 +43,6 @@ First-run wizard, before the workspace shows:
 
 - **Simple (Recommended)** → Paperite+ cloud. Login → inbox syncs → done.
 - **Advanced** → choose storage:
-  - GDrive mode (bind your Google Drive to this Clerk account)
   - BYO paperite-server (paste Convex URL or local server URL, see plan 018)
 
 Users can switch modes later in Settings → Sync. Never ask backend questions on the Simple path.
@@ -55,7 +53,6 @@ Users can switch modes later in Settings → Sync. Never ask backend questions o
 
 | Mode | Storage / sync | Auth | Multi-device | Best for |
 |------|---------------|------|--------------|----------|
-| GDrive | User's Drive `appDataFolder`, dumb storage, Yjs merge local | Clerk (mandatory) + Google OAuth bind | Yes, via Clerk-bound Drive + device list | Solo, bring-your-own-storage |
 | Paperite+ | Avalid hosted sync (Convex cloud or Avalid Yjs infra) | Clerk | Yes, realtime | Most users, collab, publish |
 | BYO server | Own Convex deployment OR own machine (VPS / old PC) Yjs server | BYO Clerk issuer or better-auth | Yes, if server reachable | Nerds, enterprises, data-sovereignty |
 
@@ -63,19 +60,18 @@ Users can switch modes later in Settings → Sync. Never ask backend questions o
 
 ## Free vs Paperite+
 
-| Capability              | Free (GDrive / local)        | Paperite+                          |
+| Capability              | Free (local)                 | Paperite+                          |
 |-------------------------|------------------------------|------------------------------------|
 | Local notes             | Yes                          | Yes                                |
-| GDrive sync (Clerk-bound) | Yes (user-managed)         | Optional                           |
 | Device management       | Yes (per Clerk account)      | Yes                                |
 | Realtime collab         | No                           | Yes                                |
 | Share space / invite    | No                           | Yes                                |
 | Clone space as template | Yes                          | Yes                                |
-| Cloud inbox / spaces    | No (local / GDrive only)     | Yes (realtime sync)                |
+| Cloud inbox / spaces    | No (local only)              | Yes (realtime sync)                |
 | Publish note as webpage | No                           | Yes                                |
 
 **Rule of thumb**
-- Free = solo + Clerk identity + GDrive/local
+- Free = solo + Clerk identity + local
 - Paperite+ = multiplayer + hosted cloud sync + public publish
 
 ---
@@ -104,7 +100,7 @@ Role can be changed by the owner at any time after join.
 
 Inbox = default personal space.
 
-- Free → local / GDrive (Clerk-bound) only
+- Free → local only
 - Paperite+ → also synced to hosted cloud (multi-device realtime)
 
 ---
@@ -158,7 +154,7 @@ This is separate from space collab: collab = multiplayer editing; publish = one-
 
 When user subscribes to Paperite+:
 
-- Existing local spaces + notes (including inbox, including GDrive-bound) sync up to hosted cloud
+- Existing local spaces + notes sync up to hosted cloud
 - Local remains available; cloud becomes source of truth for shared & multi-device use
 - Migration must be clean: no data loss, no silent duplicates
 
@@ -170,19 +166,18 @@ When user subscribes to Paperite+:
 - [ ] Public page URL structure / custom domain later?
 - [ ] Device limit per account (free vs plus)?
 
-GDrive: no Paperite-imposed limits. Only Google's own quotas apply.
 
 ---
 
 ## Next implementation plans
 
 1. Forced Clerk login + remove guest mode (auth gate on boot + serve)
-2. Onboarding wizard (Simple vs Advanced) + GDrive bind + device management UI
+2. Onboarding wizard (Simple vs Advanced) + device management UI
 3. Sync provider abstraction (Convex OR local Yjs) — joint with plan 018
 4. Convex schema — spaces, membership, roles, visibility, invite links, publish state
 5. Invite flow UI + email
 6. Presence + realtime editing on top of existing Yjs notes
 7. Clerk entitlement checks (has Paperite+?)
-8. Upgrade migration job (local/GDrive → hosted cloud)
+8. Upgrade migration job (local → hosted cloud)
 9. Publish pipeline (note → public webpage via Workers/Pages)
 10. Plugins + database views (plan 021) — sync must carry structured blocks

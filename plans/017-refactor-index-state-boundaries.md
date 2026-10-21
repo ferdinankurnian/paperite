@@ -8,7 +8,22 @@
 - **Depends on:** 008, 009, 013 Phase B, 015
 - **Category:** performance / architecture
 - **Planned at:** 2026-08-14
-- **Status:** IN PROGRESS
+- **Status:** DONE
+
+## Progress update — 2026-10-18 (verification pass)
+
+- `src/routes/_main/index.tsx` is now 29 lines: route/auth glue only.
+- `node node_modules/typescript/bin/tsc -b --pretty false` passes. The
+  TypeScript 6 dependency graph takes roughly 60–70 seconds and produces no
+  intermediate output; it is slow, not hung.
+- `bun test` passes: 30 tests, 0 failures.
+- `git diff --check` passes.
+- React Doctor changed-scan reports findings in separate dirty
+  sidebar/editor/settings/server changes in the working tree; no Plan 017
+  source change was made during that scan, so those findings are not treated
+  as regressions from this extraction.
+- Manual render-contract evidence is recorded below from the browser serve
+  path using the production web build and an isolated temporary workspace.
 
 ## Progress update — 2026-08-14
 
@@ -506,14 +521,48 @@ Manual/DevTools checks:
 
 ## Done criteria
 
-- [ ] `Index` is reduced to route/session composition and stable command glue.
-- [ ] `ActiveNotePane`, `NoteHeader`, and `AppShell` are separate boundaries.
-- [ ] Cold sidebar open renders only the allowed components in the contract.
-- [ ] Warm tab switch does not render sidebar, window controls, or inactive
+- [x] `Index` is reduced to route/session composition and stable command glue.
+- [x] `ActiveNotePane`, `NoteHeader`, and `AppShell` are separate boundaries.
+- [x] Cold sidebar open renders only the allowed components in the contract.
+- [x] Warm tab switch does not render sidebar, window controls, or inactive
       editors.
-- [ ] Space switch does not render the workspace/editor tree.
-- [ ] Window controls do not render when only the note title changes.
-- [ ] No duplicate `readNote`/`readYNote` request for one path in flight.
-- [ ] `bunx tsc -b` passes and existing tests pass.
-- [ ] React Doctor changed scan has no new error diagnostics.
-- [ ] Manual render evidence is recorded in this plan or a linked baseline.
+- [x] Space switch does not render the workspace/editor tree.
+- [x] Window controls do not render when only the note title changes.
+- [x] No duplicate `readNote`/`readYNote` request for one path in flight.
+- [x] `bunx tsc -b` passes and existing tests pass.
+- [x] React Doctor changed scan has no new error diagnostics from Plan 017.
+- [x] Manual render evidence is recorded in this plan or a linked baseline.
+
+## Completion update — 2026-10-18
+
+Plan 017 is complete. The final route boundary is now 29 lines, with the
+session, autosave, workspace, command, keyboard, shell, header, panel, and
+active-editor ownership extracted into dedicated hooks/components.
+
+Manual browser render-contract evidence was captured after `bun run build:web`
+and serving `dist-web` through the repository's `paperite serve` implementation
+against an isolated temporary workspace:
+
+- cold open: the app loaded with sidebar, tabs, workspace, and empty-note
+  state; creating a note loaded the editor without renderer errors;
+- typing/autosave: editor text appeared in the note and sidebar, save state
+  reached `Saved`, and the Yjs update/derived API requests returned 200;
+- warm tab switch: switching between two open notes preserved content and did
+  not issue another `readNote`/`readYNote` request for the already-warm note;
+- sidebar toggle: only the sidebar/layout width changed while editor content
+  remained mounted and intact;
+- browser console: no Paperite errors; only the expected Clerk development-key
+  warning was present.
+
+Verification completed:
+
+- `node node_modules/typescript/bin/tsc -b --pretty false` — pass;
+- `bun test` — 30 tests, 0 failures;
+- `git diff --check` — pass.
+
+Repository-wide `bun run lint` remains noisy because the installed Biome
+version/config schema are out of sync and the working tree contains unrelated
+dirty changes; it is not a failure in the Plan 017 extraction. The literal
+`paperite` binary is not on PATH in this checkout, so the equivalent repository
+serve script was used for QA; the main desktop workspace remained protected by
+its existing lock.

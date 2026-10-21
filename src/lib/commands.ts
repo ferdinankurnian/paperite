@@ -2,6 +2,7 @@ export type CommandCategory = "General" | "Notes" | "Tabs" | "View" | "Window";
 
 export type CommandId =
 	| "settings.open"
+	| "space.settings.open"
 	| "note.create"
 	| "folder.create"
 	| "note.setup"
@@ -30,6 +31,13 @@ export const commands = [
 		label: "Open settings",
 		category: "General",
 		defaultShortcut: "Mod+,",
+		editable: true,
+	},
+	{
+		id: "space.settings.open",
+		label: "Open space settings",
+		category: "General",
+		defaultShortcut: "Mod+Shift+,",
 		editable: true,
 	},
 	{

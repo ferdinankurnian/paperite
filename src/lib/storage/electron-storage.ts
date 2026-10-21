@@ -11,7 +11,6 @@ import type {
 	WorkspaceSnapshot,
 	YNoteState,
 } from "./types";
-import { ensureSignedInForCloud } from "@/lib/clerk-auth";
 
 // These engines are only ever constructed by getNotesEngine()/getTrashEngine()/
 // getSyncEngine() after confirming window.electron exists (see notes-engine.ts,
@@ -75,6 +74,10 @@ export class ElectronNotesEngine implements NotesEngine {
 		format: PageFormat,
 	): Promise<{ ok: true; pageFormat: PageFormat }> {
 		return requireElectron().notes.setPageFormat(path, format);
+	}
+
+	async setPinned(path: string, pinned: boolean): Promise<{ pinned: boolean }> {
+		return requireElectron().notes.setPinned(path, pinned);
 	}
 
 	async pruneAssets(
@@ -152,37 +155,5 @@ export class ElectronTrashEngine implements TrashEngine {
 export class ElectronSyncEngine implements SyncEngine {
 	async getStatus(): Promise<SyncStatus> {
 		return requireElectron().sync.getStatus();
-	}
-
-	async setGoogleDriveEnabled(
-		enabled: boolean,
-	): Promise<{ ok: true; googleDriveEnabled: boolean }> {
-		return requireElectron().sync.setGoogleDriveEnabled(enabled);
-	}
-
-	async connectGoogleDrive(): Promise<
-		{ ok: true } | { ok: false; error: string }
-	> {
-		// Engine-level gate (lapis 2; the Settings UI gate is lapis 1):
-		// Google OAuth binds Drive without any Clerk involvement, so every
-		// in-app path through the engine must hold a Clerk session first.
-		// Raw IPC (DevTools) can still reach main directly — accepted risk,
-		// documented at the main handler: same-machine trust boundary.
-		const allowed = await ensureSignedInForCloud({
-			action: "gdrive-connect",
-		});
-		if (!allowed) return { ok: false, error: "sign_in_required" };
-		return requireElectron().sync.connectGoogleDrive();
-	}
-
-	async runGoogleDrive(): Promise<
-		| { ok: true; uploaded: number; downloaded: number }
-		| { ok: false; error: string }
-	> {
-		return requireElectron().sync.runGoogleDrive();
-	}
-
-	async disconnectGoogleDrive(): Promise<{ ok: true }> {
-		return requireElectron().sync.disconnectGoogleDrive();
 	}
 }

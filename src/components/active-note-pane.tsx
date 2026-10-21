@@ -29,6 +29,7 @@ const FALLBACK_PAGE_FORMAT: PageFormat = {
 	indentation: "none",
 	lineHeight: "normal",
 	paragraphSpacing: "none",
+	dragHandle: false,
 };
 
 type ActiveNotePaneProps = {

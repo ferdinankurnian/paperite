@@ -58,7 +58,7 @@ export async function shareSpaceToCloud(spacePath: string): Promise<{
 	try {
 		// createSharedSpace lives INSIDE the try so limit/auth failures flow
 		// through humanizeShareError (plan 020 Step 0) — never raw [CONV …].
-		const { spaceId } = await createSharedSpace(spaceTitle);
+		const { spaceId } = await createSharedSpace(spaceTitle, spacePath);
 		// 1. Metadata first.
 		const noteIds = new Map<string, string>();
 		for (const note of notes) {
@@ -70,6 +70,7 @@ export async function shareSpaceToCloud(spacePath: string): Promise<{
 				noteId,
 				path: note.path,
 				title: note.title,
+				spacePath,
 			});
 		}
 
@@ -82,13 +83,20 @@ export async function shareSpaceToCloud(spacePath: string): Promise<{
 				Y.applyUpdate(doc, state.snapshot);
 				const data = Y.encodeStateAsUpdate(doc);
 				const stateVector = Y.encodeStateVector(doc);
-				await writeSharedSnapshot({ spaceId, noteId, data, stateVector });
+				await writeSharedSnapshot({
+					spaceId,
+					noteId,
+					data,
+					stateVector,
+					spacePath,
+				});
 				await appendSharedUpdate({
 					spaceId,
 					noteId,
 					updateId: `initial-${noteId}`,
 					deviceId,
 					data,
+					spacePath,
 				});
 			} finally {
 				doc.destroy();
@@ -123,7 +131,7 @@ export async function pullCloudSpace(
 ): Promise<CloudPullResult> {
 	const engine = getNotesEngine();
 	if (!engine) throw new Error("Notes engine is not available.");
-	const cloudNotes = await listSharedNotes(spaceId);
+	const cloudNotes = await listSharedNotes(spaceId, spacePath);
 	const workspace = await engine.getWorkspace();
 	const space = workspace.spaces.find((s) => s.path === spacePath);
 	const localByPath = new Map<string, WorkspaceNote>();
@@ -157,7 +165,11 @@ export async function pullCloudSpace(
 			}
 			if (!createdPath) throw lastError ?? new Error("Could not create note.");
 			createdLocalNotes += 1;
-			const updates = await listSharedUpdates(spaceId, cloudNote.noteId);
+			const updates = await listSharedUpdates(
+				spaceId,
+				cloudNote.noteId,
+				spacePath,
+			);
 			for (const update of updates) {
 				await engine.writeYUpdate(createdPath, update.data);
 				appliedUpdates += 1;
@@ -173,7 +185,11 @@ export async function pullCloudSpace(
 				`${cloudNote.title} (cloud)`,
 			);
 			createdLocalNotes += 1;
-			const updates = await listSharedUpdates(spaceId, cloudNote.noteId);
+			const updates = await listSharedUpdates(
+				spaceId,
+				cloudNote.noteId,
+				spacePath,
+			);
 			for (const update of updates) {
 				await engine.writeYUpdate(copy.path, update.data);
 				appliedUpdates += 1;
@@ -182,7 +198,11 @@ export async function pullCloudSpace(
 			continue;
 		}
 
-		const updates = await listSharedUpdates(spaceId, cloudNote.noteId);
+		const updates = await listSharedUpdates(
+			spaceId,
+			cloudNote.noteId,
+			spacePath,
+		);
 		for (const update of updates) {
 			await engine.writeYUpdate(local.path, update.data);
 			appliedUpdates += 1;

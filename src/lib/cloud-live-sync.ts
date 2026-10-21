@@ -2,6 +2,8 @@ import { useSyncExternalStore } from "react";
 import * as Y from "yjs";
 import { setCloudTransient } from "@/lib/cloud-sync-status";
 import { getDeviceId } from "@/lib/device-id";
+import { localRemoteOrigin } from "@/lib/local-live-sync";
+import { getRemoteSpaceId, getSpaceSyncTarget } from "@/lib/space-sync-targets";
 import type { NotesEngine, WorkspaceItem } from "@/lib/storage/types";
 import { useAppStore } from "@/lib/stores/app-store";
 import {
@@ -11,7 +13,6 @@ import {
 	upsertSharedNote,
 	writeSharedSnapshot,
 } from "@/lib/sync-provider";
-import { localRemoteOrigin } from "@/lib/local-live-sync";
 import { movePath, topLevelPath } from "@/lib/workspace-paths";
 
 /**
@@ -30,7 +31,7 @@ import { movePath, topLevelPath } from "@/lib/workspace-paths";
  *   and never regenerated, so server idempotency on `updateId` actually
  *   works across retries. The counter is the only persisted piece
  *   (localStorage `paperite.cloud-update-counter` — cheap monotonic int).
- * - Local-only spaces cost one `cloudSpaceLinks` map lookup per edit and
+ * - Local-only spaces cost one generalized target lookup per edit and
  *   make zero Convex calls (019 opt-in guarantee stays absolute).
  */
 
@@ -154,7 +155,7 @@ function nextCloudCounter(): number {
 
 function getLinkedSpaceId(spacePath: string): string | null {
 	try {
-		return useAppStore.getState().cloudSpaceLinks[spacePath] ?? null;
+		return getRemoteSpaceId(useAppStore.getState(), spacePath);
 	} catch {
 		return null;
 	}
@@ -250,6 +251,7 @@ export async function flushSpace(spacePath: string): Promise<void> {
 					updateId: queued.updateId,
 					deviceId,
 					data: queued.data,
+					spacePath,
 				});
 			}
 			if (batch.length > 0) {
@@ -310,7 +312,13 @@ async function maybeSnapshot(
 			Y.applyUpdate(doc, state.snapshot);
 			const data = Y.encodeStateAsUpdate(doc);
 			const stateVector = Y.encodeStateVector(doc);
-			await writeSharedSnapshot({ spaceId, noteId, data, stateVector });
+			await writeSharedSnapshot({
+				spaceId,
+				noteId,
+				data,
+				stateVector,
+				spacePath,
+			});
 			lastSnapshotAt.set(key, now);
 		} finally {
 			doc.destroy();
@@ -348,6 +356,7 @@ export async function notifyNoteCreated(
 			noteId: state?.noteId || notePath,
 			path: notePath,
 			title,
+			spacePath,
 		});
 	} catch (error) {
 		setCloudTransient(spacePath, {
@@ -375,6 +384,7 @@ export async function notifyNoteRenamed(
 			noteId: state?.noteId || newPath,
 			path: newPath,
 			title,
+			spacePath,
 		});
 	} catch (error) {
 		setCloudTransient(spacePath, {
@@ -397,7 +407,7 @@ export async function notifyNoteDeleted(
 	const spaceId = getLinkedSpaceId(spacePath);
 	if (!spaceId) return;
 	try {
-		await removeSharedNote({ spaceId, noteId });
+		await removeSharedNote({ spaceId, noteId, spacePath });
 	} catch (error) {
 		setCloudTransient(spacePath, {
 			phase: "error",
@@ -478,10 +488,14 @@ async function collectNotesUnder(
 /** A linked space itself was renamed — carry the cloud link to the new path. */
 function moveSpaceLink(oldSpacePath: string, newSpacePath: string): void {
 	const store = useAppStore.getState();
-	const spaceId = store.cloudSpaceLinks[oldSpacePath];
-	if (!spaceId) return;
-	store.removeCloudSpaceLink(oldSpacePath);
-	store.setCloudSpaceLink(newSpacePath, spaceId);
+	const target = getSpaceSyncTarget(store, oldSpacePath);
+	if (target.kind === "local" || !target.remoteSpaceId) return;
+	store.removeSpaceSyncTarget(oldSpacePath);
+	store.setSpaceSyncTarget(newSpacePath, {
+		kind: target.kind,
+		...(target.connectionId ? { connectionId: target.connectionId } : {}),
+		remoteSpaceId: target.remoteSpaceId,
+	});
 	const queue = outbox.get(oldSpacePath);
 	if (queue) {
 		outbox.delete(oldSpacePath);
@@ -508,6 +522,7 @@ async function upsertMovedNotes(
 			path: newNotePath,
 			title:
 				note.path === fromPath && titleOverride ? titleOverride : note.title,
+			spacePath: topLevelPath(note.path),
 		});
 	}
 }
@@ -525,6 +540,8 @@ export function wrapNotesEngineWithLiveSync(engine: NotesEngine): NotesEngine {
 		writeDerivedNote: (path, content) => engine.writeDerivedNote(path, content),
 		writeNote: (path, content) => engine.writeNote(path, content),
 		setPageFormat: (path, format) => engine.setPageFormat(path, format),
+		setPinned: (path, pinned) =>
+			engine.setPinned?.(path, pinned) ?? Promise.resolve({ pinned }),
 		pruneAssets: (path) =>
 			engine.pruneAssets?.(path) ??
 			Promise.resolve({ ok: true as const, deleted: 0 }),
@@ -601,19 +618,27 @@ export function wrapNotesEngineWithLiveSync(engine: NotesEngine): NotesEngine {
 					// The cloud copy is kept (019 rule).
 					for (const note of before) {
 						try {
-							await removeSharedNote({ spaceId, noteId: note.noteId });
+							await removeSharedNote({
+								spaceId,
+								noteId: note.noteId,
+								spacePath,
+							});
 						} catch {
 							// Best-effort; link is dropped regardless.
 						}
 					}
-					useAppStore.getState().removeCloudSpaceLink(spacePath);
+					useAppStore.getState().removeSpaceSyncTarget(spacePath);
 					stopLiveSync(spacePath);
 				} else {
 					for (const note of before) {
 						const queue = outbox.get(spacePath);
 						queue?.delete(note.path);
 						try {
-							await removeSharedNote({ spaceId, noteId: note.noteId });
+							await removeSharedNote({
+								spaceId,
+								noteId: note.noteId,
+								spacePath,
+							});
 						} catch (error) {
 							setCloudTransient(spacePath, {
 								phase: "error",
@@ -652,6 +677,7 @@ export async function notifyNoteUpsert(
 			noteId: state?.noteId || notePath,
 			path: notePath,
 			title,
+			spacePath,
 		});
 	} catch (error) {
 		setCloudTransient(spacePath, {
@@ -782,13 +808,20 @@ export async function backfillLinkedSpace(
 			noteId,
 			path: note.path,
 			title: note.title,
+			spacePath,
 		});
 		const doc = new Y.Doc();
 		try {
 			Y.applyUpdate(doc, state.snapshot);
 			const data = Y.encodeStateAsUpdate(doc);
 			const stateVector = Y.encodeStateVector(doc);
-			await writeSharedSnapshot({ spaceId, noteId, data, stateVector });
+			await writeSharedSnapshot({
+				spaceId,
+				noteId,
+				data,
+				stateVector,
+				spacePath,
+			});
 			enqueueFullState(spacePath, note.path, noteId, data);
 		} finally {
 			doc.destroy();

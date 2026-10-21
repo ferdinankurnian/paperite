@@ -13,7 +13,7 @@ function resolveEngine(): SyncEngine | null {
 	if (window.electron?.sync) {
 		cachedEngine = new ElectronSyncEngine();
 	}
-	// Web mode: sync not supported yet (no server-side Google Drive)
+	// Web mode: sync not supported yet.
 	return cachedEngine;
 }
 

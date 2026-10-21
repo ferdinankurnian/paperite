@@ -11,10 +11,13 @@ function resolveEngine(): TrashEngine | null {
 	if (resolved) return cachedEngine;
 	resolved = true;
 
-	if (window.electron?.trash) {
-		cachedEngine = new ElectronTrashEngine();
-	} else if (import.meta.env.PAPERITE_WEB) {
+	if (
+		window.electron?.workspaceMode === "attached" ||
+		import.meta.env.PAPERITE_WEB
+	) {
 		cachedEngine = new WebTrashEngine();
+	} else if (window.electron?.trash) {
+		cachedEngine = new ElectronTrashEngine();
 	}
 
 	return cachedEngine;

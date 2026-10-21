@@ -1,11 +1,32 @@
 import { Clerk } from "@clerk/clerk-js";
+import { isBrowserRenderer } from "@/lib/auth-bridge";
+import { ensureDeviceAccount, validateDeviceAccount } from "@/lib/device-auth";
 
 const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY;
 let clerkInstance: Clerk | undefined;
 
 export const isClerkConfigured = () => Boolean(publishableKey);
 
+/**
+ * A browser surface must never create a Clerk session of its own — the
+ * desktop app is the single auth authority for an installation. This inert
+ * stand-in keeps every `clerk.*` access safe without initializing clerk-js
+ * in the browser (which would restore a second, independent session).
+ */
+const browserClerkStub = {
+	user: null,
+	session: null,
+	isSignedIn: false,
+	client: null,
+	addListener: () => () => undefined,
+	removeListener: () => undefined,
+	signOut: async () => undefined,
+	navigate: async () => undefined,
+} as unknown as Clerk;
+
 const getClerk = () => {
+	if (isBrowserRenderer()) return browserClerkStub;
+
 	if (!publishableKey) {
 		throw new Error("missing VITE_CLERK_PUBLISHABLE_KEY");
 	}
@@ -23,7 +44,17 @@ export const clerk = new Proxy({} as Clerk, {
 let clerkLoadPromise: Promise<void> | undefined;
 
 export const loadClerk = () => {
-	clerkLoadPromise ??= getClerk().load();
+	if (isBrowserRenderer()) {
+		clerkLoadPromise ??= Promise.resolve();
+		return clerkLoadPromise;
+	}
+
+	clerkLoadPromise ??= getClerk()
+		.load()
+		.then(async () => {
+			const userId = getClerk().user?.id;
+			if (userId) await validateDeviceAccount(userId);
+		});
 	return clerkLoadPromise;
 };
 
@@ -59,4 +90,6 @@ export const handleClerkRedirect = async (callbackUrl: string) => {
 		},
 		async () => undefined,
 	);
+	const userId = getClerk().user?.id;
+	if (userId) await ensureDeviceAccount(userId);
 };

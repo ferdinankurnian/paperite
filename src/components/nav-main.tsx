@@ -65,6 +65,11 @@ import {
 	DropdownMenuSeparator,
 	DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+	HoverCard,
+	HoverCardContent,
+	HoverCardTrigger,
+} from "@/components/ui/hover-card";
 import { Input } from "@/components/ui/input";
 import {
 	Popover,
@@ -81,14 +86,9 @@ import {
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-	HoverCard,
-	HoverCardContent,
-	HoverCardTrigger,
-} from "@/components/ui/hover-card";
 import { useAppStore } from "@/lib/stores/app-store";
 
-export function NavMain({
+function NavMainView({
 	onCreateSpace,
 	onDeleteSpace,
 	onEditSpace,
@@ -224,9 +224,7 @@ export function NavMain({
 											<HoverCardContent
 												side="right"
 												align="center"
-												hidden={
-													sidebarState !== "collapsed" || sidebarIsMobile
-												}
+												hidden={sidebarState !== "collapsed" || sidebarIsMobile}
 												className="w-auto px-2.5 py-1.5 text-xs"
 											>
 												{space.title}
@@ -459,6 +457,35 @@ export function NavMain({
 		</>
 	);
 }
+
+/**
+ * The `spaces` array (with freshly built icon nodes) gets a new identity on
+ * every workspace patch — including preview-only autosaves. Compare by
+ * content so typing in the editor doesn't re-render the space rail; icons
+ * are derived deterministically from the color/icon maps below.
+ */
+export const NavMain = memo(NavMainView, (prev, next) => {
+	if (
+		prev.onCreateSpace !== next.onCreateSpace ||
+		prev.onDeleteSpace !== next.onDeleteSpace ||
+		prev.onEditSpace !== next.onEditSpace ||
+		prev.onSelectSpace !== next.onSelectSpace ||
+		prev.spaceColorsByPath !== next.spaceColorsByPath ||
+		prev.spaceIconsByPath !== next.spaceIconsByPath ||
+		prev.spaces.length !== next.spaces.length
+	) {
+		return false;
+	}
+	return prev.spaces.every((space, index) => {
+		const other = next.spaces[index];
+		return (
+			other !== undefined &&
+			space.title === other.title &&
+			space.url === other.url &&
+			space.path === other.path
+		);
+	});
+});
 
 function SpaceIconPicker({
 	inputRef,

@@ -28,6 +28,15 @@ type LiveSub = {
 };
 
 const liveSubs = new Map<string, LiveSub>();
+const workspaceListeners = new Set<() => void>();
+
+export function subscribeLocalWorkspaceChanged(
+	listener: () => void,
+): () => void {
+	workspaceListeners.add(listener);
+	ensureLiveTransport();
+	return () => workspaceListeners.delete(listener);
+}
 
 export function attachLocalLiveNote(notePath: string, doc: Y.Doc): void {
 	const existing = liveSubs.get(notePath);
@@ -162,7 +171,11 @@ function scheduleReconnect(): void {
 	const delay = reconnectDelayMs;
 	reconnectDelayMs = Math.min(reconnectDelayMs * 2, 30000);
 	window.setTimeout(() => {
-		if (typeof window === "undefined" || window.electron) return;
+		if (
+			typeof window === "undefined" ||
+			(window.electron && window.electron.workspaceMode !== "attached")
+		)
+			return;
 		openLiveSocket();
 	}, delay);
 }
@@ -185,7 +198,10 @@ function openLiveSocket(): void {
 	sock.onmessage = (event) => {
 		try {
 			const message = JSON.parse(String(event.data));
-			if (message?.event === "workspace:changed") refreshAllLiveNotes();
+			if (message?.event === "workspace:changed") {
+				refreshAllLiveNotes();
+				for (const listener of workspaceListeners) listener();
+			}
 		} catch {
 			// Non-JSON frames are not ours.
 		}
@@ -202,11 +218,17 @@ function ensureLiveTransport(): void {
 	if (transportStarted || typeof window === "undefined") return;
 	transportStarted = true;
 
-	if (window.electron?.onWorkspaceChanged) {
+	if (
+		window.electron?.onWorkspaceChanged &&
+		window.electron.workspaceMode !== "attached"
+	) {
 		// Electron main already watches the workspace and pushes this IPC
 		// (debounced) on any file change, including our own — the diff
 		// against our state vector makes self-events a cheap no-op.
-		window.electron.onWorkspaceChanged(() => refreshAllLiveNotes());
+		window.electron.onWorkspaceChanged(() => {
+			refreshAllLiveNotes();
+			for (const listener of workspaceListeners) listener();
+		});
 	} else {
 		openLiveSocket();
 	}

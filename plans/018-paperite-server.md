@@ -1,226 +1,276 @@
-# Plan 018: paperite-server as flexible open-source backend
-
-> **Executor instructions**: Follow this plan step by step. Run every
-> verification command and confirm the expected result before moving to the
-> next step. If anything in the "STOP conditions" section occurs, stop and
-> report — do not improvise. When done, update the status row for this plan
-> in `plans/README.md`.
+# Plan 018: `paperite-server` — Convex-first sync backend
 
 ## Status
 
+- **Status**: READY (Convex-first; explicit OpenTUI TUI shell; local Yjs backend deferred)
 - **Priority**: P0
-- **Effort**: L (raised 2026-10-15 — dual-backend scope)
-- **Risk**: HIGH (raised 2026-10-15 — deliberate)
-- **Depends on**: 016 (Paperite+ model, LOCKED + revised 2026-10-15)
-- **Category**: architecture
-- **Planned at**: 2026-09-30, revised 2026-10-15
-- **Status**: TODO
+- **Effort**: L
+- **Risk**: HIGH
+- **Depends on**: Plan 016's Clerk/product decisions for the official hosted path
+- **Category**: architecture / sync
 
-## Why this matters (revised)
+## Decision log — 2026-10-18
 
-`convex/` currently lives inside the desktop repo (`paperite/convex/`).
-That makes the backend look like it belongs to the desktop app, which
-breaks the new positioning:
+The previous version tried to ship the provider contract, Convex, a local
+Yjs server, better-auth, `paperite serve --sync`, mobile cutover, deployment,
+and plugins in one pass. That is too broad and creates several coupled failure
+modes.
 
-1. **Paperite is not "local-first only"** — it's powerful + flexible. Users choose GDrive, Paperite+ cloud, or BYO server.
-2. **Paperite+ as hosted convenience** — default points to an Avalid Studio deployment so paying users never touch infra; BYO is an option, not a requirement.
-3. **Enterprises / sovereignty** — some users can't put notes on Convex cloud in a region they don't control. They need BYO on their own Convex deployment (own region, e.g. us-east-1) OR on their own machine (VPS / old PC).
-4. **Auth flexibility** — BYO operators choose: bring their own Clerk issuer, or swap to better-auth. Official Avalid deployment stays on Clerk (mandatory login, see plan 016).
-5. **Mobile-only users** — must sync via cloud/server without any desktop on LAN.
+The execution order is now:
 
-The fix: extract the backend into its own repo, `paperite-server`, with a **sync provider interface** that supports **Convex cloud OR local Yjs server**. Base is always local (files + SQLite); the server is a Yjs sync + storage hub that clients (desktop / mobile / `paperite serve` web) talk to. Paperite takes the risk of maintaining both backends behind one contract.
+```text
+contract → Convex backend → CLI/TUI shell → desktop → mobile → official deploy
+                                                   ↓
+                                      local Yjs backend → serve --sync
+                                                   ↓
+                                          plugins / database views
+```
 
-Old stance ("Convex cloud only, VPS is a category error") is **rescinded**. The new contract is: Convex is one backend, local-machine Yjs is a first-class backend.
+Locked implementation decisions for this plan:
+
+- **Convex first.** It is the first concrete backend implementation.
+- **Clerk for the official hosted path.** The Clerk requirement comes from
+  Plan 016; auth abstraction for BYO is deferred with the local backend.
+- **Local files + SQLite remain the desktop base.** The server is for shared
+  spaces and multi-device sync, not a replacement for local storage.
+- **No better-auth, local Yjs WebSocket server, or `serve --sync` in the
+  first milestone.** Those are explicit follow-up phases.
+- **A personal local server does not need a general custom-auth framework in
+  the MVP.** Use per-device pairing credentials for private personal-server
+  access; defer better-auth, password auth, and arbitrary OAuth providers until
+  multi-user hosting is a real requirement.
+- **Plugins, database views, publish, and presence are not blockers** for the
+  provider/Convex milestone. Plan 021 consumes the stable contract later.
+- **The interactive entrypoint is explicit:** `paperite-server tui` opens the
+  OpenTUI operator dashboard. A bare `paperite-server` invocation must not
+  unexpectedly enter an interactive screen.
+- **First-time configuration is explicit:** `paperite-server setup` runs the
+  setup wizard. It may use OpenTUI when attached to a TTY and must support a
+  non-interactive flags/config-file path for automation.
+- **`paperite-server serve` stays headless.** It must work in systemd,
+  containers, SSH sessions, and scripts without a TTY. `status` and `doctor`
+  must also have a non-interactive/plain-output path; JSON output can be added
+  where useful.
+- **OpenTUI is an operator surface, not the server core or a note editor.** The
+  TUI may guide first-time setup and expose status, diagnostics, and config,
+  but note editing remains in the Paperite clients.
 
 ## Current state
 
-- Backend code: `convex/schema.ts` (5 tables: `sharedSpaces`,
-  `sharedSpaceMembers`, `sharedNotes`, `sharedNoteUpdates`,
-  `sharedNoteSnapshots`), `convex/sharedSpaces.ts` (Clerk-guarded
-  queries/mutations, 2-space free limit), `convex/auth.config.ts` (locked
-  to `CLERK_JWT_ISSUER_DOMAIN`), `convex.json` (`"functions": "convex/"`).
-- Desktop client: `src/lib/convex.ts` — `ConvexReactClient` + one
-  `createSharedSpace` wrapper. Runtime-swappable URL already implemented
-  (2026-09-30): `localStorage paperite.convex-url` > `VITE_CONVEX_URL`.
-  Settings → Sync tab is live.
-- Local server: `server/index.js` is Express for solo/`paperite serve` mode.
-  Currently REST for files, no Yjs websocket collab yet. This is the seed
-  for the local-machine backend.
-- Mobile: `../paperite-mobile/` (Expo ~56, `@clerk/expo`, `expo-sqlite`).
-  Has NO `convex/` folder. Plan 011 still points it at Express REST — stale,
-  must point at the provider interface.
-- Auth: Clerk mandatory on official deployment. No guest mode (see 016 revision).
+- `../paperite-server/` exists and currently contains the Convex schema,
+  `sharedSpaces.ts`, auth config, generated Convex types, and basic Bun
+  scripts.
+- Desktop has `src/lib/sync-provider.ts` as a Convex-facing choke point and
+  runtime URL settings, but the public package contract does not exist yet.
+- Mobile has local storage and editor/sync code, but it does not consume the
+  shared `@paperite/server-api` contract.
+- `paperite/server/` remains the standalone REST/web server for local use;
+  this plan does not replace it during the Convex-first milestone.
+- No production-ready `paperite-server setup` or `paperite-server tui` command
+  exists yet; the command contract below is intentionally defined before
+  implementation.
 
-## What we're building
+## Scope by milestone
 
-Three repos, one provider contract, two backend kinds:
+### Milestone A — provider contract
 
-```
-paperite (desktop) ──┐
-                     ├──► sync provider interface ──┬──► Avalid hosted (Paperite+)
-paperite-mobile ─────┘                              ├──► BYO Convex deployment
-paperite serve (web) ──┘                            └──► BYO local machine (VPS / old PC, Yjs ws)
-                                                         ▲
-                                                         │ fork + deploy
-                                                         │ (BYO, user-owned)
-```
+Create `../paperite-server/packages/server-api/` as a small, transport-
+agnostic TypeScript package. It is the only package clients may import for
+shared-backend types.
 
-- **`paperite-server`** (new, public): Convex functions (`schema.ts`,
-  `sharedSpaces.ts` + invite/presence/publish) AND local-machine server
-  (Node + Yjs websocket + file/snapshot storage). Shared provider contract
-  (`@paperite/server-api` types + `SyncProvider` interface: auth, spaces,
-  members, notes, updates, snapshots, presence). Auth adapters: Clerk
-  (default) or better-auth (BYO option). README covers all deploy paths.
-- **`paperite`**: base stays local (files + SQLite + `server/` Express,
-  extended with Yjs ws for local-backend mode). Cloud path = provider
-  client with runtime-swappable URL + backend-kind flag (convex vs local).
-- **`paperite-mobile`**: same provider client (`EXPO_PUBLIC_*` default,
-  AsyncStorage override). Prod sync via provider, never LAN-only REST.
+The first contract must cover:
 
-Default URL in both apps = Avalid deployment (the Paperite+ product).
-Custom URL + backend kind in Settings = BYO. Mobile-only users log in
-with Clerk and hit the default deployment — no desktop needed, ever.
+- `AuthSession` / authenticated user identity
+- spaces and membership roles (`owner`, `editor`, `viewer`)
+- note identity and metadata
+- Yjs snapshot read/write
+- append-only Yjs update batches
+- a subscription shape for remote note updates
 
-## Scope
+Use stable string IDs, ISO timestamps or epoch milliseconds consistently, and
+an explicit binary wire representation (`Uint8Array` at the API boundary;
+base64/ArrayBuffer only in transport adapters). Do not import Convex-generated
+types into the contract.
 
-**In scope:**
+**Gate:** the package typechecks and has a short contract README with one
+example provider implementation and one example client call.
 
-- New `paperite-server` repo with dual backends:
-  - `convex/` (cloud backend, as today + invite/presence/publish next)
-  - `local/` (Node Yjs server: websocket sync, snapshot store, auth middleware, file layout compatible with desktop `~/Documents/Paperite`)
-  - `packages/server-api/` (`SyncProvider` interface + generated Convex types, published as `@paperite/server-api`)
-  - `auth/` adapters (Clerk verifier + better-auth option, selected by env)
-- Provider contract decision (record in this file): `SyncProvider` TS interface all clients code against; Convex impl + local-ws impl.
-- Desktop: generalize `src/lib/convex.ts` into `src/lib/sync-provider.ts` (convex client OR y-websocket client, runtime setting first). Settings → Sync shows backend kind (Avalid / Convex BYO / Local server) + URL + auth kind.
-- Mobile: install `convex` + `yjs`/`y-websocket`, `ConvexProvider` or Yjs provider behind the same switch, same Settings screen.
-- `paperite serve` gains `--sync` / local-backend mode so an old PC / VPS can be a real sync hub, not just a single-user web view.
-- Docs: official deploy (Avalid), BYO Convex fork flow (own region supported), BYO local-machine flow (systemd/docker example), `CLERK_JWT_ISSUER_DOMAIN` vs better-auth env, mobile-only onboarding proof.
-- Plan 011 correction note (mobile → provider interface for prod, Express REST stays LAN/dev only).
+### Milestone B — Convex source of truth
 
-**Out of scope:**
+In `../paperite-server/`:
 
-- Invite flow UI, presence UI, publish pipeline (separate plans under 016).
-- CF Workers public-pages layer (separate plan).
-- Pricing/checkout for Paperite+.
-- Plugin system (plan 021) — but provider must carry opaque block JSON so plugins don't need a sync rewrite later.
+1. Keep the existing Convex functions working while extracting them.
+2. Add/adjust adapters so Convex data maps to `server-api` types.
+3. Run Convex codegen and TypeScript checks.
+4. Add focused tests for space creation, membership authorization, note
+   snapshot/update persistence, and the free-space entitlement boundary.
+5. Document required env vars without committing deployment URLs or secrets.
 
-## Steps
+Do not delete `paperite/convex/` yet. The old client remains the compatibility
+path until the desktop and mobile cutovers pass.
 
-### Step 1: Define the `SyncProvider` contract
+**Gate:** a clean server-repo typecheck/codegen/test run and an explicit
+mapping from each provider method to its Convex query/mutation.
 
-In `../paperite-server/packages/server-api/`:
+### Milestone C — CLI and OpenTUI operator shell
 
-```ts
-// spaces, members, notes, updates, snapshots, presence, auth verify
-interface SyncProvider { kind: "convex" | "local"; /* ... */ }
-```
+In `../paperite-server/`, add the smallest command layer around the server
+use-cases without coupling the core to a terminal UI:
 
-Record the exact method list in this plan before coding clients. No client imports `convex/_generated` directly after cutover — only via `@paperite/server-api`.
+- `paperite-server serve` — headless server process; no interactive prompts.
+- `paperite-server setup` — explicit first-time configuration wizard; use
+  OpenTUI interactively and support non-interactive configuration.
+- `paperite-server tui` — explicit OpenTUI operator dashboard after setup.
+  It may show an unconfigured state and point to `setup`, but must not silently
+  replace the setup command.
+- `paperite-server status` — concise status output, with a non-interactive
+  path suitable for scripts.
+- `paperite-server doctor` — diagnostics for config, auth, storage, and
+  connectivity; do not print secrets.
 
-**Verify**: contract doc committed; `bunx tsc -b` clean in server repo.
+The first TUI screens should cover setup when configuration is missing, then a
+small dashboard with server state, backend/auth configuration summary, and
+diagnostic actions. Keep the TUI thin: it calls application services and does
+not import Convex-generated types directly. Use `@opentui/react` unless the
+server repository's runtime constraints make the core binding materially safer;
+if that exception applies, document it in the server README. Ensure the
+renderer is destroyed on every exit path and that non-TTY environments never
+hang waiting for input.
 
-### Step 2: Extract `paperite-server` (Convex side, as-is)
+Do not add an `init` command in this milestone. `paperite-server setup` is the
+canonical first-time configuration command; automation uses its flags/config
+file path and the non-interactive commands.
 
-Create sibling repo `../paperite-server/` with:
+**Gate:** command parsing, service boundaries, and TUI rendering have focused
+tests or deterministic smoke checks; `serve` remains usable without a TTY;
+`tui` exits cleanly on quit/error; no secret values are rendered or logged.
 
-```
-convex/schema.ts            # moved as-is
-convex/sharedSpaces.ts      # moved as-is
-convex/auth.config.ts       # moved as-is
-convex.json                 # { "functions": "convex/" }
-packages/server-api/        # new contract (Step 1)
-package.json
-.env.example                # CONVEX_DEPLOYMENT, CLERK_JWT_ISSUER_DOMAIN, AUTH_KIND=clerk|better-auth, SERVER_KIND=convex|local
-README.md                   # deploy + BYO + Clerk/better-auth setup (see Step 7)
-```
+### Milestone D — desktop cutover
 
-Copy, don't move yet — keep desktop's `convex/` working until Step 6
-flips the import source. Verify codegen exits 0.
+In `paperite/`:
 
-**Verify**: `ls ../paperite-server/convex/schema.ts` exists; codegen exits 0.
+- make `src/lib/sync-provider.ts` implement the public contract;
+- keep runtime URL precedence: user setting > environment default;
+- keep Convex client caching per normalized URL;
+- remove direct `convex/_generated` imports from desktop call sites;
+- preserve local-only behavior and existing cloud behavior;
+- keep the Sync settings UI truthful about the active backend.
 
-### Step 3: Build the local-machine backend (new, the big risk)
+**Gate:** desktop typecheck/tests pass; existing Convex flows have a manual
+smoke path; no local note path starts making Convex calls
+implicitly.
 
-In `../paperite-server/local/`:
+### Milestone E — mobile cutover
 
-- Node server (extend `paperite/server/index.js` design): Express REST (files/snapshots) + Yjs websocket (`y-websocket` style) for realtime collab.
-- Auth middleware: Clerk token verify (default, same issuer env) OR better-auth session (when `AUTH_KIND=better-auth`).
-- Storage layout mirrors desktop workspace so a VPS / old PC is a drop-in hub.
-- `paperite serve --sync` flag runs this mode (vs plain single-user web view).
+In `../paperite-mobile/`:
 
-**Verify**: two laptops pointed at one old-PC server converge on the same note over LAN (Yjs updates merge, no last-write-wins); restart server → state reloads from disk.
+- consume `@paperite/server-api` rather than duplicating backend types;
+- add the same effective-URL setting precedence with an AsyncStorage override;
+- keep local SQLite/filesystem notes working offline;
+- make hosted sync opt-in to an authenticated provider, not LAN REST;
+- add one provider smoke path behind a small feature flag before broad UI
+  migration.
 
-### Step 4: Deploy the Avalid (official) deployment
+**Gate:** mobile typecheck/editor build pass and the local-only path still
+works with no server configured.
 
-From `../paperite-server/`: `npx convex deploy` under Avalid's Convex
-account. Record the URL as `https://<avaid>.convex.cloud`. Set
-`CLERK_JWT_ISSUER_DOMAIN` in the Convex dashboard to the production
-Clerk issuer. Do NOT commit the real URL to the open repo README —
-ship it as the default env value in the apps.
+### Milestone F — official Convex deployment
 
-**Verify**: dashboard shows 5 tables; authed query with a Clerk token works.
+Only after B–E pass:
 
-### Step 5: Desktop + mobile provider switch
+- deploy the official Convex functions under the Avalid/Paperite+ account;
+- configure the production Clerk issuer and JWT template;
+- set the default URL through environment/config, never in source docs;
+- test desktop → mobile space/note visibility with an authenticated account;
+- record rollback steps and deployment ownership in the server README.
 
-- Rewrite `src/lib/convex.ts` → `src/lib/sync-provider.ts`: priority runtime setting > env; per-URL cached client; backend-kind flag; Clerk session token via `convex` JWT template (convex kind) or Authorization header / better-auth session (local kind).
-- Settings → Sync: effective URL + backend-kind pill (Avalid / Convex BYO / Local) + auth-kind note + Save/Reset. Renderer is source of truth.
-- Mobile: same switch in `_layout.tsx` + Settings screen (AsyncStorage-backed) + one smoke query behind beta flag against each backend kind.
+Deployment requires the owner's credentials and cannot be claimed from local
+typechecks alone.
 
-**Verify**: `bunx tsc -b` exits 0; `bun run lint` exits 0; manual: default build shows Avalid, paste custom Convex URL works, paste local `ws://old-pc:3000` works, both persist across restart.
+### Milestone G — local Yjs backend (follow-up)
 
-### Step 6: Docs in `paperite-server/README.md`
+After the Convex-first milestone is stable, add `local/` to
+`paperite-server/`:
 
-Must contain: 1-command official deploy, 1-command BYO Convex fork deploy (note: pick your Convex region, e.g. us-east-1, at deploy time), 1-command local-machine deploy (VPS / old PC, systemd + docker examples), Clerk vs better-auth setup, where to paste URL + kind in each app, mobile-only onboarding flow, and the one-liner: "clients talk to the provider contract; backends are Convex cloud or your own machine."
+- Yjs WebSocket sync plus snapshot/update persistence;
+- storage layout compatible with the local workspace contract;
+- per-device pairing credentials for personal-server access, stored as hashes
+  and individually revocable; a general auth adapter is a later follow-up;
+- restart/convergence tests with two clients;
+- no last-write-wins replacement for Yjs merging.
 
-**Verify**: fresh checkout follows README to a working BYO deployment (either kind) without asking questions.
+This milestone must not block A–F.
 
-### Step 7: Cut over and delete the old `convex/`
+### Milestone H — `paperite serve --sync` (follow-up)
 
-Only after Steps 2–5 verified: delete `paperite/convex/` + `convex.json`, point all imports at `@paperite/server-api`, append correction note to plan 011.
+Only after Milestone G:
 
-**Verify**: `git grep -l "from.*convex/_generated" -- src` returns only the new contract path; `bunx tsc -b` + `bun run lint` clean.
+- add an explicit `--sync` mode to the serve CLI;
+- keep plain `paperite serve` as the single-user browser view;
+- document LAN binding/auth warnings and workspace locking;
+- test two clients editing one note, restart, and rejoin.
 
-## Test plan
+### Milestone I — Plan 021 consumers (follow-up)
 
-- **Unit**: codegen + `tsc` clean in all three repos.
-- **BYO Convex drill**: fresh Convex account (own region) → fork → deploy → paste URL in desktop + mobile → create space on desktop → appears on mobile.
-- **BYO local drill**: old PC runs `paperite-server local` (or `paperite serve --sync`) → desktop + mobile point at `http(s)://old-pc` → create/edit note → converges; kill server, restart → no loss.
-- **Mobile-only drill**: ignore desktop; on mobile: Clerk login → inbox syncs, create note → visible after reinstall.
-- **Offline**: airplane mode → local edits work; reconnect → Yjs updates converge (single note, two devices, each backend kind).
-- **Auth swap**: `AUTH_KIND=better-auth` local server → login + sync works without Clerk.
+Only after the provider contract is stable:
+
+- opaque structured blocks can be carried without a provider rewrite;
+- database views and plugin blocks stay in Plan 021;
+- plugin/publish/presence work must not leak into the initial provider API.
+
+## Verification order
+
+Run the smallest relevant gate after each milestone:
+
+1. `bun install` / `bunx tsc -b` in `paperite-server`.
+2. CLI/TUI typecheck and focused command/service tests; no dev server.
+3. Convex codegen and focused server tests.
+4. Desktop `tsc -b` and unit tests.
+5. Mobile `bunx tsc --noEmit` and `bun run build:editor`.
+6. Authenticated integration smoke only when a real deployment exists.
+
+Do not run dev servers as part of an automated agent turn. Ask the owner for
+the manual server/device smoke when required.
 
 ## Done criteria
 
-ALL must hold:
+### Convex-first milestone (the actionable target now)
 
-- [ ] `../paperite-server/` exists, open-source, deploys both kinds with documented commands
-- [ ] `SyncProvider` contract published (`@paperite/server-api`), both clients use it, no direct `convex/_generated` imports
-- [ ] Desktop + mobile default to Avalid with zero setup; custom URL + kind persist
-- [ ] Local-machine backend converges over LAN + survives restart
-- [ ] Clerk mandatory on official path; better-auth works on BYO local path
-- [ ] No `convex/` remains in `paperite/`; single shared-types source
-- [ ] Plan 011 has correction note pointing prod mobile at provider
-- [ ] `bunx tsc -b` exits 0, `bun run lint` exits 0 (desktop)
+- [ ] `packages/server-api` exists with the contract and README.
+- [ ] `paperite-server setup` is the explicit first-time configuration command
+  and `paperite-server tui` is the explicit OpenTUI dashboard command;
+  `serve` remains headless and there is no `init` command.
+- [ ] Convex functions map to the contract and codegen/typecheck pass.
+- [ ] Desktop uses the contract through `sync-provider.ts`.
+- [ ] Mobile uses the same contract without breaking local-only mode.
+- [ ] No client call site imports `convex/_generated` directly.
+- [ ] Focused tests cover authz, spaces, snapshots, and update batches.
+- [ ] Official deployment smoke is documented and run once credentials exist.
+
+### Full backend vision (later)
+
+- [ ] Local Yjs backend converges and survives restart.
+- [ ] `paperite serve --sync` works with two clients.
+- [ ] Optional multi-user auth adapter works for a BYO local deployment.
+- [ ] Plan 021 structured blocks sync through both backends.
 
 ## STOP conditions
 
-- Yjs local backend can't converge with the same semantics as Convex (lost updates / split brain that the contract can't hide) — stop, fix the protocol before adding features.
-- Auth swap requires forking identity semantics (membership / invites mean different things per auth) — stop; auth model needs its own plan first.
-- Anyone proposes Workers/Vercel as the sync authority (instead of edge publish only) — stop; that's a category error.
-- Scope tries to include plugin runtime or database engine in this plan — stop; that's plan 021, this plan only carries opaque blocks.
+- Do not begin the local backend before the Convex contract is stable.
+- Do not delete the old desktop `convex/` until both clients pass cutover.
+- Do not commit real Convex/Clerk URLs, tokens, or deployment credentials.
+- Do not make plugins, presence, or publish fields required by the base
+  provider contract.
+- Do not make OpenTUI a runtime dependency of headless `serve`, and do not
+  make the TUI the only way to configure or operate the server.
+- Stop if a proposed change silently turns local-only editing into a network
+  dependency.
 
-## Maintenance notes
+## Handoff notes
 
-- `server/` (Express) stays in `paperite/` — extended with Yjs ws, it's both the `paperite serve` web path and the reference local backend.
-- Future 016 work (invite links, presence, publish) lands in `paperite-server/` first (both backends), then thin client calls.
-- Pin `convex`, `yjs`, `y-websocket` majors across all three repos; bump together.
-
-## Client-side progress (paperite repo, 2026-09-30)
-
-Step for runtime URL is implemented (convex kind only); generalization to provider switch + local kind is TODO under Steps 1/5 above.
-
-- **Shared-types decision: Option A.** `paperite-server` publishes `@paperite/server-api`; desktop + mobile `bun add` it. `src/lib/convex.ts` is the single choke point for `convex/_generated` imports — cutover swaps one import (now: generalize to `sync-provider.ts`).
-- **`src/lib/convex.ts` (current)**: runtime setting (`localStorage paperite.convex-url`) > `VITE_CONVEX_URL`; per-URL cached client; Clerk JWT template; `normalizeConvexUrl`; `useConvexUrl` hooks.
-- **Settings → Sync tab is live** (convex section). Must gain backend-kind + auth-kind rows (Step 5).
-- `main.js` `sync:get-status` untouched (env-based); renderer is source of truth.
-- Verify state: `bunx tsc -b` exits 0; `biome check` clean on touched files. Manual multi-backend checks owed (need real deployments, blocked on Steps 2–4).
+The first implementation task is **Milestone A only**: create and validate
+`packages/server-api`. The `paperite-server setup` and `paperite-server tui`
+decisions are part of the command contract, but the CLI/OpenTUI implementation
+belongs to Milestone C. The agent must not attempt deployment, local Yjs,
+`serve --sync`, plugin work, CLI/TUI implementation, or a broad client rewrite
+in that first round.

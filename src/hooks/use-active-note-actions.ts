@@ -1,5 +1,9 @@
 import { useCallback, useRef } from "react";
-import type { NoteContent, PageFormat, PaperiteAppState } from "@/lib/storage/types";
+import type {
+	NoteContent,
+	PageFormat,
+	PaperiteAppState,
+} from "@/lib/storage/types";
 import type { NotesEngine } from "@/lib/notes-engine";
 import {
 	noteContentText,
@@ -32,6 +36,7 @@ const FALLBACK_PAGE_FORMAT: PageFormat = {
 	indentation: "none",
 	lineHeight: "normal",
 	paragraphSpacing: "none",
+	dragHandle: false,
 };
 
 type Ref<T> = { current: T };
@@ -78,8 +83,7 @@ export function useActiveNoteActions(options: Options) {
 					? title
 					: stripNoteExtension(fileName(renamed.path));
 
-			const cachedContent =
-				current.noteContentCache.current.get(previousPath);
+			const cachedContent = current.noteContentCache.current.get(previousPath);
 			if (cachedContent !== undefined) {
 				current.noteContentCache.current.set(renamed.path, cachedContent);
 				current.noteContentCache.current.delete(previousPath);
@@ -261,9 +265,7 @@ export function useActiveNoteActions(options: Options) {
 					current.setAppState((state) => ({
 						...state,
 						openTabs: state.openTabs.map((item) =>
-							item.path === sourceNotePath
-								? { ...item, preview: false }
-								: item,
+							item.path === sourceNotePath ? { ...item, preview: false } : item,
 						),
 					}));
 				}
@@ -327,9 +329,7 @@ export function useActiveNoteActions(options: Options) {
 			return {
 				...state,
 				openTabs: state.openTabs.map((t) =>
-					t.path === notePath
-						? { ...t, pinned: !t.pinned, preview: false }
-						: t,
+					t.path === notePath ? { ...t, pinned: !t.pinned, preview: false } : t,
 				),
 			};
 		});

@@ -2,6 +2,7 @@ const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const http = require("node:http");
 const nodeCrypto = require("node:crypto");
+const os = require("node:os");
 const { execFileSync } = require("node:child_process");
 const path = require("node:path");
 const { DatabaseSync } = require("node:sqlite");
@@ -10,6 +11,7 @@ const {
 	BrowserWindow,
 	ipcMain,
 	Menu,
+	powerMonitor,
 	shell,
 	dialog,
 } = require("electron");
@@ -18,6 +20,7 @@ const {
 	yFragmentToNoteBody,
 	writeNoteBodyToYFragment,
 } = require("./server/lib/yjs-fragment");
+const deviceAuth = require("./server/lib/device-auth");
 
 let keytar;
 
@@ -86,23 +89,87 @@ const devServerUrl = process.env.VITE_DEV_SERVER_URL;
 const shouldUseMacChrome = process.platform === "darwin";
 const shouldSimulateMacChrome = process.env.IS_MACOS === "1";
 const shouldUseMacLayout = shouldUseMacChrome || shouldSimulateMacChrome;
+
+// Blank window after lock/suspend (linux): chromium backgrounds occluded
+// renderers — paint + timers pause while the screen is locked. On some
+// wayland compositors the occlusion signal sticks after unlock, so the
+// page never repaints until a manual reload. Discord/VSCode ship these
+// same switches; must run before app.ready.
+app.commandLine.appendSwitch("disable-renderer-backgrounding");
+app.commandLine.appendSwitch("disable-backgrounding-occluded-windows");
 let mainWindow; // hoist ke luar
 const popoutWindows = new Map(); // key: notePath, value: BrowserWindow
 let pendingAuthCallbackUrl;
 let workspaceWatchTimer;
 const workspaceWatchers = new Map();
 let indexDb;
+let workspaceOwnerServer;
+let workspaceOwnerWs;
+let workspaceOwnerSecret;
+let attachedServeUrl;
+const pendingBridgeRequests = new Map();
+
+const requestAttachedApi = async (apiPath, options = {}) => {
+	if (!attachedServeUrl) throw new Error("workspace owner is not attached");
+	const response = await fetch(`${attachedServeUrl}${apiPath}`, {
+		headers: { "content-type": "application/json", ...options.headers },
+		...options,
+	});
+	if (!response.ok) {
+		throw new Error(`workspace owner API ${response.status}`);
+	}
+	return response.json();
+};
 let legacyMigrationPromise;
 const legacyPathMigrations = new Map();
-let googleDriveAutoSyncTimer;
-let googleDriveAutoSyncInterval;
-let googleDriveAutoSyncInFlight = false;
-let googleDriveAutoSyncRequested = false;
-const googleDriveSyncState = {
-	syncing: false,
-	lastSyncedAt: null,
-	lastError: null,
+const ownerRpcHandlers = new Map();
+
+const registerOwnerIpcHandler = (channel, handler) => {
+	ownerRpcHandlers.set(channel, handler);
+	return ipcMain.handle(channel, handler);
 };
+
+const requestRendererBridge = (kind, payload = {}) => {
+	if (!mainWindow || mainWindow.isDestroyed()) {
+		return Promise.reject(new Error("Paperite window is unavailable"));
+	}
+
+	const requestId = nodeCrypto.randomUUID();
+	return new Promise((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			pendingBridgeRequests.delete(requestId);
+			reject(new Error("Paperite renderer did not answer the auth request"));
+		}, 5000);
+		pendingBridgeRequests.set(requestId, {
+			resolve,
+			reject,
+			timeout,
+		});
+		mainWindow.webContents.send(`auth:bridge-${kind}-request`, {
+			requestId,
+			...payload,
+		});
+	});
+};
+
+const resolveBridgeRequest = (requestId, result, error) => {
+	const pending = pendingBridgeRequests.get(requestId);
+	if (!pending) return;
+	clearTimeout(pending.timeout);
+	pendingBridgeRequests.delete(requestId);
+	if (error) pending.reject(new Error(String(error)));
+	else pending.resolve(result);
+};
+
+ipcMain.on("auth:bridge-session-response", (_event, requestId, result) => {
+	resolveBridgeRequest(requestId, result, result?.error);
+});
+ipcMain.on("auth:bridge-sessions-response", (_event, requestId, result) => {
+	resolveBridgeRequest(requestId, result, result?.error);
+});
+ipcMain.on("auth:bridge-sign-out-response", (_event, requestId, result) => {
+	resolveBridgeRequest(requestId, result, result?.error);
+});
 
 const workspaceRoot = () => path.join(app.getPath("documents"), "Paperite");
 const trashRoot = () => path.join(workspaceRoot(), "Trash");
@@ -114,16 +181,86 @@ const revisionsRoot = () =>
 	path.join(workspaceRoot(), ".paperite", "revisions");
 const syncRoot = () => path.join(workspaceRoot(), ".paperite", "sync");
 const syncNotesRoot = () => path.join(syncRoot(), "notes");
-const googleDriveTokenPath = () =>
-	path.join(syncRoot(), "google-drive-token.json");
-const syncPreferencesPath = () => path.join(syncRoot(), "preferences.json");
 const tombstonesPath = () =>
 	path.join(workspaceRoot(), ".paperite", "tombstones.jsonl");
 
-const googleDriveScope = "https://www.googleapis.com/auth/drive.appdata";
-const googleOauthSessions = new Map();
 const keychainService = "dev.iydheko.paperite";
-const googleDriveTokenAccount = "google-drive-token";
+const personalServerCredentialAccount = (connectionId) =>
+	`personal-server-credential:${connectionId}`;
+
+const purgeLegacyDriveToken = async () => {
+	const legacyTokenAccount = ["google", "drive", "token"].join("-");
+	try {
+		if (keytar)
+			await keytar.deletePassword(keychainService, legacyTokenAccount);
+	} catch {
+		// Legacy cleanup is best effort; startup must not fail over an old token.
+	}
+	try {
+		await fs.rm(path.join(syncRoot(), `${legacyTokenAccount}.json`), {
+			force: true,
+		});
+	} catch {
+		// Best effort cleanup of the pre-keychain token file.
+	}
+};
+
+const validateCredentialConnectionId = (connectionId) => {
+	if (
+		typeof connectionId !== "string" ||
+		!connectionId ||
+		connectionId.length > 200 ||
+		!/^[A-Za-z0-9._:-]+$/.test(connectionId)
+	) {
+		throw new Error("Invalid personal-server connection id");
+	}
+	return connectionId;
+};
+
+const readPersonalServerCredential = async (connectionId) => {
+	if (!keytar) {
+		throw new Error(
+			"OS keychain is unavailable for personal-server credentials",
+		);
+	}
+	return keytar.getPassword(
+		keychainService,
+		personalServerCredentialAccount(
+			validateCredentialConnectionId(connectionId),
+		),
+	);
+};
+
+const writePersonalServerCredential = async (connectionId, credential) => {
+	if (!keytar) {
+		throw new Error(
+			"OS keychain is unavailable for personal-server credentials",
+		);
+	}
+	if (typeof credential !== "string" || !credential) {
+		throw new Error("Personal-server credential is empty");
+	}
+	await keytar.setPassword(
+		keychainService,
+		personalServerCredentialAccount(
+			validateCredentialConnectionId(connectionId),
+		),
+		credential,
+	);
+	return { ok: true };
+};
+
+const deletePersonalServerCredential = async (connectionId) => {
+	if (keytar) {
+		await keytar.deletePassword(
+			keychainService,
+			personalServerCredentialAccount(
+				validateCredentialConnectionId(connectionId),
+			),
+		);
+	}
+	return { ok: true };
+};
 
 const normalizeRelativePath = (relativePath = "") => {
 	const normalized = path
@@ -286,6 +423,7 @@ const normalizePageFormat = (format) => ({
 	lineHeight: format?.lineHeight === "1.5" ? "1.5" : "normal",
 	paragraphSpacing:
 		format?.paragraphSpacing === "spacious" ? "spacious" : "none",
+	dragHandle: format?.dragHandle === true,
 });
 
 const isUuidFilename = (notePath) =>
@@ -519,6 +657,45 @@ const stableYStringify = (value) => {
 	return JSON.stringify(value) ?? "null";
 };
 
+// y-prosemirror skips null-valued attributes when encoding ProseMirror → Y
+// (createTypeFromElementNode: `val !== null`), but the editor serializes
+// defaults like `textAlign: null` into note.json on every save. Without
+// canonicalization the fold "already covered" check below sees a phantom
+// diff on every derived autosave and replays the whole body (delete +
+// fresh-ID insert) — the live cursor teleports to the end of the document
+// even though the text is byte-identical. Strip null attrs (and attrs left
+// empty by that) on both sides before comparing: a null attr is
+// ProseMirror's spelling of "default", so it must never count as news.
+const canonicalFoldContent = (value) => {
+	if (Array.isArray(value)) return value.map(canonicalFoldContent);
+	if (value !== null && typeof value === "object") {
+		const out = {};
+		for (const key of Object.keys(value)) {
+			let entry = value[key];
+			if (
+				key === "attrs" &&
+				entry !== null &&
+				typeof entry === "object" &&
+				!Array.isArray(entry)
+			) {
+				const attrs = {};
+				for (const [attrKey, attrVal] of Object.entries(entry)) {
+					if (attrVal !== null && attrVal !== undefined) {
+						attrs[attrKey] = attrVal;
+					}
+				}
+				if (Object.keys(attrs).length === 0) continue;
+				entry = attrs;
+			} else {
+				entry = canonicalFoldContent(entry);
+			}
+			out[key] = entry;
+		}
+		return out;
+	}
+	return value;
+};
+
 // Direct file writes (AI agents, serve sharing this workspace) bypass the Y
 // update path. Fold a newer note.json into the snapshot via CRDT merge so
 // live watchers see it. Our own projection writes the file BEFORE the
@@ -548,8 +725,8 @@ const foldYNoteFileIntoSnapshotLocked = async (normalizedPath, content) => {
 		Y.applyUpdate(probe, snapshotBytes);
 		const projected = yDocToNoteContentMain(probe, content);
 		alreadyCovered =
-			stableYStringify(projected) ===
-			stableYStringify(normalizeNoteContent(content));
+			stableYStringify(canonicalFoldContent(projected)) ===
+			stableYStringify(canonicalFoldContent(normalizeNoteContent(content)));
 	} catch {
 		alreadyCovered = false;
 	} finally {
@@ -663,10 +840,16 @@ const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 
 	await fs.mkdir(updatesDirectory, { recursive: true });
 
-	// Merge, never blind overwrite: the fragment ops inside merge
-	// positionally (concurrent regions converge). The metadata keys are then
-	// set explicitly on top so a full-state intent wins them
-	// DETERMINISTICALLY — blind map merging coin-flips on random clientIds.
+	// Full-state intent wins the body DETERMINISTICALLY: replay the incoming
+	// body into the stored lineage with a real delete+insert in ONE
+	// transaction, so old items are tombstoned instead of kept alongside the
+	// new ones. A raw CRDT apply of a fresh full state on top of existing
+	// state APPENDED the body (fresh inserts share the null left-origin with
+	// the stored head, so both survive the merge) — every fold/save pass
+	// duplicated the note without bound. Causal keystroke deltas still merge
+	// via appendLocalYNoteUpdate; this path is only for whole-file states
+	// (PUT, agent fold, first seed), where the file is the source of truth.
+	// (022: mirror of server/lib/yjs-persist.js — every fix lands in both.)
 	let snapshot = encoded.state;
 	try {
 		const existingSnapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
@@ -674,9 +857,11 @@ const writeLocalYNoteSnapshotLocked = async (normalizedPath, content) => {
 			const mergeDoc = new Y.Doc();
 			try {
 				Y.applyUpdate(mergeDoc, existingSnapshot);
-				Y.applyUpdate(mergeDoc, encoded.state);
-				const mergeMetadata = mergeDoc.getMap("metadata");
+				const { id, title, ...body } = normalizedContent;
 				mergeDoc.transact(() => {
+					writeNoteBodyToYFragment(mergeDoc, body);
+					mergeDoc.getMap("content").set("body", body);
+					const mergeMetadata = mergeDoc.getMap("metadata");
 					if (typeof normalizedContent.id === "string") {
 						mergeMetadata.set("id", normalizedContent.id);
 					}
@@ -952,411 +1137,6 @@ const writeDerivedNoteContent = async (notePath, content) => {
 	return { ok: true };
 };
 
-const googleDriveClientId = () =>
-	process.env.PAPERITE_GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID;
-
-const googleDriveClientSecret = () => process.env.PAPERITE_GOOGLE_CLIENT_SECRET;
-
-const base64Url = (buffer) =>
-	Buffer.from(buffer)
-		.toString("base64")
-		.replaceAll("+", "-")
-		.replaceAll("/", "_")
-		.replace(/=+$/g, "");
-
-const createPkceVerifier = () => base64Url(nodeCrypto.randomBytes(32));
-
-const createPkceChallenge = (verifier) =>
-	base64Url(nodeCrypto.createHash("sha256").update(verifier).digest());
-
-const readGoogleDriveToken = async () => {
-	if (keytar) {
-		const keychainToken = await keytar.getPassword(
-			keychainService,
-			googleDriveTokenAccount,
-		);
-		if (keychainToken) return JSON.parse(keychainToken);
-	}
-
-	try {
-		const legacyToken = JSON.parse(
-			await fs.readFile(googleDriveTokenPath(), "utf8"),
-		);
-		if (!keytar) return legacyToken;
-
-		await keytar.setPassword(
-			keychainService,
-			googleDriveTokenAccount,
-			JSON.stringify(legacyToken),
-		);
-		await fs.rm(googleDriveTokenPath(), { force: true });
-		return legacyToken;
-	} catch (error) {
-		if (error?.code === "ENOENT") return null;
-		throw error;
-	}
-};
-
-const defaultSyncPreferences = {
-	googleDriveEnabled: false,
-};
-
-const readSyncPreferences = async () => {
-	try {
-		const preferences = JSON.parse(
-			await fs.readFile(syncPreferencesPath(), "utf8"),
-		);
-		return {
-			...defaultSyncPreferences,
-			...(isPlainObject(preferences) ? preferences : {}),
-			googleDriveEnabled: preferences?.googleDriveEnabled === true,
-		};
-	} catch (error) {
-		if (error?.code === "ENOENT") return defaultSyncPreferences;
-		throw error;
-	}
-};
-
-const writeSyncPreferences = async (preferences) => {
-	const nextPreferences = {
-		...defaultSyncPreferences,
-		...preferences,
-		googleDriveEnabled: preferences?.googleDriveEnabled === true,
-	};
-	await fs.mkdir(path.dirname(syncPreferencesPath()), { recursive: true });
-	await writeFileAtomic(
-		syncPreferencesPath(),
-		JSON.stringify(nextPreferences, null, 2),
-	);
-	mainWindow?.webContents.send("sync:changed");
-	return nextPreferences;
-};
-
-const writeGoogleDriveToken = async (token) => {
-	if (!keytar) {
-		throw new Error(
-			"OS keychain is unavailable for Google Drive token storage",
-		);
-	}
-
-	await keytar.setPassword(
-		keychainService,
-		googleDriveTokenAccount,
-		JSON.stringify(token),
-	);
-	await fs.rm(googleDriveTokenPath(), { force: true });
-};
-
-const deleteGoogleDriveToken = async () => {
-	if (keytar) {
-		await keytar.deletePassword(keychainService, googleDriveTokenAccount);
-	}
-	await fs.rm(googleDriveTokenPath(), { force: true });
-};
-
-const getGoogleDriveStatus = async () => {
-	const token = await readGoogleDriveToken();
-	const preferences = await readSyncPreferences();
-	return {
-		configured: Boolean(googleDriveClientId()),
-		connected: Boolean(token?.refresh_token || token?.access_token),
-		enabled: preferences.googleDriveEnabled,
-		expiresAt: token?.expires_at ?? null,
-		syncing: googleDriveSyncState.syncing,
-		lastSyncedAt: googleDriveSyncState.lastSyncedAt,
-		lastError: googleDriveSyncState.lastError,
-	};
-};
-
-const exchangeGoogleToken = async (body) => {
-	const response = await fetch("https://oauth2.googleapis.com/token", {
-		method: "POST",
-		headers: { "content-type": "application/x-www-form-urlencoded" },
-		body: new URLSearchParams(body),
-	});
-
-	if (!response.ok) {
-		let details = "";
-		try {
-			const errorBody = await response.json();
-			details = errorBody.error_description || errorBody.error || "";
-		} catch {
-			details = await response.text().catch(() => "");
-		}
-
-		throw new Error(
-			`google token request failed: ${response.status}${details ? ` (${details})` : ""}`,
-		);
-	}
-
-	const token = await response.json();
-	return {
-		...token,
-		expires_at: token.expires_in
-			? Date.now() + token.expires_in * 1000
-			: undefined,
-	};
-};
-
-const startGoogleDriveConnection = async () => {
-	const clientId = googleDriveClientId();
-	if (!clientId) {
-		return { ok: false, error: "missing_google_client_id" };
-	}
-
-	const state = base64Url(nodeCrypto.randomBytes(24));
-	const verifier = createPkceVerifier();
-	const challenge = createPkceChallenge(verifier);
-	const server = http.createServer((request, response) => {
-		const requestUrl = new URL(
-			request.url ?? "/",
-			`http://${request.headers.host}`,
-		);
-
-		if (requestUrl.pathname !== "/callback") {
-			response.writeHead(404);
-			response.end("Not found");
-			return;
-		}
-
-		completeGoogleDriveConnection(requestUrl.toString())
-			.then(() => {
-				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-				response.end(
-					successPage(
-						"Drive connected.",
-						"Paperite is connected to Google Drive. Your notes will sync.",
-					),
-				);
-			})
-			.catch((error) => {
-				mainWindow?.webContents.send("sync:changed", {
-					error: error instanceof Error ? error.message : "Unknown error",
-				});
-				response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-				response.end(
-					successPage(
-						"Connection failed.",
-						error instanceof Error ? error.message : "Unknown error",
-						"!",
-					),
-				);
-			})
-			.finally(() => server.close());
-	});
-
-	await new Promise((resolve, reject) => {
-		server.once("error", reject);
-		server.listen(0, "127.0.0.1", resolve);
-	});
-
-	const address = server.address();
-	if (!address || typeof address === "string") {
-		server.close();
-		throw new Error("could not start google oauth callback server");
-	}
-
-	const redirectUri = `http://127.0.0.1:${address.port}/callback`;
-	googleOauthSessions.set(state, {
-		verifier,
-		redirectUri,
-		createdAt: Date.now(),
-	});
-
-	const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-	url.searchParams.set("client_id", clientId);
-	url.searchParams.set("redirect_uri", redirectUri);
-	url.searchParams.set("response_type", "code");
-	url.searchParams.set("scope", googleDriveScope);
-	url.searchParams.set("access_type", "offline");
-	url.searchParams.set("prompt", "consent");
-	url.searchParams.set("code_challenge", challenge);
-	url.searchParams.set("code_challenge_method", "S256");
-	url.searchParams.set("state", state);
-
-	await shell.openExternal(url.toString());
-	return { ok: true };
-};
-
-const completeGoogleDriveConnection = async (callbackUrl) => {
-	const clientId = googleDriveClientId();
-	if (!clientId) throw new Error("missing google client id");
-
-	const url = new URL(callbackUrl);
-	const code = url.searchParams.get("code");
-	const state = url.searchParams.get("state");
-	const session = state ? googleOauthSessions.get(state) : null;
-
-	if (!code || !state || !session)
-		throw new Error("invalid google oauth state");
-	googleOauthSessions.delete(state);
-
-	const tokenRequest = {
-		client_id: clientId,
-		code,
-		code_verifier: session.verifier,
-		grant_type: "authorization_code",
-		redirect_uri: session.redirectUri,
-	};
-	const clientSecret = googleDriveClientSecret();
-	if (clientSecret) tokenRequest.client_secret = clientSecret;
-
-	const token = await exchangeGoogleToken(tokenRequest);
-
-	await writeGoogleDriveToken(token);
-	mainWindow?.webContents.send("sync:changed");
-	scheduleGoogleDriveAutoSync(1_000);
-};
-
-const getGoogleDriveAccessToken = async () => {
-	const clientId = googleDriveClientId();
-	if (!clientId) throw new Error("missing google client id");
-
-	const token = await readGoogleDriveToken();
-	if (!token) throw new Error("google drive is not connected");
-	if (
-		token.access_token &&
-		token.expires_at &&
-		token.expires_at > Date.now() + 60_000
-	) {
-		return token.access_token;
-	}
-	if (!token.refresh_token) throw new Error("google refresh token is missing");
-
-	const refreshRequest = {
-		client_id: clientId,
-		grant_type: "refresh_token",
-		refresh_token: token.refresh_token,
-	};
-	const clientSecret = googleDriveClientSecret();
-	if (clientSecret) refreshRequest.client_secret = clientSecret;
-
-	const refreshed = await exchangeGoogleToken(refreshRequest);
-	const nextToken = {
-		...token,
-		...refreshed,
-		refresh_token: refreshed.refresh_token ?? token.refresh_token,
-	};
-	await writeGoogleDriveToken(nextToken);
-	return nextToken.access_token;
-};
-
-const googleDriveRequest = async (url, options = {}) => {
-	const accessToken = await getGoogleDriveAccessToken();
-	const response = await fetch(url, {
-		...options,
-		headers: {
-			...(options.headers ?? {}),
-			authorization: `Bearer ${accessToken}`,
-		},
-	});
-
-	if (!response.ok) {
-		let details = "";
-		try {
-			const errorBody = await response.json();
-			details =
-				errorBody.error?.message ||
-				errorBody.error_description ||
-				errorBody.error ||
-				"";
-		} catch {
-			details = await response.text().catch(() => "");
-		}
-
-		throw new Error(
-			`google drive request failed: ${response.status}${details ? ` (${details})` : ""}`,
-		);
-	}
-
-	return response;
-};
-
-const googleDriveAppPropertiesForNote = (manifest, extraProperties) => ({
-	noteId: manifest.noteId,
-	...extraProperties,
-});
-
-const listGoogleDriveFiles = async (noteId) => {
-	const query = [
-		"trashed = false",
-		"'appDataFolder' in parents",
-		`appProperties has { key='noteId' and value='${noteId.replaceAll("'", "\\'")}' }`,
-	].join(" and ");
-	const url = new URL("https://www.googleapis.com/drive/v3/files");
-	url.searchParams.set("spaces", "appDataFolder");
-	url.searchParams.set("fields", "files(id,name,appProperties,modifiedTime)");
-	url.searchParams.set("q", query);
-
-	const response = await googleDriveRequest(url.toString());
-	return (await response.json()).files ?? [];
-};
-
-const listAllGoogleDriveSyncFiles = async () => {
-	const query = [
-		"trashed = false",
-		"'appDataFolder' in parents",
-		"appProperties has { key='provider' and value='paperite' }",
-	].join(" and ");
-	const url = new URL("https://www.googleapis.com/drive/v3/files");
-	url.searchParams.set("spaces", "appDataFolder");
-	url.searchParams.set("fields", "files(id,name,appProperties,modifiedTime)");
-	url.searchParams.set("q", query);
-
-	const response = await googleDriveRequest(url.toString());
-	return (await response.json()).files ?? [];
-};
-
-const groupGoogleDriveFilesByNote = (files) => {
-	const groups = new Map();
-
-	for (const file of files) {
-		const noteId = file.appProperties?.noteId;
-		if (!noteId) continue;
-
-		groups.set(noteId, [...(groups.get(noteId) ?? []), file]);
-	}
-
-	return groups;
-};
-
-const uploadGoogleDriveFile = async ({ name, appProperties, content }) => {
-	const files = await listGoogleDriveFiles(appProperties.noteId);
-	const existing = files.find((file) => file.name === name);
-	if (existing) return existing;
-
-	const boundary = `paperite-${nodeCrypto.randomUUID()}`;
-	const metadata = {
-		name,
-		parents: ["appDataFolder"],
-		appProperties,
-	};
-	const body = Buffer.concat([
-		Buffer.from(
-			`--${boundary}\r\ncontent-type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n--${boundary}\r\ncontent-type: application/octet-stream\r\n\r\n`,
-		),
-		Buffer.from(content),
-		Buffer.from(`\r\n--${boundary}--`),
-	]);
-
-	const response = await googleDriveRequest(
-		"https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,appProperties,modifiedTime",
-		{
-			method: "POST",
-			headers: { "content-type": `multipart/related; boundary=${boundary}` },
-			body,
-		},
-	);
-	return response.json();
-};
-
-const downloadGoogleDriveFile = async (fileId) => {
-	const response = await googleDriveRequest(
-		`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`,
-	);
-	return Buffer.from(await response.arrayBuffer());
-};
-
 const listLocalSyncNotes = async () => {
 	await ensureWorkspace();
 	const entries = await fs.readdir(syncNotesRoot(), { withFileTypes: true });
@@ -1436,147 +1216,6 @@ const applyRemoteYjsFile = async ({
 			2,
 		),
 	);
-};
-
-const syncGoogleDrive = async () => {
-	const status = await getGoogleDriveStatus();
-	if (!status.enabled) return { ok: false, error: "google_drive_disabled" };
-	if (!status.configured)
-		return { ok: false, error: "missing_google_client_id" };
-	if (!status.connected)
-		return { ok: false, error: "google_drive_not_connected" };
-
-	const localNotes = await listLocalSyncNotes();
-	const localNoteIds = new Set(localNotes.map((note) => note.noteId));
-	const remoteFilesByNote = groupGoogleDriveFilesByNote(
-		await listAllGoogleDriveSyncFiles(),
-	);
-	let uploaded = 0;
-	let downloaded = 0;
-
-	for (const { noteId, manifest } of localNotes) {
-		const remoteFiles = remoteFilesByNote.get(noteId) ?? [];
-		const remoteNames = new Set(remoteFiles.map((file) => file.name));
-		const snapshot = await fs.readFile(syncNoteSnapshotPath(noteId));
-		if (!remoteNames.has("snapshot.bin")) {
-			await uploadGoogleDriveFile({
-				name: "snapshot.bin",
-				appProperties: googleDriveAppPropertiesForNote(manifest, {
-					kind: "snapshot",
-				}),
-				content: snapshot,
-			});
-			uploaded += 1;
-		}
-
-		const updatesDirectory = syncNoteUpdatesDirectory(noteId);
-		const updateEntries = await fs
-			.readdir(updatesDirectory, { withFileTypes: true })
-			.catch(() => []);
-		for (const entry of updateEntries) {
-			if (!entry.isFile() || remoteNames.has(entry.name)) continue;
-			await uploadGoogleDriveFile({
-				name: entry.name,
-				appProperties: googleDriveAppPropertiesForNote(manifest, {
-					kind: "update",
-				}),
-				content: await fs.readFile(path.join(updatesDirectory, entry.name)),
-			});
-			uploaded += 1;
-		}
-
-		for (const file of remoteFiles.filter(
-			(remote) => remote.appProperties?.kind === "update",
-		)) {
-			const localPath = path.join(updatesDirectory, file.name);
-			try {
-				await fs.access(localPath);
-				continue;
-			} catch (error) {
-				if (error?.code !== "ENOENT") throw error;
-			}
-
-			await applyRemoteYjsFile({
-				noteId,
-				notePath: manifest.path,
-				updateName: file.name,
-				content: await downloadGoogleDriveFile(file.id),
-			});
-			downloaded += 1;
-		}
-	}
-
-	for (const [noteId, remoteFiles] of remoteFilesByNote) {
-		if (localNoteIds.has(noteId)) continue;
-
-		const notePath =
-			remoteFiles.find((file) => file.appProperties?.path)?.appProperties
-				?.path ?? path.posix.join("Inbox", noteId);
-		const orderedFiles = [
-			...remoteFiles.filter((file) => file.appProperties?.kind === "snapshot"),
-			...remoteFiles.filter((file) => file.appProperties?.kind === "update"),
-		];
-
-		for (const file of orderedFiles) {
-			await applyRemoteYjsFile({
-				noteId,
-				notePath,
-				updateName: file.name === "snapshot.bin" ? `${file.id}.bin` : file.name,
-				content: await downloadGoogleDriveFile(file.id),
-			});
-			downloaded += 1;
-		}
-	}
-
-	return { ok: true, uploaded, downloaded };
-};
-
-const runGoogleDriveSync = async () => {
-	googleDriveSyncState.syncing = true;
-	googleDriveSyncState.lastError = null;
-	mainWindow?.webContents.send("sync:changed");
-
-	try {
-		const result = await syncGoogleDrive();
-		if (result?.ok) googleDriveSyncState.lastSyncedAt = Date.now();
-		return result;
-	} catch (error) {
-		googleDriveSyncState.lastError =
-			error instanceof Error ? error.message : "Google Drive sync failed";
-		throw error;
-	} finally {
-		googleDriveSyncState.syncing = false;
-		mainWindow?.webContents.send("sync:changed");
-	}
-};
-
-const runGoogleDriveAutoSync = async () => {
-	if (googleDriveAutoSyncInFlight) {
-		googleDriveAutoSyncRequested = true;
-		return;
-	}
-
-	googleDriveAutoSyncInFlight = true;
-	googleDriveAutoSyncRequested = false;
-
-	try {
-		await runGoogleDriveSync();
-	} catch (error) {
-		mainWindow?.webContents.send("sync:changed", {
-			error:
-				error instanceof Error ? error.message : "Google Drive sync failed",
-		});
-	} finally {
-		googleDriveAutoSyncInFlight = false;
-		if (googleDriveAutoSyncRequested) scheduleGoogleDriveAutoSync(5_000);
-	}
-};
-
-const scheduleGoogleDriveAutoSync = (delayMs = 10_000) => {
-	clearTimeout(googleDriveAutoSyncTimer);
-	googleDriveAutoSyncTimer = setTimeout(() => {
-		runGoogleDriveAutoSync().catch(() => undefined);
-	}, delayMs);
 };
 
 const revisionKey = (notePath) => Buffer.from(notePath).toString("base64url");
@@ -2335,6 +1974,7 @@ const writeNoteTitle = async (notePath, title) => {
 
 const isAppUrl = (url) => {
 	if (url.startsWith("paperite://")) return true;
+	if (attachedServeUrl && url.startsWith(attachedServeUrl)) return true;
 	if (devServerUrl && url.startsWith(devServerUrl)) return true;
 	if (
 		rendererServerUrl &&
@@ -2517,6 +2157,10 @@ const createWindowOptions = ({ width, height, minWidth, minHeight }) => ({
 		// Explicit persistent partition: Clerk's session tokens live in
 		// the renderer's localStorage/cookies, which must survive restarts.
 		partition: "persist:paperite",
+		// Same blank-after-lock family as the switches above: default true
+		// throttles rAF/timers once the window is occluded (locked), and on
+		// some compositors the page never gets un-throttled on unlock.
+		backgroundThrottling: false,
 		webSecurity: false,
 		preload: require("node:path").join(__dirname, "preload.js"),
 		additionalArguments: [
@@ -2671,6 +2315,42 @@ const createApplicationMenu = () => {
 	Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 };
 
+// Safety net for the suspend path the switches can't cover (gpu process
+// actually died, renderer crashed while locked): reload instead of sitting
+// on a black window until the user hits ctrl+r manually.
+const attachRendererRecovery = (window) => {
+	window.webContents.on("render-process-gone", (_event, details) => {
+		if (window.isDestroyed()) return;
+		console.error(
+			`[paperite] renderer gone (${details?.reason ?? "unknown"}), reloading`,
+		);
+		window.webContents.reload();
+	});
+	window.webContents.on("unresponsive", () => {
+		if (window.isDestroyed()) return;
+		console.warn("[paperite] renderer unresponsive, reloading");
+		window.webContents.reload();
+	});
+};
+
+const recoverWindowsAfterSuspend = (reason) => {
+	for (const window of BrowserWindow.getAllWindows()) {
+		if (window.isDestroyed()) continue;
+		try {
+			if (window.webContents.isCrashed()) {
+				console.error(
+					`[paperite] renderer crashed while suspended (${reason}), reloading`,
+				);
+				window.webContents.reload();
+			} else {
+				window.webContents.send("system:resumed", { reason });
+			}
+		} catch (error) {
+			console.error("[paperite] suspend recovery failed:", error);
+		}
+	}
+};
+
 const createWindow = () => {
 	mainWindow = new BrowserWindow(
 		createWindowOptions({
@@ -2681,6 +2361,7 @@ const createWindow = () => {
 		}),
 	);
 
+	attachRendererRecovery(mainWindow);
 	revealWindow(mainWindow);
 
 	mainWindow.webContents.on("will-navigate", (event, url) => {
@@ -2697,7 +2378,9 @@ const createWindow = () => {
 		return { action: "deny" };
 	});
 
-	if (devServerUrl) {
+	if (attachedServeUrl) {
+		mainWindow.loadURL(attachedServeUrl);
+	} else if (devServerUrl) {
 		mainWindow.loadURL(devServerUrl);
 	} else {
 		getRendererServerUrl()
@@ -2719,7 +2402,180 @@ const notifyWorkspaceChanged = () => {
 	workspaceWatchTimer = setTimeout(() => {
 		refreshWorkspaceWatchers().catch(() => undefined);
 		mainWindow?.webContents.send("workspace:changed");
+		if (workspaceOwnerWs) {
+			const message = JSON.stringify({ event: "workspace:changed" });
+			for (const client of workspaceOwnerWs.clients) {
+				if (client.readyState === 1) client.send(message);
+			}
+		}
 	}, 150);
+};
+
+const encodeOwnerValue = (value) => {
+	if (value instanceof Uint8Array || Buffer.isBuffer(value)) {
+		return { __paperiteBinary: Buffer.from(value).toString("base64") };
+	}
+	if (Array.isArray(value)) return value.map(encodeOwnerValue);
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value).map(([key, child]) => [
+				key,
+				encodeOwnerValue(child),
+			]),
+		);
+	}
+	return value;
+};
+
+const decodeOwnerValue = (value) => {
+	if (value && typeof value === "object" && value.__paperiteBinary) {
+		return Uint8Array.from(Buffer.from(value.__paperiteBinary, "base64"));
+	}
+	if (Array.isArray(value)) return value.map(decodeOwnerValue);
+	if (value && typeof value === "object") {
+		return Object.fromEntries(
+			Object.entries(value).map(([key, child]) => [
+				key,
+				decodeOwnerValue(child),
+			]),
+		);
+	}
+	return value;
+};
+
+const readOwnerRequestBody = async (request) => {
+	const chunks = [];
+	for await (const chunk of request) chunks.push(chunk);
+	return Buffer.concat(chunks);
+};
+
+// Auth bridge for the serve-first ordering: serve owns the workspace and
+// the desktop attaches to it as a client, so serve has no owner to ask for
+// the Clerk session. The desktop publishes a loopback bridge instead and
+// serve pulls the session from it — same channels, same secret-gated
+// transport as the owner bridge, but a separate file so the two orderings
+// never fight over the workspace lock.
+let authBridgeServer;
+
+const startAuthBridge = async () => {
+	const secret = nodeCrypto.randomBytes(32).toString("hex");
+	const server = http.createServer(async (request, response) => {
+		if (request.url !== "/__paperite_auth/rpc" || request.method !== "POST") {
+			response.writeHead(404);
+			response.end("Not found");
+			return;
+		}
+		if (request.headers["x-paperite-auth-secret"] !== secret) {
+			response.writeHead(403, { "content-type": "application/json" });
+			response.end(JSON.stringify({ error: "invalid auth bridge secret" }));
+			return;
+		}
+		try {
+			const payload = JSON.parse(
+				(await readOwnerRequestBody(request)).toString("utf8"),
+			);
+			if (payload.protocolVersion !== 1)
+				throw new Error("unsupported auth bridge protocol");
+			if (!payload.channel?.startsWith("auth:"))
+				throw new Error("auth bridge channel is not allowed");
+			const handler = ownerRpcHandlers.get(payload.channel);
+			if (!handler)
+				throw new Error(`auth bridge channel not found: ${payload.channel}`);
+			const result = await handler({}, ...decodeOwnerValue(payload.args || []));
+			response.setHeader("content-type", "application/json");
+			response.end(JSON.stringify({ result: encodeOwnerValue(result) }));
+		} catch (error) {
+			response.writeHead(500, { "content-type": "application/json" });
+			response.end(JSON.stringify({ error: error?.message ?? String(error) }));
+		}
+	});
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	const address = server.address();
+	if (!address || typeof address === "string")
+		throw new Error("auth bridge did not bind");
+	authBridgeServer = server;
+	const { writeAuthBridge } = require("./server/lib/auth-bridge");
+	await writeAuthBridge(workspaceRoot(), {
+		protocolVersion: 1,
+		port: address.port,
+		secret,
+		pid: process.pid,
+	});
+	console.log(`[paperite] auth bridge on 127.0.0.1:${address.port}`);
+};
+
+const startWorkspaceOwnerBridge = async () => {
+	const { WebSocketServer } = require("ws");
+	workspaceOwnerSecret = nodeCrypto.randomBytes(32).toString("hex");
+	workspaceOwnerServer = http.createServer(async (request, response) => {
+		if (request.url === "/__paperite_owner/health") {
+			response.setHeader("content-type", "application/json");
+			response.end(JSON.stringify({ ok: true, protocolVersion: 1 }));
+			return;
+		}
+		if (request.url !== "/__paperite_owner/rpc" || request.method !== "POST") {
+			response.writeHead(404);
+			response.end("Not found");
+			return;
+		}
+		if (request.headers["x-paperite-owner-secret"] !== workspaceOwnerSecret) {
+			response.writeHead(403);
+			response.end(JSON.stringify({ error: "invalid workspace owner secret" }));
+			return;
+		}
+		try {
+			const payload = JSON.parse(
+				(await readOwnerRequestBody(request)).toString("utf8"),
+			);
+			if (payload.protocolVersion !== 1)
+				throw new Error("unsupported owner protocol");
+			if (
+				!payload.channel?.startsWith("notes:") &&
+				!payload.channel?.startsWith("auth:")
+			)
+				throw new Error("owner channel is not allowed");
+			const handler = ownerRpcHandlers.get(payload.channel);
+			if (!handler)
+				throw new Error(`owner channel not found: ${payload.channel}`);
+			const result = await handler({}, ...decodeOwnerValue(payload.args || []));
+			response.setHeader("content-type", "application/json");
+			response.end(JSON.stringify({ result: encodeOwnerValue(result) }));
+		} catch (error) {
+			response.writeHead(500, { "content-type": "application/json" });
+			response.end(JSON.stringify({ error: error?.message ?? String(error) }));
+		}
+	});
+	workspaceOwnerWs = new WebSocketServer({
+		server: workspaceOwnerServer,
+		path: "/__paperite_owner/live",
+		verifyClient: ({ req }) =>
+			req.headers["x-paperite-owner-secret"] === workspaceOwnerSecret,
+	});
+	await new Promise((resolve, reject) => {
+		workspaceOwnerServer.once("error", reject);
+		workspaceOwnerServer.listen(0, "127.0.0.1", resolve);
+	});
+	const address = workspaceOwnerServer.address();
+	if (!address || typeof address === "string")
+		throw new Error("workspace owner bridge did not bind");
+	const locks = require("./server/lib/locks");
+	const lockPath = locks.workspaceLockPath(workspaceRoot());
+	const lock = locks.readWorkspaceLock(workspaceRoot());
+	if (!lock || lock.pid !== process.pid)
+		throw new Error("workspace owner lock disappeared");
+	const lockPayload = JSON.stringify({
+		...lock,
+		protocolVersion: 1,
+		ownerPort: address.port,
+		ownerSecret: workspaceOwnerSecret,
+	});
+	const lockTempPath = `${lockPath}.${process.pid}.tmp`;
+	fsSync.writeFileSync(lockTempPath, lockPayload);
+	fsSync.renameSync(lockTempPath, lockPath);
+	console.log(`[paperite] workspace owner bridge on 127.0.0.1:${address.port}`);
 };
 
 const refreshWorkspaceWatchers = async () => {
@@ -2865,7 +2721,7 @@ ipcMain.handle("auth:get-pending-callback", () => {
 // Clerk's API only accepts http(s) redirect URLs ("invalid_url_scheme"
 // rejects paperite:// outright), so a custom scheme can never be used as
 // the OAuth redirect directly. Instead we run a throwaway loopback server
-// (same RFC 8252 pattern as the Google Drive flow above), use its URL as
+// (same RFC 8252 loopback pattern), use its URL as
 // the redirect, and forward the callback into the renderer over IPC.
 // No xdg/deep-link/OS-handler involved at all.
 let clerkAuthServer;
@@ -2932,7 +2788,7 @@ p { margin: 1rem auto 0; max-width: 24rem; color: rgba(255,255,255,0.5); font-si
 </head>
 <body>
 <main>
-<div class="brand"><span class="mark">P</span>Paperite</div>
+
 <div class="check" aria-hidden="true">${check}</div>
 <h1>${escapeHtml(title)}</h1>
 <p>${escapeHtml(subtitle)}</p>
@@ -2985,46 +2841,55 @@ const startClerkAuthServer = async () => {
 };
 
 ipcMain.handle("auth:start-callback-server", () => getClerkAuthServer());
+registerOwnerIpcHandler("auth:get-session", (_event, options) =>
+	requestRendererBridge("session", {
+		includeToken: options?.includeToken === true,
+	}),
+);
+registerOwnerIpcHandler("auth:sign-out", () =>
+	requestRendererBridge("sign-out"),
+);
+// The browser holds no Clerk session, so it cannot list or revoke sessions
+// or write user metadata itself. The desktop answers on its behalf.
+registerOwnerIpcHandler("auth:list-sessions", () =>
+	requestRendererBridge("sessions", { action: "list-sessions" }),
+);
+registerOwnerIpcHandler("auth:revoke-session", (_event, sessionId) =>
+	requestRendererBridge("sessions", { action: "revoke-session", sessionId }),
+);
+registerOwnerIpcHandler("auth:revoke-other-sessions", () =>
+	requestRendererBridge("sessions", { action: "revoke-others" }),
+);
+registerOwnerIpcHandler("auth:update-metadata", (_event, metadata) =>
+	requestRendererBridge("sessions", { action: "update-metadata", metadata }),
+);
+ipcMain.handle("device-auth:status", () => deviceAuth.status());
+ipcMain.handle("device-auth:claim", (_event, userId) =>
+	deviceAuth.claim(userId),
+);
+ipcMain.handle("device-auth:clear", () => deviceAuth.clear());
+ipcMain.handle("device-auth:enable-file", () => deviceAuth.enableFileStorage());
 
 ipcMain.handle("sync:get-status", async () => ({
-	googleDrive: await getGoogleDriveStatus(),
 	convex: {
 		configured: Boolean(process.env.VITE_CONVEX_URL),
 	},
 }));
 
-ipcMain.handle("sync:set-google-drive-enabled", async (_event, enabled) => {
-	await ensureWorkspace();
-	const preferences = await writeSyncPreferences({
-		googleDriveEnabled: enabled === true,
-	});
-	if (preferences.googleDriveEnabled) scheduleGoogleDriveAutoSync(1_000);
-	return { ok: true, googleDriveEnabled: preferences.googleDriveEnabled };
-});
+ipcMain.handle("personal-server:get-credential", async (_event, connectionId) =>
+	readPersonalServerCredential(connectionId),
+);
 
-ipcMain.handle("sync:connect-google-drive", async () => {
-	// Accepted risk (explicit): this IPC performs Google OAuth with no
-	// Clerk check — main cannot verify a renderer-owned Clerk session.
-	// Enforcement lives in the renderer: the Settings UI gate (lapis 1)
-	// and ElectronSyncEngine.connectGoogleDrive (lapis 2, same file as the
-	// bridge). Raw IPC from DevTools stays possible, but that is the same
-	// trust boundary as reading ~/Documents/Paperite directly — no
-	// privilege is escalated beyond what the local user already has.
-	await ensureWorkspace();
-	return startGoogleDriveConnection();
-});
+ipcMain.handle(
+	"personal-server:save-credential",
+	async (_event, connectionId, credential) =>
+		writePersonalServerCredential(connectionId, credential),
+);
 
-ipcMain.handle("sync:run-google-drive", async () => {
-	await ensureWorkspace();
-	return runGoogleDriveSync();
-});
-
-ipcMain.handle("sync:disconnect-google-drive", async () => {
-	clearTimeout(googleDriveAutoSyncTimer);
-	await deleteGoogleDriveToken();
-	mainWindow?.webContents.send("sync:changed");
-	return { ok: true };
-});
+ipcMain.handle(
+	"personal-server:delete-credential",
+	async (_event, connectionId) => deletePersonalServerCredential(connectionId),
+);
 
 ipcMain.handle("app:set-title", (event, title) => {
 	const window = getFocusedWindow(event);
@@ -3032,6 +2897,18 @@ ipcMain.handle("app:set-title", (event, title) => {
 		typeof title === "string" && title.trim() ? title : "Paperite";
 	window?.setTitle(nextTitle);
 	return { ok: true };
+});
+
+ipcMain.handle("app:get-device-info", () => {
+	try {
+		return {
+			hostname: os.hostname(),
+			platform: process.platform,
+			arch: process.arch,
+		};
+	} catch {
+		return { hostname: "", platform: process.platform, arch: "" };
+	}
 });
 
 ipcMain.handle("window:get-state", (event) => {
@@ -3047,11 +2924,13 @@ ipcMain.handle("window:action", (event, action) => {
 	return { ok: true };
 });
 
-ipcMain.handle("notes:get-workspace", async () => listWorkspace());
+registerOwnerIpcHandler("notes:get-workspace", async () => listWorkspace());
 
-ipcMain.handle("notes:search", async (_event, query) => searchNotes(query));
+registerOwnerIpcHandler("notes:search", async (_event, query) =>
+	searchNotes(query),
+);
 
-ipcMain.handle("notes:read-note", async (_event, notePath) => {
+registerOwnerIpcHandler("notes:read-note", async (_event, notePath) => {
 	await ensureWorkspace();
 	await migrateLegacyNotes();
 	const normalizedPath = currentNotePath(notePath);
@@ -3060,21 +2939,23 @@ ipcMain.handle("notes:read-note", async (_event, notePath) => {
 	return content;
 });
 
-ipcMain.handle("notes:read-y-note", async (_event, notePath) => {
+registerOwnerIpcHandler("notes:read-y-note", async (_event, notePath) => {
 	await ensureWorkspace();
 	await migrateLegacyNotes();
 	return readLocalYNoteState(notePath);
 });
 
-ipcMain.handle("notes:write-y-update", async (_event, notePath, update) => {
-	await ensureWorkspace();
-	await migrateLegacyNotes();
-	const result = await appendLocalYNoteUpdate(notePath, update);
-	scheduleGoogleDriveAutoSync();
-	return result;
-});
+registerOwnerIpcHandler(
+	"notes:write-y-update",
+	async (_event, notePath, update) => {
+		await ensureWorkspace();
+		await migrateLegacyNotes();
+		const result = await appendLocalYNoteUpdate(notePath, update);
+		return result;
+	},
+);
 
-ipcMain.handle(
+registerOwnerIpcHandler(
 	"notes:read-y-note-diff",
 	async (_event, notePath, stateVector) => {
 		await ensureWorkspace();
@@ -3083,101 +2964,108 @@ ipcMain.handle(
 	},
 );
 
-ipcMain.handle(
+registerOwnerIpcHandler(
 	"notes:write-derived-note",
 	async (_event, notePath, content) => {
 		await ensureWorkspace();
 		await migrateLegacyNotes();
 		const result = await writeDerivedNoteContent(notePath, content);
-		scheduleGoogleDriveAutoSync();
 		return result;
 	},
 );
 
-ipcMain.handle("notes:write-note", async (_event, notePath, content) => {
-	await ensureWorkspace();
-	await migrateLegacyNotes();
-	const normalizedPath = currentNotePath(notePath);
-	const normalizedContent = normalizeNoteContent(content);
-	let existingContent;
+registerOwnerIpcHandler(
+	"notes:write-note",
+	async (_event, notePath, content) => {
+		await ensureWorkspace();
+		await migrateLegacyNotes();
+		const normalizedPath = currentNotePath(notePath);
+		const normalizedContent = normalizeNoteContent(content);
+		let existingContent;
 
-	// Preserve persisted metadata stripped by the editor body payload.
-	if (
-		!normalizedContent.id ||
-		!normalizedContent.title ||
-		normalizedContent.pageFormat === undefined
-	) {
-		try {
-			existingContent = await readNoteContent(normalizedPath, true);
-			if (!normalizedContent.id && existingContent.id) {
-				normalizedContent.id = existingContent.id;
+		// Preserve persisted metadata stripped by the editor body payload.
+		if (
+			!normalizedContent.id ||
+			!normalizedContent.title ||
+			normalizedContent.pageFormat === undefined
+		) {
+			try {
+				existingContent = await readNoteContent(normalizedPath, true);
+				if (!normalizedContent.id && existingContent.id) {
+					normalizedContent.id = existingContent.id;
+				}
+				if (!normalizedContent.title && existingContent.title) {
+					normalizedContent.title = existingContent.title;
+				}
+				if (
+					normalizedContent.pageFormat === undefined &&
+					existingContent.pageFormat !== undefined
+				) {
+					normalizedContent.pageFormat = existingContent.pageFormat;
+				}
+			} catch {
+				// new note or missing file — id already set by createEmptyNoteContent
 			}
-			if (!normalizedContent.title && existingContent.title) {
-				normalizedContent.title = existingContent.title;
-			}
-			if (
-				normalizedContent.pageFormat === undefined &&
-				existingContent.pageFormat !== undefined
-			) {
-				normalizedContent.pageFormat = existingContent.pageFormat;
-			}
-		} catch {
-			// new note or missing file — id already set by createEmptyNoteContent
 		}
-	}
 
-	if (!normalizedContent.id) {
-		normalizedContent.id = crypto.randomUUID();
-	}
+		if (!normalizedContent.id) {
+			normalizedContent.id = crypto.randomUUID();
+		}
 
-	// sync title from index for UUID-named files
-	if (isUuidFilename(normalizedPath) && !normalizedContent.title && indexDb) {
-		const row = indexDb
-			.prepare("SELECT title FROM notes WHERE path = ?")
-			.get(normalizedPath);
-		if (row?.title) normalizedContent.title = row.title;
-	}
+		// sync title from index for UUID-named files
+		if (isUuidFilename(normalizedPath) && !normalizedContent.title && indexDb) {
+			const row = indexDb
+				.prepare("SELECT title FROM notes WHERE path = ?")
+				.get(normalizedPath);
+			if (row?.title) normalizedContent.title = row.title;
+		}
 
-	await ensureNoteDirectory(normalizedPath);
-	await writeRevisionSnapshot(normalizedPath, normalizedContent);
-	await writeFileAtomic(
-		resolveNoteContentPath(normalizedPath),
-		serializeNoteContent(normalizedContent),
-	);
-	await writeLocalYNoteSnapshot(normalizedPath, normalizedContent);
-	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
-	await getIndexedNote(normalizedPath, stats);
-	scheduleGoogleDriveAutoSync();
-	return { ok: true };
-});
+		await ensureNoteDirectory(normalizedPath);
+		await writeRevisionSnapshot(normalizedPath, normalizedContent);
+		await writeFileAtomic(
+			resolveNoteContentPath(normalizedPath),
+			serializeNoteContent(normalizedContent),
+		);
+		await writeLocalYNoteSnapshot(normalizedPath, normalizedContent);
+		const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+		await getIndexedNote(normalizedPath, stats);
+		return { ok: true };
+	},
+);
 
-ipcMain.handle("notes:set-pinned", async (_event, notePath, pinned) => {
-	await ensureWorkspace();
-	const normalizedPath = currentNotePath(notePath);
-	const content = await readNoteContent(normalizedPath, true);
-	content.pinned = pinned === true;
-	await writeFileAtomic(
-		resolveNoteContentPath(normalizedPath),
-		serializeNoteContent(content),
-	);
-	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
-	await getIndexedNote(normalizedPath, stats);
-	return { pinned: content.pinned };
-});
+registerOwnerIpcHandler(
+	"notes:set-pinned",
+	async (_event, notePath, pinned) => {
+		await ensureWorkspace();
+		const normalizedPath = currentNotePath(notePath);
+		const content = await readNoteContent(normalizedPath, true);
+		content.pinned = pinned === true;
+		await writeFileAtomic(
+			resolveNoteContentPath(normalizedPath),
+			serializeNoteContent(content),
+		);
+		const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+		await getIndexedNote(normalizedPath, stats);
+		return { pinned: content.pinned };
+	},
+);
 
-ipcMain.handle("notes:set-page-format", async (_event, notePath, format) => {
-	await ensureWorkspace();
-	const normalizedPath = currentNotePath(notePath);
-	const content = await readNoteContent(normalizedPath, true);
-	content.pageFormat = normalizePageFormat(format);
-	await writeFileAtomic(
-		resolveNoteContentPath(normalizedPath),
-		serializeNoteContent(content),
-	);
-	const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
-	await getIndexedNote(normalizedPath, stats);
-	return { ok: true, pageFormat: content.pageFormat };
-});
+registerOwnerIpcHandler(
+	"notes:set-page-format",
+	async (_event, notePath, format) => {
+		await ensureWorkspace();
+		const normalizedPath = currentNotePath(notePath);
+		const content = await readNoteContent(normalizedPath, true);
+		content.pageFormat = normalizePageFormat(format);
+		await writeFileAtomic(
+			resolveNoteContentPath(normalizedPath),
+			serializeNoteContent(content),
+		);
+		const stats = await fs.stat(resolveNoteContentPath(normalizedPath));
+		await getIndexedNote(normalizedPath, stats);
+		return { ok: true, pageFormat: content.pageFormat };
+	},
+);
 
 const collectReferencedAssetPaths = (node, out = new Set()) => {
 	if (node?.type === "image" && typeof node.attrs?.src === "string") {
@@ -3235,9 +3123,18 @@ const pruneNoteAssets = async (notePath) => {
 
 	return { ok: true, deleted };
 };
-ipcMain.handle(
+registerOwnerIpcHandler(
 	"notes:save-image",
 	async (_event, notePath, imageDataUrl, filename) => {
+		if (attachedServeUrl) {
+			return requestAttachedApi(
+				`/api/notes/${encodeURIComponent(notePath)}/assets`,
+				{
+					method: "POST",
+					body: JSON.stringify({ imageDataUrl, filename }),
+				},
+			);
+		}
 		await ensureWorkspace();
 		const normalizedPath = currentNotePath(notePath);
 		await ensureNoteDirectory(normalizedPath);
@@ -3262,9 +3159,18 @@ ipcMain.handle(
 	},
 );
 
-ipcMain.handle(
+registerOwnerIpcHandler(
 	"notes:get-asset-url",
 	async (_event, notePath, assetRelativePath) => {
+		if (attachedServeUrl) {
+			const encodeAssetPath = (value) =>
+				toPosixRelativePath(value)
+					.split("/")
+					.filter(Boolean)
+					.map(encodeURIComponent)
+					.join("/");
+			return `${attachedServeUrl}/note-assets/${encodeAssetPath(notePath)}/${encodeAssetPath(assetRelativePath)}`;
+		}
 		const normalizedPath = currentNotePath(notePath);
 		// Served over http: file:// img URLs are blocked on http:// pages.
 		// Stored note content keeps the workspace-relative path; only the
@@ -3279,38 +3185,56 @@ ipcMain.handle(
 		return `${base}/note-assets/${encodeAssetPath(normalizedPath)}/${encodeAssetPath(assetRelativePath)}`;
 	},
 );
-ipcMain.handle("notes:prune-assets", async (_event, notePath) => {
+registerOwnerIpcHandler(
+	"notes:read-asset",
+	async (_event, notePath, assetRelativePath) => {
+		const assetPath = path.posix.join(
+			noteAssetsPath(notePath),
+			assetRelativePath,
+		);
+		return fs.readFile(resolveWorkspacePath(assetPath));
+	},
+);
+registerOwnerIpcHandler("notes:prune-assets", async (_event, notePath) => {
+	if (attachedServeUrl) {
+		return { ok: true, deleted: 0, skipped: "workspace-owner" };
+	}
 	await ensureWorkspace();
 	return pruneNoteAssets(notePath);
 });
 
-ipcMain.handle("notes:create-note", async (_event, parentPath, title) => {
-	await ensureWorkspace();
-	const noteTitle = title?.trim() || "Untitled";
-	const notePath = path.posix.join(
-		toPosixRelativePath(parentPath),
-		crypto.randomUUID(),
-	);
-	await ensureNoteDirectory(notePath);
-	const content = createEmptyNoteContent(noteTitle);
-	await writeFileAtomic(
-		resolveNoteContentPath(notePath),
-		serializeNoteContent(content),
-	);
-	await writeLocalYNoteSnapshot(notePath, content);
-	scheduleGoogleDriveAutoSync();
-	return { path: notePath, title: noteTitle };
-});
+registerOwnerIpcHandler(
+	"notes:create-note",
+	async (_event, parentPath, title) => {
+		await ensureWorkspace();
+		const noteTitle = title?.trim() || "Untitled";
+		const notePath = path.posix.join(
+			toPosixRelativePath(parentPath),
+			crypto.randomUUID(),
+		);
+		await ensureNoteDirectory(notePath);
+		const content = createEmptyNoteContent(noteTitle);
+		await writeFileAtomic(
+			resolveNoteContentPath(notePath),
+			serializeNoteContent(content),
+		);
+		await writeLocalYNoteSnapshot(notePath, content);
+		return { path: notePath, title: noteTitle };
+	},
+);
 
-ipcMain.handle("notes:create-folder", async (_event, parentPath, title) => {
-	await ensureWorkspace();
-	const folderName = title.trim() || "Untitled";
-	const folderPath = await uniquePath(parentPath, folderName);
-	await fs.mkdir(resolveWorkspacePath(folderPath), { recursive: true });
-	return { path: folderPath, title: path.basename(folderPath) };
-});
+registerOwnerIpcHandler(
+	"notes:create-folder",
+	async (_event, parentPath, title) => {
+		await ensureWorkspace();
+		const folderName = title.trim() || "Untitled";
+		const folderPath = await uniquePath(parentPath, folderName);
+		await fs.mkdir(resolveWorkspacePath(folderPath), { recursive: true });
+		return { path: folderPath, title: path.basename(folderPath) };
+	},
+);
 
-ipcMain.handle("notes:create-space", async (_event, title) => {
+registerOwnerIpcHandler("notes:create-space", async (_event, title) => {
 	await ensureWorkspace();
 	const spaceName = title.trim() || "Untitled";
 	if (spaceName === "Trash") throw new Error("'Trash' is a reserved name");
@@ -3319,66 +3243,80 @@ ipcMain.handle("notes:create-space", async (_event, title) => {
 	return { path: spacePath, title: path.basename(spacePath) };
 });
 
-ipcMain.handle("notes:rename-item", async (_event, itemPath, nextName) => {
-	await ensureWorkspace();
-	await migrateLegacyNotes();
-	const current = currentNotePath(itemPath);
+registerOwnerIpcHandler(
+	"notes:rename-item",
+	async (_event, itemPath, nextName) => {
+		await ensureWorkspace();
+		await migrateLegacyNotes();
+		const current = currentNotePath(itemPath);
 
-	if (await isNoteDirectory(current)) {
-		const nextTitle = nextName?.trim() || "Untitled";
-		await writeNoteTitle(current, nextTitle);
-		return { path: current };
-	}
+		if (await isNoteDirectory(current)) {
+			const nextTitle = nextName?.trim() || "Untitled";
+			await writeNoteTitle(current, nextTitle);
+			return { path: current };
+		}
 
-	const extension = isMigratableNotePath(current) ? noteFileExtension : "";
-	const nextBase = extension ? ensureNoteExtension(nextName) : nextName.trim();
-	const nextPath = path.posix.join(
-		path.posix.dirname(current),
-		nextBase || "Untitled",
-	);
-	await fs.rename(
-		resolveWorkspacePath(current),
-		resolveWorkspacePath(nextPath),
-	);
-	await moveIndexedPath(current, nextPath);
-	registerYNotePathRedirect(current, nextPath);
-	if (popoutWindows.has(current)) {
-		const win = popoutWindows.get(current);
-		popoutWindows.delete(current);
-		popoutWindows.set(nextPath, win);
-		win.webContents.send("note:path-changed", { from: current, to: nextPath });
-	}
-	return { path: nextPath };
-});
+		const extension = isMigratableNotePath(current) ? noteFileExtension : "";
+		const nextBase = extension
+			? ensureNoteExtension(nextName)
+			: nextName.trim();
+		const nextPath = path.posix.join(
+			path.posix.dirname(current),
+			nextBase || "Untitled",
+		);
+		await fs.rename(
+			resolveWorkspacePath(current),
+			resolveWorkspacePath(nextPath),
+		);
+		await moveIndexedPath(current, nextPath);
+		registerYNotePathRedirect(current, nextPath);
+		if (popoutWindows.has(current)) {
+			const win = popoutWindows.get(current);
+			popoutWindows.delete(current);
+			popoutWindows.set(nextPath, win);
+			win.webContents.send("note:path-changed", {
+				from: current,
+				to: nextPath,
+			});
+		}
+		return { path: nextPath };
+	},
+);
 
-ipcMain.handle("notes:move-item", async (_event, itemPath, nextParentPath) => {
-	await ensureWorkspace();
-	await migrateLegacyNotes();
-	const current = currentNotePath(itemPath);
-	const nextParent = toPosixRelativePath(nextParentPath);
-	const basename = path.posix.basename(current);
+registerOwnerIpcHandler(
+	"notes:move-item",
+	async (_event, itemPath, nextParentPath) => {
+		await ensureWorkspace();
+		await migrateLegacyNotes();
+		const current = currentNotePath(itemPath);
+		const nextParent = toPosixRelativePath(nextParentPath);
+		const basename = path.posix.basename(current);
 
-	if (isDescendantPath(current, nextParent)) {
-		throw new Error("cannot move an item into itself");
-	}
+		if (isDescendantPath(current, nextParent)) {
+			throw new Error("cannot move an item into itself");
+		}
 
-	const nextPath = await uniquePath(nextParent, basename);
-	await fs.rename(
-		resolveWorkspacePath(current),
-		resolveWorkspacePath(nextPath),
-	);
-	await moveIndexedPath(current, nextPath);
-	registerYNotePathRedirect(current, nextPath);
-	if (popoutWindows.has(current)) {
-		const win = popoutWindows.get(current);
-		popoutWindows.delete(current);
-		popoutWindows.set(nextPath, win);
-		win.webContents.send("note:path-changed", { from: current, to: nextPath });
-	}
-	return { path: nextPath };
-});
+		const nextPath = await uniquePath(nextParent, basename);
+		await fs.rename(
+			resolveWorkspacePath(current),
+			resolveWorkspacePath(nextPath),
+		);
+		await moveIndexedPath(current, nextPath);
+		registerYNotePathRedirect(current, nextPath);
+		if (popoutWindows.has(current)) {
+			const win = popoutWindows.get(current);
+			popoutWindows.delete(current);
+			popoutWindows.set(nextPath, win);
+			win.webContents.send("note:path-changed", {
+				from: current,
+				to: nextPath,
+			});
+		}
+		return { path: nextPath };
+	},
+);
 
-ipcMain.handle("notes:delete-item", async (_event, itemPath) => {
+registerOwnerIpcHandler("notes:delete-item", async (_event, itemPath) => {
 	await ensureWorkspace();
 	await migrateLegacyNotes();
 	const current = currentNotePath(itemPath);
@@ -3433,12 +3371,12 @@ ipcMain.handle("notes:delete-item", async (_event, itemPath) => {
 	return { ok: true };
 });
 
-ipcMain.handle("notes:get-trash-contents", async () => {
+registerOwnerIpcHandler("notes:get-trash-contents", async () => {
 	await ensureWorkspace();
 	return scanTrashDirectory();
 });
 
-ipcMain.handle("notes:restore-item", async (_event, trashNoteName) => {
+registerOwnerIpcHandler("notes:restore-item", async (_event, trashNoteName) => {
 	await ensureWorkspace();
 	const trashMeta = await readTrashMeta();
 	const metaEntry = trashMeta[trashNoteName];
@@ -3486,20 +3424,23 @@ ipcMain.handle("notes:restore-item", async (_event, trashNoteName) => {
 	return { ok: true, path: restoredRelativePath };
 });
 
-ipcMain.handle("notes:permanent-delete-item", async (_event, trashNoteName) => {
-	await ensureWorkspace();
-	const trashMeta = await readTrashMeta();
+registerOwnerIpcHandler(
+	"notes:permanent-delete-item",
+	async (_event, trashNoteName) => {
+		await ensureWorkspace();
+		const trashMeta = await readTrashMeta();
 
-	const sourcePath = path.join(trashRoot(), trashNoteName);
-	await fs.rm(sourcePath, { recursive: true, force: true });
+		const sourcePath = path.join(trashRoot(), trashNoteName);
+		await fs.rm(sourcePath, { recursive: true, force: true });
 
-	delete trashMeta[trashNoteName];
-	await writeTrashMeta(trashMeta);
+		delete trashMeta[trashNoteName];
+		await writeTrashMeta(trashMeta);
 
-	return { ok: true };
-});
+		return { ok: true };
+	},
+);
 
-ipcMain.handle("notes:empty-trash", async () => {
+registerOwnerIpcHandler("notes:empty-trash", async () => {
 	await ensureWorkspace();
 
 	const entries = await fs.readdir(trashRoot(), { withFileTypes: true });
@@ -3515,7 +3456,7 @@ ipcMain.handle("notes:empty-trash", async () => {
 	return { ok: true };
 });
 
-ipcMain.handle("notes:read-app-state", async () => {
+registerOwnerIpcHandler("notes:read-app-state", async () => {
 	await ensureWorkspace();
 	await migrateLegacyNotes();
 	try {
@@ -3525,7 +3466,7 @@ ipcMain.handle("notes:read-app-state", async () => {
 	}
 });
 
-ipcMain.handle("notes:write-app-state", async (_event, state) => {
+registerOwnerIpcHandler("notes:write-app-state", async (_event, state) => {
 	await ensureWorkspace();
 	await writeFileAtomic(statePath(), JSON.stringify(state, null, 2));
 	return { ok: true };
@@ -3588,6 +3529,7 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 
 	popoutWindows.set(normalizedPath, popout);
 
+	attachRendererRecovery(popout);
 	revealWindow(popout);
 
 	popout.on("closed", () => {
@@ -3603,7 +3545,11 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 
 	const encodedPath = encodeURIComponent(normalizedPath);
 
-	if (devServerUrl) {
+	if (attachedServeUrl) {
+		await popout.loadURL(
+			`${attachedServeUrl}/popout.html?popout=1&note=${encodeURIComponent(encodedPath)}`,
+		);
+	} else if (devServerUrl) {
 		await popout.loadURL(
 			`${devServerUrl}/popout.html?popout=1&note=${encodedPath}`,
 		);
@@ -3622,28 +3568,54 @@ ipcMain.handle("notes:popout-note", async (_event, notePath) => {
 app.whenReady().then(async () => {
 	// Serve mode: server/index.js owns the process lifecycle, no windows.
 	if (isServeMode) return;
-	// Same-workspace Electron+serve would silently split index.sqlite.
-	// Serve holds a per-workspace active.lock — refuse loudly instead.
+	// The first process owns the workspace. If serve owns it, this desktop
+	// surface attaches to serve instead of opening a second SQLite/Yjs stack.
 	try {
 		const locks = require("./server/lib/locks");
 		const root = workspaceRoot();
-		const wsLock = locks.readWorkspaceLock(root);
-		if (wsLock && locks.isPidAlive(wsLock.pid)) {
-			const holder =
-				wsLock.mode === "serve"
-					? `paperite serve at ${wsLock.url ?? (wsLock.port ? `http://localhost:${wsLock.port}` : "unknown address")}`
-					: "another Paperite process";
-			const message = `Workspace is already open by ${holder} (pid ${wsLock.pid}). Stop paperite serve first, or launch with a separate workspace — sharing index.sqlite splits state.`;
-			console.error(`[paperite] ${message}`);
-			try {
-				dialog.showErrorBox("Paperite workspace is busy", message);
-			} catch {
-				// headless / stub harness — console error is the signal
-			}
-			app.quit();
-			return;
+		let wsLock = locks.readWorkspaceLock(root);
+		for (let attempt = 0; attempt < 30; attempt += 1) {
+			if (
+				!wsLock ||
+				!locks.isPidAlive(wsLock.pid) ||
+				wsLock.mode !== "serve" ||
+				typeof wsLock.url === "string"
+			)
+				break;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			wsLock = locks.readWorkspaceLock(root);
 		}
-		locks.acquireWorkspaceLock(root, { mode: "electron" });
+		if (wsLock && locks.isPidAlive(wsLock.pid)) {
+			if (
+				wsLock.mode === "serve" &&
+				typeof wsLock.url === "string" &&
+				wsLock.url.startsWith("http")
+			) {
+				attachedServeUrl = wsLock.url;
+				if (!process.argv.includes("--paperite-attached-workspace")) {
+					process.argv.push("--paperite-attached-workspace");
+				}
+				console.log(
+					`[paperite] attaching desktop surface to ${attachedServeUrl} (pid ${wsLock.pid})`,
+				);
+			} else {
+				const holder =
+					wsLock.mode === "serve"
+						? `paperite serve at ${wsLock.url ?? (wsLock.port ? `http://localhost:${wsLock.port}` : "unknown address")}`
+						: "another Paperite process";
+				const message = `Workspace is already open by ${holder} (pid ${wsLock.pid}).`;
+				console.error(`[paperite] ${message}`);
+				try {
+					dialog.showErrorBox("Paperite workspace is busy", message);
+				} catch {
+					// headless / stub harness — console error is the signal
+				}
+				app.quit();
+				return;
+			}
+		} else {
+			locks.acquireWorkspaceLock(root, { mode: "electron" });
+		}
 	} catch (error) {
 		// Lock refusal already exits inside acquireWorkspaceLock; any other
 		// error here must not silently continue with a split sqlite.
@@ -3652,14 +3624,26 @@ app.whenReady().then(async () => {
 		app.quit();
 		return;
 	}
+	if (!attachedServeUrl) {
+		await startWorkspaceOwnerBridge();
+	}
 	createApplicationMenu();
-	await purgeOldTrashItems();
-	refreshWorkspaceWatchers().catch(() => undefined);
+	if (!attachedServeUrl) {
+		await purgeOldTrashItems();
+		await purgeLegacyDriveToken();
+		refreshWorkspaceWatchers().catch(() => undefined);
+	}
 	createWindow();
-	scheduleGoogleDriveAutoSync(5_000);
-	googleDriveAutoSyncInterval = setInterval(
-		() => scheduleGoogleDriveAutoSync(1_000),
-		5 * 60_000,
+	if (attachedServeUrl) {
+		// Serve-first ordering: serve owns the workspace, so it has no owner
+		// bridge to ask for the Clerk session. Publish a dedicated auth
+		// bridge instead and let serve pull the session from us. The browser
+		// still never holds a Clerk session of its own.
+		await startAuthBridge();
+	}
+	powerMonitor?.on("resume", () => recoverWindowsAfterSuspend("resume"));
+	powerMonitor?.on("unlock-screen", () =>
+		recoverWindowsAfterSuspend("unlock-screen"),
 	);
 	const startupAuthCallback = getProtocolCallbackArg(process.argv);
 	if (startupAuthCallback) handleProtocolCallback(startupAuthCallback);
@@ -3670,8 +3654,8 @@ app.whenReady().then(async () => {
 
 // linux: second-instance bukan open-url. Skipped in serve mode —
 // serve owns its own global lockfile (tmp, pid-checked); Electron keeps
-// the single-instance lock. Workspace-level Electron+serve coexistence is
-// refused via .paperite/active.lock (see whenReady above), not silently split.
+// the single-instance lock. Workspace-level coexistence attaches through
+// the owner bridge instead of opening a second state stack.
 const gotLock = isServeMode ? true : app.requestSingleInstanceLock();
 if (!gotLock) {
 	app.quit();
@@ -3696,12 +3680,12 @@ app.on("open-url", (event, url) => {
 });
 
 app.on("window-all-closed", () => {
-	clearTimeout(googleDriveAutoSyncTimer);
-	clearInterval(googleDriveAutoSyncInterval);
 	for (const watcher of workspaceWatchers.values()) watcher.close();
 	workspaceWatchers.clear();
 	indexDb?.close();
 	indexDb = undefined;
+	workspaceOwnerWs?.close();
+	workspaceOwnerServer?.close();
 	try {
 		if (!isServeMode) {
 			require("./server/lib/locks").releaseWorkspaceLock(workspaceRoot());
@@ -3720,4 +3704,10 @@ app.on("will-quit", () => {
 	} catch {
 		// best effort
 	}
+	// Leave no stale auth-bridge record behind: a dead desktop must not
+	// look like a live one to a serve instance.
+	void require("./server/lib/auth-bridge")
+		.clearAuthBridge(workspaceRoot())
+		.catch(() => undefined);
+	authBridgeServer?.close();
 });

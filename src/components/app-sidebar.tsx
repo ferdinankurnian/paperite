@@ -42,6 +42,7 @@ import {
 	LayoutDashboardIcon,
 	LightbulbIcon,
 	ListIcon,
+	LockKeyholeIcon,
 	MusicIcon,
 	PencilIcon,
 	PinIcon,
@@ -53,6 +54,7 @@ import {
 	StickyNotePlusIcon,
 	Trash2Icon,
 	UserPlusIcon,
+	UserRoundIcon,
 	UsersIcon,
 	ZapIcon,
 } from "lucide-react";
@@ -136,11 +138,11 @@ import {
 	SidebarGroup,
 	SidebarGroupContent,
 	SidebarHeader,
-	SidebarRail,
 	SidebarTrigger,
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Switch } from "@/components/ui/switch";
+import { isBrowserRenderer, signOutBridge } from "@/lib/auth-bridge";
 import { clerk, isClerkConfigured, loadClerk } from "@/lib/clerk";
 import {
 	backfillLinkedSpace,
@@ -156,11 +158,23 @@ import {
 import { pullCloudSpace, shareSpaceToCloud } from "@/lib/cloud-space-sync";
 import { setCloudTransient } from "@/lib/cloud-sync-status";
 import { humanizeShareError, listSharedSpaces } from "@/lib/convex";
+import { subscribeDesktopBridge } from "@/lib/desktop-bridge-watch";
+import { clearDeviceAccount } from "@/lib/device-auth";
 import { getNotesEngine } from "@/lib/notes-engine";
+import { getPaperiteSession } from "@/lib/paperite-auth";
+import type { SyncTargetKind } from "@/lib/space-sync-targets";
+import {
+	getCloudSpaceId,
+	getCloudSpaceLinksForUi,
+	getRemoteSpaceId,
+	getSpaceSyncTarget,
+} from "@/lib/space-sync-targets";
 import type { NoteSearchResult } from "@/lib/storage/types";
 import { useAppStore } from "@/lib/stores/app-store";
 import { useEditorUiStore } from "@/lib/stores/editor-ui-store";
+import { ensurePersonalServerSpace } from "@/lib/sync-provider";
 import { cn } from "@/lib/utils";
+import { areWorkspaceSpaceHeadersEqual } from "@/lib/workspace-tree";
 
 // Per-path pub/sub store for folder expand/collapse state. A plain Set in
 // Context would force EVERY consumer (every NoteTree/NoteFolderItem mounted
@@ -274,6 +288,9 @@ const TrashNavButton = React.memo(function TrashNavButton({
 
 const EMPTY_SPACES: WorkspaceSpace[] = [];
 
+/** Stable no-op for read-only grids (trash) so memoized cards can bail out. */
+const noopHandler = (): void => undefined;
+
 type AppSidebarProps = React.ComponentProps<typeof Sidebar> & {
 	/** Optional; defaults to workspace tree from editor-ui-store (plan 017). */
 	spaces?: WorkspaceSpace[];
@@ -360,11 +377,13 @@ const SpaceIcon = ({
 	color,
 	icon,
 	path,
+	radius = 4,
 }: {
 	className?: string;
 	color?: string;
 	icon?: string;
 	path: string;
+	radius?: number;
 }) => {
 	if (path === "Inbox") return <InboxIcon className={className} />;
 	const customIcon = getCustomIcon(icon);
@@ -377,7 +396,7 @@ const SpaceIcon = ({
 				alt=""
 				className={iconClassName}
 				style={{
-					borderRadius: 4,
+					borderRadius: radius,
 					objectFit: "cover",
 				}}
 			/>
@@ -425,7 +444,7 @@ function filterWorkspaceItems(
 async function toggleNotePinned(note: WorkspaceNote) {
 	const next = !note.pinned;
 	try {
-		await window.electron?.notes.setPinned(note.path, next);
+		await getNotesEngine()?.setPinned?.(note.path, next);
 		window.dispatchEvent(new Event("paperite:refresh-workspace"));
 	} catch {
 		// ignore — workspace will stay as-is
@@ -439,75 +458,100 @@ function sortWorkspaceItems(
 	parentPath: string,
 	folderFirst = false,
 ): WorkspaceItem[] {
+	// Recurse first, reusing folder refs when their children are unchanged.
+	// Cloning every folder here busted MemoizedNoteFolderItem (prev.item ===
+	// next.item) on every autosave while typing, re-rendering whole subtrees.
 	const withSortedChildren = items.map((item) =>
 		item.type === "folder"
-			? {
-					...item,
-					children: sortWorkspaceItems(
-						item.children,
-						sortOrder,
-						customItemOrders,
-						item.path,
-						folderFirst,
-					),
-				}
+			? withSortedFolderChildren(item, sortOrder, customItemOrders, folderFirst)
 			: item,
 	);
 
-	const pinFirst = (list: WorkspaceItem[]) => {
-		const pinned = list.filter(
-			(item) => item.type === "note" && item.pinned === true,
-		);
-		const rest = list.filter(
-			(item) => !(item.type === "note" && item.pinned === true),
-		);
-		return [...pinned, ...rest];
-	};
-
-	const foldersFirst = (list: WorkspaceItem[]) => {
-		if (!folderFirst) return list;
-		const folders = list.filter((item) => item.type === "folder");
-		const notes = list.filter((item) => item.type !== "folder");
-		return [...folders, ...notes];
-	};
-
+	let ordered: WorkspaceItem[];
 	if (sortOrder === "custom") {
-		return pinFirst(
+		ordered = pinFirst(
 			foldersFirst(
 				orderItemsByCustomOrder(
 					withSortedChildren,
 					customItemOrders[parentPath],
 				),
+				folderFirst,
 			),
 		);
-	}
+	} else if (sortOrder === "a-z" || sortOrder === "z-a") {
+		ordered = pinFirst(
+			foldersFirst(
+				[...withSortedChildren].sort((first, second) => {
+					const comparison = titleForSort(first).localeCompare(
+						titleForSort(second),
+						undefined,
+						{ sensitivity: "base", numeric: true },
+					);
 
-	if (sortOrder === "a-z" || sortOrder === "z-a") {
-		const sorted = [...withSortedChildren].sort((first, second) => {
-			const comparison = titleForSort(first).localeCompare(
-				titleForSort(second),
-				undefined,
-				{ sensitivity: "base", numeric: true },
-			);
-
-			return sortOrder === "a-z" ? comparison : -comparison;
-		});
-		return pinFirst(foldersFirst(sorted));
-	}
-
-	const sortedNotes = withSortedChildren
-		.filter((item): item is WorkspaceNote => item.type === "note")
-		.sort((first, second) =>
-			sortOrder === "newest"
-				? second.updatedAt - first.updatedAt
-				: first.updatedAt - second.updatedAt,
+					return sortOrder === "a-z" ? comparison : -comparison;
+				}),
+				folderFirst,
+			),
 		);
-	let noteIndex = 0;
+	} else {
+		const sortedNotes = withSortedChildren
+			.filter((item): item is WorkspaceNote => item.type === "note")
+			.sort((first, second) =>
+				sortOrder === "newest"
+					? second.updatedAt - first.updatedAt
+					: first.updatedAt - second.updatedAt,
+			);
+		let noteIndex = 0;
 
-	const dateSorted = withSortedChildren.map((item) =>
-		item.type === "note" ? sortedNotes[noteIndex++] : item,
+		const dateSorted = withSortedChildren.map((item) =>
+			item.type === "note" ? sortedNotes[noteIndex++] : item,
+		);
+		ordered = pinFirst(foldersFirst(dateSorted, folderFirst));
+	}
+	// Nothing moved and no child changed: hand back the original array so
+	// MemoizedNoteTree bails out instead of diffing every row.
+	return sameItemOrder(ordered, items) ? items : ordered;
+}
+
+function withSortedFolderChildren(
+	folder: WorkspaceFolder,
+	sortOrder: SidebarSortOrder,
+	customItemOrders: Record<string, string[]>,
+	folderFirst: boolean,
+): WorkspaceFolder {
+	const children = sortWorkspaceItems(
+		folder.children,
+		sortOrder,
+		customItemOrders,
+		folder.path,
+		folderFirst,
 	);
-	return pinFirst(foldersFirst(dateSorted));
+	return children === folder.children ? folder : { ...folder, children };
+}
+
+function sameItemOrder(a: WorkspaceItem[], b: WorkspaceItem[]): boolean {
+	return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+function pinFirst(list: WorkspaceItem[]): WorkspaceItem[] {
+	const pinned = list.filter(
+		(item) => item.type === "note" && item.pinned === true,
+	);
+	const rest = list.filter(
+		(item) => !(item.type === "note" && item.pinned === true),
+	);
+	if (pinned.length === 0) return list;
+	return [...pinned, ...rest];
+}
+
+function foldersFirst(
+	list: WorkspaceItem[],
+	folderFirst: boolean,
+): WorkspaceItem[] {
+	if (!folderFirst) return list;
+	const folders = list.filter((item) => item.type === "folder");
+	const notes = list.filter((item) => item.type !== "folder");
+	return [...folders, ...notes];
 }
 
 function orderItemsByCustomOrder(
@@ -656,7 +700,6 @@ function NoteTree({
 	onRenameItem,
 	onToggleFolder,
 	parentPath,
-	spaces,
 	spaceIcons,
 	spaceColors,
 	showPreview,
@@ -676,7 +719,6 @@ function NoteTree({
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
 	parentPath: string;
-	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
 	spaceColors: Record<string, string>;
 	showPreview: boolean;
@@ -726,7 +768,6 @@ function NoteTree({
 				onPrefetchNote={onPrefetchNote}
 				onRenameItem={onRenameItem}
 				onToggleFolder={onToggleFolder}
-				spaces={spaces}
 				spaceIcons={spaceIcons}
 				spaceColors={spaceColors}
 				showPreview={showPreview}
@@ -744,7 +785,6 @@ function NoteTree({
 				onPrefetchNote={onPrefetchNote}
 				onDeleteItem={onDeleteItem}
 				parentPath={parentPath}
-				spaces={spaces}
 				spaceIcons={spaceIcons}
 				spaceColors={spaceColors}
 				showPreview={showPreview}
@@ -808,12 +848,11 @@ function NoteTree({
 
 const MemoizedNoteTree = React.memo(NoteTree);
 
-function NoteGrid({
+const NoteGrid = React.memo(function NoteGrid({
 	items,
 	onDeleteItem,
 	onMoveItem,
 	onOpenNote,
-	spaces,
 	spaceIcons,
 	spaceColors,
 	showPreview,
@@ -826,7 +865,6 @@ function NoteGrid({
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	onPrefetchNote?: (path: string) => void;
-	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
 	spaceColors: Record<string, string>;
 	showPreview: boolean;
@@ -862,7 +900,6 @@ function NoteGrid({
 					onDeleteItem={onDeleteItem}
 					onMoveItem={onMoveItem}
 					onOpenNote={onOpenNote}
-					spaces={spaces}
 					spaceIcons={spaceIcons}
 					spaceColors={spaceColors}
 					showPreview={showPreview}
@@ -873,16 +910,14 @@ function NoteGrid({
 			))}
 		</div>
 	);
-}
+});
 
 function MoveToSpaceMenu({
-	spaces,
 	spaceIcons,
 	spaceColors,
 	notePath,
 	onMove,
 }: {
-	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
 	spaceColors: Record<string, string>;
 	notePath: string;
@@ -891,6 +926,11 @@ function MoveToSpaceMenu({
 	const [query, setQuery] = React.useState("");
 	const inputRef = React.useRef<HTMLInputElement>(null);
 	const currentSpacePath = notePath.split("/")[0];
+	// Read here (not passed down through every row) so a new `spaces` array
+	// identity — e.g. from the per-save preview patch — doesn't bust every
+	// row's memo. The menu content only mounts when opened, so this
+	// subscription is idle the rest of the time.
+	const spaces = useEditorUiStore((s) => s.workspace?.spaces ?? EMPTY_SPACES);
 
 	const filtered = React.useMemo(
 		() =>
@@ -961,12 +1001,11 @@ function MoveToSpaceMenu({
 	);
 }
 
-function NoteGridCard({
+const NoteGridCard = React.memo(function NoteGridCard({
 	note,
 	onDeleteItem,
 	onMoveItem,
 	onOpenNote,
-	spaces,
 	spaceIcons,
 	spaceColors,
 	showPreview,
@@ -979,7 +1018,6 @@ function NoteGridCard({
 	onMoveItem: (itemPath: string, nextParentPath: string) => void;
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	onPrefetchNote?: (path: string) => void;
-	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
 	spaceColors: Record<string, string>;
 	showPreview: boolean;
@@ -1006,7 +1044,7 @@ function NoteGridCard({
 					<button
 						ref={setNodeRef}
 						type="button"
-						className="mb-2 w-full touch-none break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-[0.97] data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0"
+						className="mb-2 w-full touch-none break-inside-avoid rounded-lg border border-border/50 bg-sidebar p-3 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-[0.99] data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0"
 						data-active={isActive}
 						data-dragging={isDragging}
 						{...attributes}
@@ -1061,7 +1099,6 @@ function NoteGridCard({
 								{note.pinned ? "Unpin note" : "Pin note"}
 							</ContextMenuItem>
 							<MoveToSpaceMenu
-								spaces={spaces}
 								spaceIcons={spaceIcons}
 								spaceColors={spaceColors}
 								notePath={note.path}
@@ -1100,7 +1137,7 @@ function NoteGridCard({
 			</AlertDialog>
 		</>
 	);
-}
+});
 
 const MemoizedFolderChildren = React.memo(function FolderChildren({
 	canDragItems,
@@ -1114,7 +1151,6 @@ const MemoizedFolderChildren = React.memo(function FolderChildren({
 	onPrefetchNote,
 	onRenameItem,
 	onToggleFolder,
-	spaces,
 	spaceIcons,
 	spaceColors,
 	showPreview,
@@ -1133,7 +1169,6 @@ const MemoizedFolderChildren = React.memo(function FolderChildren({
 	onPrefetchNote?: (path: string) => void;
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
-	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
 	spaceColors: Record<string, string>;
 	showPreview: boolean;
@@ -1158,7 +1193,6 @@ const MemoizedFolderChildren = React.memo(function FolderChildren({
 				onRenameItem={onRenameItem}
 				onToggleFolder={onToggleFolder}
 				parentPath={item.path}
-				spaces={spaces}
 				spaceIcons={spaceIcons}
 				spaceColors={spaceColors}
 				showPreview={showPreview}
@@ -1182,7 +1216,6 @@ function NoteFolderItem({
 	onPrefetchNote,
 	onRenameItem,
 	onToggleFolder,
-	spaces,
 	spaceIcons,
 	spaceColors,
 	showPreview,
@@ -1201,7 +1234,6 @@ function NoteFolderItem({
 	onPrefetchNote?: (path: string) => void;
 	onRenameItem: (path: string, title: string) => void;
 	onToggleFolder: (path: string, isOpen: boolean) => void;
-	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
 	spaceColors: Record<string, string>;
 	showPreview: boolean;
@@ -1375,7 +1407,7 @@ function NoteFolderItem({
 									/>
 								</div>
 							) : (
-								<div className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md border border-transparent px-2 text-left text-xs font-medium text-sidebar-foreground/80 outline-none transition-[background-color,border-color,color,transform] duration-150 hover:border-border/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-[0.98]">
+								<div className="flex h-7 min-w-0 flex-1 items-center gap-2 rounded-md border border-transparent px-2 text-left text-xs font-medium text-sidebar-foreground/80 outline-none transition-[background-color,border-color,color,transform] duration-150 hover:border-border/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground active:scale-[0.99]">
 									{isOpen ? (
 										<FolderOpenIcon className="size-3.5 shrink-0" />
 									) : (
@@ -1398,7 +1430,6 @@ function NoteFolderItem({
 								onPrefetchNote={onPrefetchNote}
 								onRenameItem={onRenameItem}
 								onToggleFolder={onToggleFolder}
-								spaces={spaces}
 								spaceIcons={spaceIcons}
 								spaceColors={spaceColors}
 								showPreview={showPreview}
@@ -1497,7 +1528,6 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 	onOpenNote,
 	onPrefetchNote,
 	parentPath,
-	spaces,
 	spaceIcons,
 	spaceColors,
 	showPreview,
@@ -1512,7 +1542,6 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 	onOpenNote: (note: WorkspaceNote, mode: "preview" | "fixed") => void;
 	onPrefetchNote?: (path: string) => void;
 	parentPath: string;
-	spaces: WorkspaceSpace[];
 	spaceIcons: Record<string, string>;
 	spaceColors: Record<string, string>;
 	showPreview: boolean;
@@ -1587,7 +1616,6 @@ const MemoizedNoteCard = React.memo(function NoteCard({
 					showPreview={showPreview}
 					spaceColors={spaceColors}
 					spaceIcons={spaceIcons}
-					spaces={spaces}
 					deleteOpen={deleteOpen}
 					setDeleteOpen={setDeleteOpen}
 				/>
@@ -1620,7 +1648,6 @@ const MemoNoteCardBody = React.memo(
 		showPreview,
 		spaceColors,
 		spaceIcons,
-		spaces,
 	}: {
 		attributes?: ReturnType<typeof useDraggable>["attributes"];
 		canDragItems: boolean;
@@ -1644,7 +1671,6 @@ const MemoNoteCardBody = React.memo(
 		showPreview: boolean;
 		spaceColors: Record<string, string>;
 		spaceIcons: Record<string, string>;
-		spaces: WorkspaceSpace[];
 	}) {
 		return (
 			<>
@@ -1654,7 +1680,7 @@ const MemoNoteCardBody = React.memo(
 							ref={setNodeRef}
 							type="button"
 							className={cn(
-								"flex w-full flex-col items-start gap-1.5 rounded-md border border-transparent px-3 py-2.5 text-left text-sm leading-tight whitespace-nowrap outline-none hover:border-border/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0 active:scale-[0.98] data-[active=true]:border-border/50 data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0",
+								"flex w-full flex-col items-start gap-1.5 rounded-md border border-transparent px-3 py-2.5 text-left text-sm leading-tight whitespace-nowrap outline-none hover:border-border/50 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-0 active:scale-[0.99] data-[active=true]:border-border/50 data-[active=true]:bg-sidebar-accent data-[active=true]:text-sidebar-accent-foreground data-[dragging=true]:opacity-0",
 								canDragItems && "touch-none",
 							)}
 							data-active={isActive}
@@ -1712,7 +1738,6 @@ const MemoNoteCardBody = React.memo(
 									{item.pinned ? "Unpin note" : "Pin note"}
 								</ContextMenuItem>
 								<MoveToSpaceMenu
-									spaces={spaces}
 									spaceIcons={spaceIcons}
 									spaceColors={spaceColors}
 									notePath={item.path}
@@ -1769,7 +1794,6 @@ const MemoNoteCardBody = React.memo(
 			prev.showPreview === next.showPreview &&
 			prev.isTrash === next.isTrash &&
 			prev.deleteOpen === next.deleteOpen &&
-			prev.spaces === next.spaces &&
 			prev.spaceIcons === next.spaceIcons &&
 			prev.spaceColors === next.spaceColors &&
 			prev.setNodeRef === next.setNodeRef &&
@@ -1897,6 +1921,7 @@ function SpaceDropHeader({
 	onSortOrderChange,
 	onFolderFirstChange,
 	onEmptyTrash,
+	trashCount,
 }: {
 	spaces: WorkspaceSpace[];
 	spaceColors: Record<string, string>;
@@ -1918,6 +1943,7 @@ function SpaceDropHeader({
 	onSortOrderChange: (order: SidebarSortOrder) => void;
 	onFolderFirstChange: (folderFirst: boolean) => void;
 	onEmptyTrash?: () => void;
+	trashCount?: number;
 }) {
 	const activeSpacePath = useAppStore((s) => s.activeSpacePath);
 	const spaceSortOrders = useAppStore((s) => s.spaceSortOrders);
@@ -1926,8 +1952,8 @@ function SpaceDropHeader({
 	const spaceTitle =
 		activeSpacePath === "Trash" ? "Trash" : (activeSpace?.title ?? "Inbox");
 	const spaceColor = spaceColors[activeSpacePath];
-	const spaceIcon = spaceIcons[activeSpacePath];
 	const isTrash = activeSpacePath === "Trash";
+	const spaceIcon = isTrash ? "trash" : spaceIcons[activeSpacePath];
 	const rawSort = spaceSortOrders[activeSpacePath];
 	const sortOrder: SidebarSortOrder =
 		rawSort === "newest" ||
@@ -1946,8 +1972,16 @@ function SpaceDropHeader({
 	const isInbox = activeSpacePath === "Inbox";
 	const spacePreviewMode = spacePreviewModes[activeSpacePath] ?? "global";
 	const [settingsOpen, setSettingsOpen] = React.useState(false);
+	const [settingsTab, setSettingsTab] = React.useState<
+		"general" | "notes" | "cloud"
+	>("general");
 	const [inviteOpen, setInviteOpen] = React.useState(false);
 	const [membersOpen, setMembersOpen] = React.useState(false);
+	const [syncTargetOpen, setSyncTargetOpen] = React.useState(false);
+	const [syncTargetBusy, setSyncTargetBusy] = React.useState(false);
+	const [syncTargetError, setSyncTargetError] = React.useState<string | null>(
+		null,
+	);
 	const memberInitials = user.name
 		.split(" ")
 		.filter(Boolean)
@@ -1959,10 +1993,55 @@ function SpaceDropHeader({
 	React.useEffect(() => {
 		setSettingsTitle(spaceTitle);
 	}, [spaceTitle]);
-	const cloudSpaceLinks = useAppStore((s) => s.cloudSpaceLinks);
+	React.useEffect(() => {
+		const openSpaceSettings = () => {
+			if (isInbox || isTrash) return;
+			setSettingsTab("general");
+			setSettingsOpen(true);
+		};
+		window.addEventListener("paperite:open-space-settings", openSpaceSettings);
+		return () =>
+			window.removeEventListener(
+				"paperite:open-space-settings",
+				openSpaceSettings,
+			);
+	}, [isInbox, isTrash]);
+	const cloudSpaceLinks = useAppStore(
+		useShallow((s) => getCloudSpaceLinksForUi(s)),
+	);
+	const connections = useAppStore((s) => s.connections);
+	const setSpaceSyncTarget = useAppStore((s) => s.setSpaceSyncTarget);
+	const setLocalOnly = useAppStore((s) => s.setLocalOnly);
+	const activeSyncTarget = useAppStore((s) =>
+		getSpaceSyncTarget(s, activeSpacePath),
+	);
+	const [syncTargetKind, setSyncTargetKind] = React.useState<SyncTargetKind>(
+		activeSyncTarget.kind,
+	);
+	const [syncTargetConnectionId, setSyncTargetConnectionId] = React.useState(
+		activeSyncTarget.connectionId ?? "",
+	);
+	React.useEffect(() => {
+		setSyncTargetKind(activeSyncTarget.kind);
+		setSyncTargetConnectionId(activeSyncTarget.connectionId ?? "");
+	}, [activeSyncTarget.kind, activeSyncTarget.connectionId]);
+	const activeSyncConnection = activeSyncTarget.connectionId
+		? connections[activeSyncTarget.connectionId]
+		: undefined;
+	const activeSyncTargetTitle =
+		activeSyncTarget.kind === "paperite-server"
+			? activeSyncConnection?.serverIdentity
+				? `${activeSyncConnection.serverIdentity.icon} ${activeSyncConnection.serverIdentity.name}`
+				: (activeSyncConnection?.displayLabel ?? "Personal server")
+			: activeSyncTarget.kind === "paperite-cloud"
+				? "Paperite+"
+				: "Local only";
 	const setCloudSpaceLink = useAppStore((s) => s.setCloudSpaceLink);
 	const removeCloudSpaceLink = useAppStore((s) => s.removeCloudSpaceLink);
-	const cloudSpaceId = cloudSpaceLinks[activeSpacePath];
+	const cloudSpaceId = useAppStore((s) => getCloudSpaceId(s, activeSpacePath));
+	const remoteSpaceId = useAppStore((s) =>
+		getRemoteSpaceId(s, activeSpacePath),
+	);
 	const [cloudBusy, setCloudBusy] = React.useState(false);
 	const [cloudError, setCloudError] = React.useState<string | null>(null);
 	const [cloudInfo, setCloudInfo] = React.useState<string | null>(null);
@@ -1986,14 +2065,14 @@ function SpaceDropHeader({
 	// Plan 019 Step 4: opening a cloud-linked space pulls listNotes/listUpdates.
 	// Opt-in is absolute — no Convex call happens without a mapping.
 	React.useEffect(() => {
-		if (!cloudSpaceId || isTrash) return;
-		const key = `${activeSpacePath}:${cloudSpaceId}`;
+		if (!remoteSpaceId || isTrash) return;
+		const key = `${activeSpacePath}:${remoteSpaceId}`;
 		if (pulledCloudRef.current[key]) return;
 		pulledCloudRef.current[key] = true;
 		let cancelled = false;
 		void (async () => {
 			try {
-				const result = await pullCloudSpace(activeSpacePath, cloudSpaceId);
+				const result = await pullCloudSpace(activeSpacePath, remoteSpaceId);
 				if (cancelled) return;
 				if (result.createdLocalNotes > 0 || result.conflicts.length > 0) {
 					setCloudInfo(
@@ -2002,9 +2081,9 @@ function SpaceDropHeader({
 				}
 				// Plan 020 Step 3: keep the subscription alive after the
 				// one-shot pull so remote edits arrive without reopening.
-				await startPullForSpace(activeSpacePath, cloudSpaceId);
+				await startPullForSpace(activeSpacePath, remoteSpaceId);
 				// Plan 020 Step 5: one-time backfill for pre-sync links.
-				await backfillLinkedSpace(activeSpacePath, cloudSpaceId).catch(
+				await backfillLinkedSpace(activeSpacePath, remoteSpaceId).catch(
 					() => null,
 				);
 			} catch {
@@ -2018,7 +2097,7 @@ function SpaceDropHeader({
 		return () => {
 			cancelled = true;
 		};
-	}, [activeSpacePath, cloudSpaceId, isTrash]);
+	}, [activeSpacePath, remoteSpaceId, isTrash]);
 
 	const handleCloudToggle = (next: boolean) => {
 		if (cloudBusy) return;
@@ -2064,8 +2143,76 @@ function SpaceDropHeader({
 		setCloudInfo("Unlinked. Local notes kept; cloud copy kept.");
 	};
 
+	const changeSyncTarget = async () => {
+		setSyncTargetBusy(true);
+		setSyncTargetError(null);
+		try {
+			if (syncTargetKind === "paperite-server" && !syncTargetConnectionId) {
+				throw new Error("Choose a personal server first.");
+			}
+			const currentServerConnectionId =
+				activeSyncTarget.kind === "paperite-server"
+					? activeSyncTarget.connectionId
+					: undefined;
+			const targetChanged =
+				activeSyncTarget.kind !== syncTargetKind ||
+				(syncTargetKind === "paperite-server" &&
+					currentServerConnectionId !== syncTargetConnectionId);
+			if (targetChanged && activeSyncTarget.kind !== "local") {
+				stopPullForSpace(activeSpacePath);
+				stopLiveSync(activeSpacePath);
+			}
+			if (syncTargetKind === "local") {
+				setLocalOnly(activeSpacePath);
+			} else if (syncTargetKind === "paperite-server") {
+				const preserveRemoteSpaceId =
+					activeSyncTarget.kind === "paperite-server" &&
+					activeSyncTarget.connectionId === syncTargetConnectionId
+						? activeSyncTarget.remoteSpaceId
+						: undefined;
+				setSpaceSyncTarget(activeSpacePath, {
+					kind: "paperite-server",
+					connectionId: syncTargetConnectionId,
+					...(preserveRemoteSpaceId
+						? { remoteSpaceId: preserveRemoteSpaceId }
+						: {}),
+				});
+				await ensurePersonalServerSpace(
+					activeSpacePath,
+					spaceTitle,
+					syncTargetConnectionId,
+				);
+			} else if (syncTargetKind === "paperite-cloud") {
+				if (!cloudSpaceId) {
+					const { spaceId } = await shareSpaceToCloud(activeSpacePath);
+					setSpaceSyncTarget(activeSpacePath, {
+						kind: "paperite-cloud",
+						remoteSpaceId: spaceId,
+					});
+					setCloudSpaceLink(activeSpacePath, spaceId);
+				} else {
+					setSpaceSyncTarget(activeSpacePath, {
+						kind: "paperite-cloud",
+						remoteSpaceId: cloudSpaceId,
+					});
+				}
+				setCloudInfo("Sync target changed to Paperite+.");
+			} else {
+			}
+			setSyncTargetOpen(false);
+		} catch (error) {
+			setSyncTargetError(
+				error instanceof Error
+					? error.message
+					: "Could not change the sync target.",
+			);
+		} finally {
+			setSyncTargetBusy(false);
+		}
+	};
+
 	// Mirror the transient phase for the titlebar indicator (memory-only;
-	// the durable link stays in cloudSpaceLinks). Clearing happens here too
+	// the durable link stays in the generalized target binding). Clearing happens here too
 	// so the titlebar never sticks on "syncing" after the flow settles.
 	React.useEffect(() => {
 		if (cloudBusy) {
@@ -2212,34 +2359,44 @@ function SpaceDropHeader({
 						) : (
 							<>
 								<div className="-mx-1 -mt-1 mb-1 border-b border-border/70 p-2">
-									<div className="flex items-end gap-3">
+									<div className="flex items-center gap-3">
 										<SpaceIcon
 											className="size-10 shrink-0"
 											color={spaceColor}
 											icon={spaceIcon}
 											path={activeSpacePath}
+											radius={8}
 										/>
-										<div className="min-w-0">
-											<div className="truncate text-md font-semibold">
+										<div className="min-w-0 flex-1">
+											<div className="truncate text-sm font-semibold leading-5">
 												{spaceTitle}
 											</div>
-											<div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-												<AvatarGroup className="-space-x-1">
-													{[{ name: user.name, avatar: user.avatar }]
-														.slice(0, 3)
-														.map((member) => (
-															<Avatar key={member.name} className="size-5">
-																<AvatarImage
-																	src={member.avatar}
-																	alt={member.name}
-																/>
-																<AvatarFallback className="text-[9px] ring-0">
-																	{memberInitials || "P"}
-																</AvatarFallback>
-															</Avatar>
-														))}
-												</AvatarGroup>
-												<span>1 member</span>
+											<div className="mt-1 flex min-h-5 items-center gap-1 text-xs text-muted-foreground">
+												{cloudSpaceId ? (
+													<AvatarGroup className="-space-x-1 *:data-[slot=avatar]:ring-0">
+														{[{ name: user.name, avatar: user.avatar }]
+															.slice(0, 3)
+															.map((member) => (
+																<Avatar
+																	key={member.name}
+																	className="size-5 ring-0 after:hidden"
+																>
+																	<AvatarImage
+																		src={member.avatar}
+																		alt={member.name}
+																	/>
+																	<AvatarFallback className="text-[8px] ring-0">
+																		<UserRoundIcon className="size-3" />
+																	</AvatarFallback>
+																</Avatar>
+															))}
+													</AvatarGroup>
+												) : (
+													<LockKeyholeIcon className="size-3 shrink-0" />
+												)}
+												<span>
+													{cloudSpaceId ? "Public space" : "Private space"}
+												</span>
 											</div>
 										</div>
 									</div>
@@ -2253,7 +2410,12 @@ function SpaceDropHeader({
 									<span>Manage members</span>
 								</DropdownMenuItem>
 								<DropdownMenuSeparator />
-								<DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+								<DropdownMenuItem
+									onSelect={() => {
+										setSettingsTab("general");
+										setSettingsOpen(true);
+									}}
+								>
 									<Settings2Icon className="text-muted-foreground" />
 									<span>Space settings</span>
 								</DropdownMenuItem>
@@ -2263,189 +2425,350 @@ function SpaceDropHeader({
 				</DropdownMenu>
 			)}
 			<Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
-				<DialogContent className="sm:max-w-md">
-					<DialogHeader>
-						<DialogTitle>Space settings</DialogTitle>
-						<DialogDescription>
-							Control how this shared space looks and behaves for you.
-						</DialogDescription>
-					</DialogHeader>
-					<div className="space-y-5">
-						<div className="flex items-center gap-3 rounded-xl border border-border/70 bg-muted/20 p-3">
-							<SpaceIcon
-								className="size-8 shrink-0"
-								color={spaceColor}
-								icon={spaceIcon}
-								path={activeSpacePath}
-							/>
-							<div className="min-w-0 flex-1">
-								<div className="text-xs text-muted-foreground">Space name</div>
-								<Input
-									value={settingsTitle}
-									onChange={(event) => setSettingsTitle(event.target.value)}
-									className="mt-1 h-8 bg-transparent px-2 font-medium"
-								/>
-							</div>
+				<DialogContent className="h-[min(600px,calc(100svh-2rem))] max-w-3xl gap-0 overflow-hidden p-0 sm:max-w-5xl">
+					<div className="grid min-h-0 grid-cols-[180px_minmax(0,1fr)]">
+						<aside className="bg-muted/35 p-2">
 							<Button
 								type="button"
-								size="sm"
-								disabled={!settingsTitle.trim()}
-								onClick={() => {
-									onEditSpace(
-										activeSpacePath,
-										settingsTitle.trim(),
-										spaceColor ?? "#64748b",
-										spaceIcon ?? "cloud",
-									);
-								}}
+								variant={settingsTab === "general" ? "secondary" : "ghost"}
+								onClick={() => setSettingsTab("general")}
+								size="lg"
+								className="w-full justify-start gap-2 focus-visible:border-transparent focus-visible:ring-0"
 							>
-								Save
+								<Settings2Icon className="size-4" />
+								General
 							</Button>
-						</div>
-						<div className="space-y-3">
-							<div>
-								<div className="text-sm font-medium">Notes</div>
-								<div className="text-xs text-muted-foreground">
-									These preferences are kept in the space settings.
-								</div>
-							</div>
-							<div className="grid gap-2">
-								<label
-									className="text-xs text-muted-foreground"
-									htmlFor="space-sort-order"
-								>
-									Sort by
-								</label>
-								<Select
-									value={sortOrder}
-									onValueChange={(value) =>
-										onSortOrderChange(value as SidebarSortOrder)
-									}
-								>
-									<SelectTrigger id="space-sort-order" className="w-full">
-										<SelectValue />
-									</SelectTrigger>
-									<SelectContent>
-										<SelectItem value="newest">Newest</SelectItem>
-										<SelectItem value="oldest">Oldest</SelectItem>
-										<SelectItem value="a-z">A to Z</SelectItem>
-										<SelectItem value="z-a">Z to A</SelectItem>
-										<SelectItem value="custom">Custom</SelectItem>
-									</SelectContent>
-								</Select>
-							</div>
-							<div className="flex items-center justify-between rounded-lg border border-border/60 px-3 py-2.5">
-								<div>
-									<div className="text-sm">Folder first</div>
-									<div className="text-xs text-muted-foreground">
-										Keep folders above notes.
-									</div>
-								</div>
-								<Switch
-									checked={folderFirst}
-									onCheckedChange={onFolderFirstChange}
-								/>
-							</div>
-							<div className="grid gap-2">
-								<label
-									className="text-xs text-muted-foreground"
-									htmlFor="space-note-previews"
-								>
-									Note previews
-								</label>
-								<Select
-									value={spacePreviewMode}
-									onValueChange={(value) =>
-										onSetSpacePreviewMode(
-											activeSpacePath,
-											value as SpacePreviewMode,
-										)
-									}
-								>
-									<SelectTrigger id="space-note-previews" className="w-full">
-										<SelectValue />
-									</SelectTrigger>
-									<SelectContent>
-										<SelectItem value="global">
-											Follow global ({showNotePreview ? "on" : "off"})
-										</SelectItem>
-										<SelectItem value="show">Always show</SelectItem>
-										<SelectItem value="hide">Always hide</SelectItem>
-									</SelectContent>
-								</Select>
-							</div>
-						</div>
-						<div className="space-y-3">
-							<div>
-								<div className="text-sm font-medium">Cloud</div>
-								<div className="text-xs text-muted-foreground">
-									Opt-in per space. Local-first unless you save it.
-								</div>
-							</div>
-							<div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2.5">
-								<div className="min-w-0">
-									<div className="text-sm">Save this space to cloud</div>
-									<div className="text-xs text-muted-foreground">
-										{cloudPill === "linking"
-											? "Linking space to cloud…"
-											: cloudPill === "live"
-												? "Live. Edits sync within seconds."
-												: cloudPill === "pending"
-													? `${pendingCloudUpdates} edit${pendingCloudUpdates === 1 ? "" : "s"} waiting — will send when you're back online.`
-													: "Off. This space never touches Convex."}
-									</div>
-									{cloudError ? (
-										<div className="mt-1 text-xs text-destructive">
-											{cloudError}
+							<Button
+								type="button"
+								variant={settingsTab === "notes" ? "secondary" : "ghost"}
+								onClick={() => setSettingsTab("notes")}
+								size="lg"
+								className="w-full justify-start gap-2 focus-visible:border-transparent focus-visible:ring-0"
+							>
+								<FileTextIcon className="size-4" />
+								Notes
+							</Button>
+							<Button
+								type="button"
+								variant={settingsTab === "cloud" ? "secondary" : "ghost"}
+								onClick={() => setSettingsTab("cloud")}
+								size="lg"
+								className="w-full justify-start gap-2 focus-visible:border-transparent focus-visible:ring-0"
+							>
+								<CloudIcon className="size-4" />
+								Cloud
+							</Button>
+						</aside>
+						<div className="min-w-0 overflow-y-auto p-5 sm:p-6">
+							<DialogHeader className="mb-5">
+								<DialogTitle className="text-lg">
+									{settingsTab === "general"
+										? "General"
+										: settingsTab === "notes"
+											? "Notes"
+											: "Cloud"}
+								</DialogTitle>
+							</DialogHeader>
+							{settingsTab === "general" ? (
+								<>
+									<section className="flex items-center gap-3 rounded-xl bg-muted/45 p-4">
+										<SpaceIcon
+											className="size-8 shrink-0"
+											color={spaceColor}
+											icon={spaceIcon}
+											path={activeSpacePath}
+										/>
+										<div className="min-w-0 flex-1">
+											<div className="text-xs text-muted-foreground">
+												Space name
+											</div>
+											<Input
+												value={settingsTitle}
+												onChange={(event) =>
+													setSettingsTitle(event.target.value)
+												}
+												className="mt-1 h-8 bg-transparent px-2 font-medium"
+											/>
 										</div>
-									) : null}
-									{!cloudError && cloudInfo ? (
-										<div className="mt-1 text-xs text-muted-foreground">
-											{cloudInfo}
+										<Button
+											type="button"
+											size="sm"
+											disabled={!settingsTitle.trim()}
+											onClick={() => {
+												onEditSpace(
+													activeSpacePath,
+													settingsTitle.trim(),
+													spaceColor ?? "#64748b",
+													spaceIcon ?? "cloud",
+												);
+											}}
+										>
+											Save
+										</Button>
+									</section>
+									<section className="mt-4 flex items-center justify-between gap-4 rounded-xl bg-muted/45 p-4">
+										<div className="min-w-0">
+											<h3 className="text-sm font-medium">Sync target</h3>
+											<p className="truncate text-xs text-muted-foreground">
+												{activeSyncTargetTitle}
+											</p>
 										</div>
-									) : null}
-								</div>
-								<div className="flex shrink-0 items-center gap-2">
-									<button
-										type="button"
-										title={
-											cloudPill === "pending"
-												? `${pendingCloudUpdates} queued edit${pendingCloudUpdates === 1 ? "" : "s"} unsent — they stay queued with backoff and send on reconnect.`
-												: cloudPill === "live"
-													? "Linked, outbox empty, subscriptions healthy."
-													: undefined
-										}
-										onClick={() => {
-											if (cloudPill !== "pending") return;
-											setCloudInfo(
-												`${pendingCloudUpdates} edit${pendingCloudUpdates === 1 ? "" : "s"} waiting in the outbox — kept across retries, sent oldest-first when the connection recovers.`,
-											);
-										}}
-										className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground data-[pill=error]:bg-destructive/15 data-[pill=error]:text-destructive data-[pill=linking]:bg-amber-500/15 data-[pill=linking]:text-amber-500 data-[pill=live]:bg-emerald-500/15 data-[pill=live]:text-emerald-500 data-[pill=pending]:bg-amber-500/15 data-[pill=pending]:text-amber-500"
-										data-pill={cloudPill}
-									>
-										{cloudPillLabel}
-									</button>
-									<Switch
-										checked={Boolean(cloudSpaceId)}
-										disabled={cloudBusy}
-										onCheckedChange={handleCloudToggle}
-										aria-label="Save this space to cloud"
-									/>
-								</div>
-							</div>
-							{!cloudSpaceId && !cloudBusy ? (
-								<ExistingCloudSpacePicker
-									cloudSpaceLinks={cloudSpaceLinks}
-									onLinked={(spaceId, name) => {
-										setCloudSpaceLink(activeSpacePath, spaceId);
-										setCloudError(null);
-										setCloudInfo(
-											`Linked to existing cloud space "${name}". Pulling…`,
-										);
-									}}
-								/>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											onClick={() => {
+												setSyncTargetKind(activeSyncTarget.kind);
+												setSyncTargetConnectionId(
+													activeSyncTarget.connectionId ?? "",
+												);
+												setSyncTargetError(null);
+												setSyncTargetOpen(true);
+											}}
+										>
+											Change
+										</Button>
+									</section>
+								</>
 							) : null}
+							{settingsTab === "notes" ? (
+								<section className="space-y-4">
+									<div>
+										<div className="text-sm font-medium">Notes</div>
+										<div className="text-xs text-muted-foreground">
+											These preferences are kept in the space settings.
+										</div>
+									</div>
+									<div className="grid gap-2">
+										<label
+											className="text-xs text-muted-foreground"
+											htmlFor="space-sort-order"
+										>
+											Sort by
+										</label>
+										<Select
+											value={sortOrder}
+											onValueChange={(value) =>
+												onSortOrderChange(value as SidebarSortOrder)
+											}
+										>
+											<SelectTrigger id="space-sort-order" className="w-full">
+												<SelectValue />
+											</SelectTrigger>
+											<SelectContent>
+												<SelectItem value="newest">Newest</SelectItem>
+												<SelectItem value="oldest">Oldest</SelectItem>
+												<SelectItem value="a-z">A to Z</SelectItem>
+												<SelectItem value="z-a">Z to A</SelectItem>
+												<SelectItem value="custom">Custom</SelectItem>
+											</SelectContent>
+										</Select>
+									</div>
+									<div className="flex items-center justify-between rounded-xl bg-muted/45 p-4">
+										<div>
+											<div className="text-sm">Folder first</div>
+											<div className="text-xs text-muted-foreground">
+												Keep folders above notes.
+											</div>
+										</div>
+										<Switch
+											checked={folderFirst}
+											onCheckedChange={onFolderFirstChange}
+										/>
+									</div>
+									<div className="grid gap-2">
+										<label
+											className="text-xs text-muted-foreground"
+											htmlFor="space-note-previews"
+										>
+											Note previews
+										</label>
+										<Select
+											value={spacePreviewMode}
+											onValueChange={(value) =>
+												onSetSpacePreviewMode(
+													activeSpacePath,
+													value as SpacePreviewMode,
+												)
+											}
+										>
+											<SelectTrigger
+												id="space-note-previews"
+												className="w-full"
+											>
+												<SelectValue />
+											</SelectTrigger>
+											<SelectContent>
+												<SelectItem value="global">
+													Follow global ({showNotePreview ? "on" : "off"})
+												</SelectItem>
+												<SelectItem value="show">Always show</SelectItem>
+												<SelectItem value="hide">Always hide</SelectItem>
+											</SelectContent>
+										</Select>
+									</div>
+								</section>
+							) : null}
+							{settingsTab === "cloud" ? (
+								<section className="space-y-4">
+									<div>
+										<div className="text-sm font-medium">Cloud</div>
+										<div className="text-xs text-muted-foreground">
+											Opt-in per space. Local-first unless you save it.
+										</div>
+									</div>
+									<div className="flex items-center justify-between gap-3 rounded-xl bg-muted/45 p-4">
+										<div className="min-w-0">
+											<div className="text-sm">Save this space to cloud</div>
+											<div className="text-xs text-muted-foreground">
+												{cloudPill === "linking"
+													? "Linking space to cloud…"
+													: cloudPill === "live"
+														? "Live. Edits sync within seconds."
+														: cloudPill === "pending"
+															? `${pendingCloudUpdates} edit${pendingCloudUpdates === 1 ? "" : "s"} waiting — will send when you're back online.`
+															: "Off. This space never touches Convex."}
+											</div>
+											{cloudError ? (
+												<div className="mt-1 text-xs text-destructive">
+													{cloudError}
+												</div>
+											) : null}
+											{!cloudError && cloudInfo ? (
+												<div className="mt-1 text-xs text-muted-foreground">
+													{cloudInfo}
+												</div>
+											) : null}
+										</div>
+										<div className="flex shrink-0 items-center gap-2">
+											<button
+												type="button"
+												title={
+													cloudPill === "pending"
+														? `${pendingCloudUpdates} queued edit${pendingCloudUpdates === 1 ? "" : "s"} unsent — they stay queued with backoff and send on reconnect.`
+														: cloudPill === "live"
+															? "Linked, outbox empty, subscriptions healthy."
+															: undefined
+												}
+												onClick={() => {
+													if (cloudPill !== "pending") return;
+													setCloudInfo(
+														`${pendingCloudUpdates} edit${pendingCloudUpdates === 1 ? "" : "s"} waiting in the outbox — kept across retries, sent oldest-first when the connection recovers.`,
+													);
+												}}
+												className="rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground data-[pill=error]:bg-destructive/15 data-[pill=error]:text-destructive data-[pill=linking]:bg-amber-500/15 data-[pill=linking]:text-amber-500 data-[pill=live]:bg-emerald-500/15 data-[pill=live]:text-emerald-500 data-[pill=pending]:bg-amber-500/15 data-[pill=pending]:text-amber-500"
+												data-pill={cloudPill}
+											>
+												{cloudPillLabel}
+											</button>
+											<Switch
+												checked={Boolean(cloudSpaceId)}
+												disabled={cloudBusy}
+												onCheckedChange={handleCloudToggle}
+												aria-label="Save this space to cloud"
+											/>
+										</div>
+									</div>
+									{!cloudSpaceId && !cloudBusy ? (
+										<ExistingCloudSpacePicker
+											cloudSpaceLinks={cloudSpaceLinks}
+											onLinked={(spaceId, name) => {
+												setCloudSpaceLink(activeSpacePath, spaceId);
+												setCloudError(null);
+												setCloudInfo(
+													`Linked to existing cloud space "${name}". Pulling…`,
+												);
+											}}
+										/>
+									) : null}
+								</section>
+							) : null}
+						</div>
+					</div>
+				</DialogContent>
+			</Dialog>
+			<Dialog open={syncTargetOpen} onOpenChange={setSyncTargetOpen}>
+				<DialogContent className="sm:max-w-md">
+					<DialogHeader>
+						<DialogTitle>Change sync target</DialogTitle>
+						<DialogDescription>
+							Choose where {spaceTitle} should sync. This only changes this
+							space.
+						</DialogDescription>
+					</DialogHeader>
+					<div className="flex flex-col gap-3">
+						<div className="flex flex-col gap-2 text-sm">
+							<span className="text-xs font-medium text-muted-foreground">
+								Target
+							</span>
+							<Select
+								value={syncTargetKind}
+								onValueChange={(value) =>
+									setSyncTargetKind(value as SyncTargetKind)
+								}
+							>
+								<SelectTrigger aria-label="Sync target">
+									<SelectValue />
+								</SelectTrigger>
+								<SelectContent>
+									<SelectItem value="local">Local only</SelectItem>
+									<SelectItem value="paperite-cloud">Paperite+</SelectItem>
+									<SelectItem value="paperite-server">
+										Personal server
+									</SelectItem>
+								</SelectContent>
+							</Select>
+						</div>
+						{syncTargetKind === "paperite-server" ? (
+							<div className="flex flex-col gap-2 text-sm">
+								<span className="text-xs font-medium text-muted-foreground">
+									Server
+								</span>
+								<Select
+									value={syncTargetConnectionId}
+									onValueChange={setSyncTargetConnectionId}
+								>
+									<SelectTrigger aria-label="Personal server">
+										<SelectValue placeholder="Choose a server" />
+									</SelectTrigger>
+									<SelectContent>
+										{Object.values(connections)
+											.filter(
+												(connection) => connection.kind === "paperite-server",
+											)
+											.map((connection) => (
+												<SelectItem
+													key={connection.connectionId}
+													value={connection.connectionId}
+												>
+													{connection.serverIdentity
+														? `${connection.serverIdentity.icon} ${connection.serverIdentity.name}`
+														: connection.displayLabel}
+												</SelectItem>
+											))}
+									</SelectContent>
+								</Select>
+							</div>
+						) : null}
+						{syncTargetError ? (
+							<p className="text-xs text-destructive">{syncTargetError}</p>
+						) : null}
+						<div className="flex justify-end gap-2">
+							<Button
+								type="button"
+								variant="outline"
+								onClick={() => setSyncTargetOpen(false)}
+								disabled={syncTargetBusy}
+							>
+								Cancel
+							</Button>
+							<Button
+								type="button"
+								onClick={() => void changeSyncTarget()}
+								disabled={syncTargetBusy}
+							>
+								{syncTargetBusy ? "Changing…" : "Change target"}
+							</Button>
 						</div>
 					</div>
 				</DialogContent>
@@ -2497,10 +2820,10 @@ function SpaceDropHeader({
 				{isTrash ? (
 					<button
 						type="button"
-						className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-destructive outline-none transition-colors hover:bg-destructive/10 focus-visible:ring-0"
+						disabled={!trashCount}
+						className="flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-destructive outline-none transition-colors hover:bg-destructive/10 focus-visible:ring-0 disabled:cursor-not-allowed disabled:opacity-40"
 						onClick={onEmptyTrash}
 					>
-						<Trash2Icon className="size-3.5" />
 						Empty
 					</button>
 				) : (
@@ -2529,6 +2852,31 @@ function SpaceDropHeader({
 		</div>
 	);
 }
+
+const MemoSpaceDropHeader = React.memo(SpaceDropHeader, (prev, next) => {
+	// Same story as the rows: `spaces` gets a fresh identity on every
+	// workspace patch. The header never renders preview/pin text, so compare
+	// by structure only — a preview-only autosave while typing must not
+	// re-render it.
+	return (
+		areWorkspaceSpaceHeadersEqual(prev.spaces, next.spaces) &&
+		prev.spaceColors === next.spaceColors &&
+		prev.spaceIcons === next.spaceIcons &&
+		prev.user === next.user &&
+		prev.onCreateFolder === next.onCreateFolder &&
+		prev.onCreateNote === next.onCreateNote &&
+		prev.onEditSpace === next.onEditSpace &&
+		prev.spacePreviewModes === next.spacePreviewModes &&
+		prev.showNotePreview === next.showNotePreview &&
+		prev.onSetSpacePreviewMode === next.onSetSpacePreviewMode &&
+		prev.viewMode === next.viewMode &&
+		prev.onViewModeChange === next.onViewModeChange &&
+		prev.onSortOrderChange === next.onSortOrderChange &&
+		prev.onFolderFirstChange === next.onFolderFirstChange &&
+		prev.onEmptyTrash === next.onEmptyTrash &&
+		prev.trashCount === next.trashCount
+	);
+});
 
 function DragItemPreview({ item }: { item: DragPreviewItem }) {
 	return (
@@ -2645,6 +2993,9 @@ function AppSidebarImpl({
 	const { open, setOpen } = useSidebar();
 	const [user, setUser] = React.useState(loadCachedUser);
 	const [isSignedIn, setIsSignedIn] = React.useState(false);
+	// A browser surface with no desktop attached yet is waiting, not
+	// signed out — the user needs to know the difference.
+	const [awaitingDesktop, setAwaitingDesktop] = React.useState(false);
 	const [isAuthLoading, setIsAuthLoading] = React.useState(() =>
 		isClerkConfigured(),
 	);
@@ -2681,6 +3032,21 @@ function AppSidebarImpl({
 	// re-render this shell or every note ContextMenu.
 	// spaceOrder lives here (not Index) so reordering spaces does not re-render
 	// the note workspace / editors (plan 017).
+	// Trash item objects are mapped once per trash change — an inline map here
+	// would hand every trash row a new `note` ref on each render and defeat
+	// NoteGridCard's memo.
+	const trashItems = React.useMemo(
+		() =>
+			trashNotes.map((n) => ({
+				type: "note" as const,
+				title: n.title,
+				path: n.trashPath,
+				preview: n.preview,
+				updatedAt: n.deletedAt,
+				pinned: false,
+			})),
+		[trashNotes],
+	);
 	const spaces = React.useMemo(() => {
 		const order = storeUi.spaceOrder;
 		if (!order || order.length === 0) return baseSpaces;
@@ -2709,35 +3075,76 @@ function AppSidebarImpl({
 	const viewMode = storeUi.inboxViewMode ?? viewModeProp ?? "list";
 	const spaceSortOrders = storeUi.spaceSortOrders;
 	const spaceFolderFirstMap = storeUi.spaceFolderFirst;
-	const onSetShowNotePreview =
-		onSetShowNotePreviewProp ??
-		((show: boolean) => useAppStore.getState().setShowNotePreview(show));
-	const onSetCloseButtonOnly =
-		onSetCloseButtonOnlyProp ??
-		((value: boolean) => useAppStore.getState().setCloseButtonOnly(value));
-	const onSetSyncSidebarWithActiveTab =
-		onSetSyncSidebarWithActiveTabProp ??
-		((value: boolean) =>
-			useAppStore.getState().setSyncSidebarWithActiveTab(value));
-	const onSetSpacePreviewMode =
-		onSetSpacePreviewModeProp ??
-		((spacePath: string, mode: SpacePreviewMode) =>
-			useAppStore.getState().setSpacePreviewMode(spacePath, mode));
-	const onViewModeChange =
-		onViewModeChangeProp ??
-		((mode: "list" | "grid") => useAppStore.getState().setInboxViewMode(mode));
-	const onSortOrderChange =
-		onSortOrderChangeProp ??
-		((order: SidebarSortOrder) => {
+	// Fallbacks below MUST stay referentially stable: they flow into memoized
+	// children (MemoSpaceDropHeader, NavUser), and an inline arrow would hand
+	// them a new identity on every render — re-rendering the header/rail on
+	// every save while typing.
+	const fallbackSetShowNotePreview = React.useCallback(
+		(show: boolean) => useAppStore.getState().setShowNotePreview(show),
+		[],
+	);
+	const fallbackSetCloseButtonOnly = React.useCallback(
+		(value: boolean) => useAppStore.getState().setCloseButtonOnly(value),
+		[],
+	);
+	const fallbackSetSyncSidebarWithActiveTab = React.useCallback(
+		(value: boolean) =>
+			useAppStore.getState().setSyncSidebarWithActiveTab(value),
+		[],
+	);
+	const fallbackSetSpacePreviewMode = React.useCallback(
+		(spacePath: string, mode: SpacePreviewMode) =>
+			useAppStore.getState().setSpacePreviewMode(spacePath, mode),
+		[],
+	);
+	const fallbackViewModeChange = React.useCallback(
+		(mode: "list" | "grid") => useAppStore.getState().setInboxViewMode(mode),
+		[],
+	);
+	const fallbackSortOrderChange = React.useCallback(
+		(order: SidebarSortOrder) => {
 			const path = useAppStore.getState().activeSpacePath;
 			useAppStore.getState().setSpaceSortOrder(path, order);
-		});
+		},
+		[],
+	);
+	const fallbackFolderFirstChange = React.useCallback((value: boolean) => {
+		const path = useAppStore.getState().activeSpacePath;
+		useAppStore.getState().setSpaceFolderFirst(path, value);
+	}, []);
+	const onSetShowNotePreview =
+		onSetShowNotePreviewProp ?? fallbackSetShowNotePreview;
+	const onSetCloseButtonOnly =
+		onSetCloseButtonOnlyProp ?? fallbackSetCloseButtonOnly;
+	const onSetSyncSidebarWithActiveTab =
+		onSetSyncSidebarWithActiveTabProp ?? fallbackSetSyncSidebarWithActiveTab;
+	const onSetSpacePreviewMode =
+		onSetSpacePreviewModeProp ?? fallbackSetSpacePreviewMode;
+	const onViewModeChange = onViewModeChangeProp ?? fallbackViewModeChange;
+	const onSortOrderChange = onSortOrderChangeProp ?? fallbackSortOrderChange;
 	const onFolderFirstChange =
-		onFolderFirstChangeProp ??
-		((value: boolean) => {
-			const path = useAppStore.getState().activeSpacePath;
-			useAppStore.getState().setSpaceFolderFirst(path, value);
-		});
+		onFolderFirstChangeProp ?? fallbackFolderFirstChange;
+
+	// The rail only cares about title/path (see NavMain's content comparator);
+	// keep a stable ref across preview-only workspace patches so the rail
+	// isn't even re-evaluated while typing. Icon nodes are still rebuilt when
+	// spaces/colors/icons actually change.
+	const navSpaces = React.useMemo(
+		() =>
+			spaces.map((space) => ({
+				title: space.title,
+				url: "#",
+				path: space.path,
+				icon: (
+					<SpaceIcon
+						color={spaceColors[space.path]}
+						icon={spaceIcons[space.path]}
+						path={space.path}
+					/>
+				),
+			})),
+		[spaces, spaceColors, spaceIcons],
+	);
 
 	const [ftsResults, setFtsResults] = React.useState<NoteSearchResult[] | null>(
 		null,
@@ -3045,34 +3452,50 @@ function AppSidebarImpl({
 		if (!isClerkConfigured()) return;
 
 		let cancelled = false;
+		let wasSignedIn = false;
 
 		const syncUser = () => {
-			const clerkUser = clerk.user;
-			setIsSignedIn(Boolean(clerkUser));
+			void getPaperiteSession().then((session) => {
+				if (cancelled) return;
+				const paperiteUser = session.user;
+				setIsSignedIn(session.signedIn);
 
-			if (clerkUser) {
-				const next = {
-					name: clerkUser.fullName ?? clerkUser.username ?? "Paperite user",
-					avatar: clerkUser.imageUrl ?? "",
-					email:
-						clerkUser.primaryEmailAddress?.emailAddress ??
-						clerkUser.emailAddresses[0]?.emailAddress ??
-						"",
-				};
-				setUser(next);
-				try {
-					window.localStorage.setItem(cachedUserKey, JSON.stringify(next));
-				} catch {
-					// Display cache only — auth state lives in Clerk.
+				// A browser mirrors the desktop session, so the desktop
+				// signing in must be announced globally — dialogs listen
+				// for this to close themselves. On the desktop the OAuth
+				// callback handler announces it instead.
+				if (isBrowserRenderer() && session.signedIn && !wasSignedIn) {
+					window.dispatchEvent(new CustomEvent("paperite:auth-success"));
 				}
-			} else {
-				setUser(fallbackUser);
-				try {
-					window.localStorage.removeItem(cachedUserKey);
-				} catch {
-					// Display cache only — auth state lives in Clerk.
+				wasSignedIn = session.signedIn;
+
+				// A browser with no desktop yet is not a signed-out user —
+				// it is a surface waiting for one. Say so, instead of
+				// pretending the account is gone.
+				setAwaitingDesktop(session.awaitingDesktop);
+
+				if (paperiteUser) {
+					const next = {
+						name:
+							paperiteUser.fullName ?? paperiteUser.username ?? "Paperite user",
+						avatar: paperiteUser.imageUrl ?? "",
+						email: paperiteUser.email,
+					};
+					setUser(next);
+					try {
+						window.localStorage.setItem(cachedUserKey, JSON.stringify(next));
+					} catch {
+						// Display cache only — auth lives in Clerk or the bridge.
+					}
+				} else {
+					setUser(fallbackUser);
+					try {
+						window.localStorage.removeItem(cachedUserKey);
+					} catch {
+						// Display cache only — auth lives in Clerk or the bridge.
+					}
 				}
-			}
+			});
 		};
 		let unsubscribe: (() => void) | undefined;
 		try {
@@ -3102,16 +3525,48 @@ function AppSidebarImpl({
 			.finally(() => {
 				if (!cancelled) setIsAuthLoading(false);
 			});
-
+		// In a browser the session comes from the desktop, so the shared
+		// bridge watcher drives the updates — one poller for the whole app.
+		const bridgePoll = isBrowserRenderer()
+			? subscribeDesktopBridge(syncUser)
+			: undefined;
 		return () => {
 			cancelled = true;
+			bridgePoll?.();
 			unsubscribe?.();
 			window.removeEventListener("paperite:auth-success", handleAuthSuccess);
 		};
 	}, []);
 
-	const logOut = async () => {
+	const logOut = React.useCallback(async () => {
 		if (!isClerkConfigured()) return;
+
+		const current = await getPaperiteSession();
+		if (current.source === "desktop-bridge") {
+			stopAllPull();
+			if (!(await signOutBridge())) {
+				window.dispatchEvent(
+					new CustomEvent("paperite:auth-error", {
+						detail: "Could not sign out from the Paperite desktop session.",
+					}),
+				);
+				return;
+			}
+			setUser(fallbackUser);
+			setIsSignedIn(false);
+			await navigate({ to: "/login" });
+			return;
+		}
+
+		const binding = await clearDeviceAccount();
+		if (binding.status !== "unbound") {
+			window.dispatchEvent(
+				new CustomEvent("paperite:auth-error", {
+					detail: "Could not clear the Paperite device account binding.",
+				}),
+			);
+			return;
+		}
 
 		// Plan 020 Step 3: subscriptions are per-account — drop them all.
 		stopAllPull();
@@ -3124,7 +3579,7 @@ function AppSidebarImpl({
 		setUser(fallbackUser);
 		setIsSignedIn(false);
 		await navigate({ to: "/login" });
-	};
+	}, [navigate]);
 
 	const scheduleHoverOpen = React.useCallback(
 		(hoverTarget: { kind: "space" | "folder"; path: string }) => {
@@ -3404,7 +3859,7 @@ function AppSidebarImpl({
 						"paperite-space-sidebar-wrapper",
 						notesSheetOpen && "paperite-space-sidebar-wrapper-open",
 					)}
-					className="paperite-space-sidebar"
+					className="paperite-space-sidebar group-data-[side=left]:border-r-0"
 					{...props}
 				>
 					<SidebarHeader className="group-data-[collapsible=icon]:p-1 group-data-[collapsible=icon]:pt-3 pb-0">
@@ -3420,18 +3875,7 @@ function AppSidebarImpl({
 					</SidebarHeader>
 					<SidebarContent>
 						<NavMain
-							spaces={spaces.map((space) => ({
-								title: space.title,
-								url: "#",
-								path: space.path,
-								icon: (
-									<SpaceIcon
-										color={spaceColors[space.path]}
-										icon={spaceIcons[space.path]}
-										path={space.path}
-									/>
-								),
-							}))}
+							spaces={navSpaces}
 							onCreateSpace={onCreateSpace}
 							onDeleteSpace={onDeleteSpace}
 							onEditSpace={onEditSpace}
@@ -3447,6 +3891,7 @@ function AppSidebarImpl({
 							user={user}
 							isSignedIn={isSignedIn}
 							isAuthLoading={isAuthLoading}
+							awaitingDesktop={awaitingDesktop}
 							showNotePreview={showNotePreview}
 							closeButtonOnly={closeButtonOnly}
 							syncSidebarWithActiveTab={syncSidebarWithActiveTab}
@@ -3455,7 +3900,7 @@ function AppSidebarImpl({
 							onSetSyncSidebarWithActiveTab={onSetSyncSidebarWithActiveTab}
 						/>
 					</SidebarFooter>
-					<SidebarRail />
+					{/* SidebarRail removed: no click-to-toggle on border */}
 				</Sidebar>
 				<SearchQueryContext.Provider value={debouncedSearchQuery}>
 					<SearchExpandPathsContext.Provider value={searchExpandPaths}>
@@ -3468,8 +3913,8 @@ function AppSidebarImpl({
 								clips instead of reflowing content mid-animation.
 								Without this the list visibly rewraps while sliding. */}
 								<div className="paperite-note-sidebar-inner flex h-full min-h-0 w-80 shrink-0 flex-col">
-									<SidebarHeader className="gap-2 px-3 pt-3 pb-0">
-										<SpaceDropHeader
+									<SidebarHeader className="gap-2 pl-0.5 pr-3 pt-3 pb-0">
+										<MemoSpaceDropHeader
 											spaces={spaces}
 											spaceColors={spaceColors}
 											spaceIcons={spaceIcons}
@@ -3485,6 +3930,7 @@ function AppSidebarImpl({
 											onSortOrderChange={onSortOrderChange}
 											onFolderFirstChange={onFolderFirstChange}
 											onEmptyTrash={onEmptyTrash}
+											trashCount={trashNotes.length}
 										/>
 										<InputGroup className="h-9">
 											<InputGroupAddon>
@@ -3498,11 +3944,11 @@ function AppSidebarImpl({
 										</InputGroup>
 									</SidebarHeader>
 									<SidebarContent className="[mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)] [-webkit-mask-image:linear-gradient(to_bottom,transparent_0,black_18px,black_100%)]">
-										<SidebarGroup className="px-3 pt-4 pb-8">
+										<SidebarGroup className="pl-0.5 pr-3 pt-4 pb-8">
 											<SidebarGroupContent>
 												{debouncedSearchQuery.trim().length >= 2 ? (
 													<div className="mb-4 flex flex-col gap-1.5">
-														<p className="px-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+														<p className="px-1 text-[11px] font-medium text-muted-foreground">
 															{ftsLoading
 																? "Searching…"
 																: ftsResults && ftsResults.length === 0
@@ -3548,18 +3994,10 @@ function AppSidebarImpl({
 												<SpaceVisibility path="Trash">
 													{trashNotes.length > 0 ? (
 														<NoteGrid
-															items={trashNotes.map((n) => ({
-																type: "note" as const,
-																title: n.title,
-																path: n.trashPath,
-																preview: n.preview,
-																updatedAt: n.deletedAt,
-																pinned: false,
-															}))}
-															onDeleteItem={() => {}}
-															onMoveItem={() => {}}
+															items={trashItems}
+															onDeleteItem={noopHandler}
+															onMoveItem={noopHandler}
 															onOpenNote={handleOpenNote}
-															spaces={spaces}
 															spaceIcons={spaceIcons}
 															spaceColors={spaceColors}
 															showPreview={resolvedShowPreview}
@@ -3594,7 +4032,6 @@ function AppSidebarImpl({
 																		onDeleteItem={onDeleteItem}
 																		onMoveItem={onMoveItem}
 																		onOpenNote={handleOpenNote}
-																		spaces={spaces}
 																		spaceIcons={spaceIcons}
 																		spaceColors={spaceColors}
 																		showPreview={showPreviewForSpace(spacePath)}
@@ -3612,7 +4049,6 @@ function AppSidebarImpl({
 																		onRenameItem={onRenameItem}
 																		onToggleFolder={handleToggleFolder}
 																		parentPath={spacePath}
-																		spaces={spaces}
 																		spaceIcons={spaceIcons}
 																		spaceColors={spaceColors}
 																		showPreview={showPreviewForSpace(spacePath)}
@@ -3794,6 +4230,7 @@ const spaceIconMap = {
 	compass: CompassIcon,
 	users: UsersIcon,
 	pin: PinIcon,
+	trash: Trash2Icon,
 };
 
 const customIconPrefix = "custom:";

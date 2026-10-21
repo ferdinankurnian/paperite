@@ -12,10 +12,13 @@ function resolveEngine(): NotesEngine | null {
 	if (resolved) return cachedEngine;
 	resolved = true;
 
-	if (window.electron?.notes) {
-		cachedEngine = wrapNotesEngineWithLiveSync(new ElectronNotesEngine());
-	} else if (import.meta.env.PAPERITE_WEB) {
+	if (
+		window.electron?.workspaceMode === "attached" ||
+		import.meta.env.PAPERITE_WEB
+	) {
 		cachedEngine = wrapNotesEngineWithLiveSync(new WebNotesEngine());
+	} else if (window.electron?.notes) {
+		cachedEngine = wrapNotesEngineWithLiveSync(new ElectronNotesEngine());
 	}
 
 	return cachedEngine;

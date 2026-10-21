@@ -25,7 +25,16 @@ import { useSyncExternalStore } from "react";
 //   import type { SyncProvider } from "@paperite/server-api";
 // Until then this local structural slot is what clients code against.
 import { api } from "../../convex/_generated/api";
+import { getBridgeSession, isBrowserRenderer } from "./auth-bridge";
 import { clerk, isClerkConfigured, loadClerk } from "./clerk";
+import { readPersonalServerCredential } from "./credential-store";
+import {
+	type NoteMetadata,
+	PersonalServerHttpProvider,
+	type YjsUpdateBatch,
+} from "./personal-server-provider";
+import { getSpaceSyncTarget } from "./space-sync-targets";
+import { useAppStore } from "./stores/app-store";
 
 export type SyncBackendKind = "convex" | "local";
 
@@ -377,6 +386,12 @@ async function fetchConvexToken({
 	forceRefreshToken: boolean;
 }): Promise<string | null> {
 	try {
+		if (isBrowserRenderer()) {
+			// A browser never holds a Clerk session — the desktop mints the
+			// short-lived Convex JWT and hands it over the serve bridge.
+			const bridge = await getBridgeSession(true);
+			if (bridge) return bridge.signedIn ? (bridge.token ?? null) : null;
+		}
 		await loadClerk();
 		const session = clerk.session;
 		if (!session) return null;
@@ -435,7 +450,26 @@ export function getSyncClient(): ConvexReactClient | null {
 	return getConvexClient();
 }
 
-export async function createSharedSpace(name: string) {
+export async function createSharedSpace(name: string, spacePath?: string) {
+	if (spacePath) {
+		const target = getTargetForSpace(spacePath);
+		if (target.kind === "paperite-server") {
+			if (!target.connectionId) {
+				throw new Error(
+					"A personal-server connection is required for this space.",
+				);
+			}
+			if (target.remoteSpaceId) return { spaceId: target.remoteSpaceId };
+			const { provider } = await getPersonalServerProvider(target.connectionId);
+			const membership = await provider.createSpace(name);
+			useAppStore.getState().setSpaceSyncTarget(spacePath, {
+				kind: "paperite-server",
+				connectionId: target.connectionId,
+				remoteSpaceId: membership.space.spaceId,
+			});
+			return { spaceId: membership.space.spaceId };
+		}
+	}
 	const client = getConvexClient();
 	if (!client) {
 		throw new Error(
@@ -488,6 +522,16 @@ export function humanizeShareError(error: unknown): string {
 		return "You no longer have access to this cloud space.";
 	}
 	if (
+		message.includes("device_revoked") ||
+		message.includes("device_credential_expired") ||
+		message.includes("needs pairing")
+	) {
+		return "This personal-server connection needs pairing again.";
+	}
+	if (message.includes("read_only_member")) {
+		return "This device has read-only access to the space.";
+	}
+	if (
 		message.includes("local hub") ||
 		message.includes("Local sync hub") ||
 		message.includes("not implemented")
@@ -537,7 +581,22 @@ export async function upsertSharedNote(args: {
 	noteId: string;
 	path: string;
 	title: string;
+	spacePath?: string;
 }) {
+	if (args.spacePath) {
+		const personal = await getPersonalServerForSpace(
+			args.spacePath,
+			args.spaceId,
+		);
+		if (personal) {
+			return personal.provider.upsertNote({
+				spaceId: args.spaceId,
+				noteId: args.noteId,
+				path: args.path,
+				title: args.title,
+			});
+		}
+	}
 	const client = requireConvexClient();
 	return client.mutation(api.sharedSpaces.upsertNote, {
 		spaceId: args.spaceId as never,
@@ -553,7 +612,23 @@ export async function appendSharedUpdate(args: {
 	updateId: string;
 	deviceId: string;
 	data: Uint8Array;
+	spacePath?: string;
 }) {
+	if (args.spacePath) {
+		const personal = await getPersonalServerForSpace(
+			args.spacePath,
+			args.spaceId,
+		);
+		if (personal) {
+			return personal.provider.appendUpdateBatch({
+				spaceId: args.spaceId,
+				noteId: args.noteId,
+				updateBatchId: args.updateId,
+				deviceId: personal.deviceId,
+				updates: [args.data],
+			});
+		}
+	}
 	const client = requireConvexClient();
 	return client.mutation(api.sharedSpaces.appendUpdate, {
 		spaceId: args.spaceId as never,
@@ -569,7 +644,22 @@ export async function writeSharedSnapshot(args: {
 	noteId: string;
 	data: Uint8Array;
 	stateVector: Uint8Array;
+	spacePath?: string;
 }) {
+	if (args.spacePath) {
+		const personal = await getPersonalServerForSpace(
+			args.spacePath,
+			args.spaceId,
+		);
+		if (personal) {
+			return personal.provider.writeSnapshot({
+				spaceId: args.spaceId,
+				noteId: args.noteId,
+				data: args.data,
+				stateVector: args.stateVector,
+			});
+		}
+	}
 	const client = requireConvexClient();
 	return client.mutation(api.sharedSpaces.writeSnapshot, {
 		spaceId: args.spaceId as never,
@@ -597,9 +687,161 @@ export type SharedUpdateRow = {
 	createdAt: number;
 };
 
+export type PersonalServerBinding = {
+	provider: PersonalServerHttpProvider;
+	deviceId: string;
+};
+
+const personalServerProviders = new Map<string, PersonalServerBinding>();
+
+export function invalidatePersonalServerProvider(connectionId: string): void {
+	personalServerProviders.delete(connectionId);
+}
+
+/** Resolve a paired personal server without ever reading its credential from app state. */
+export async function getPersonalServerProvider(
+	connectionId: string,
+): Promise<PersonalServerBinding> {
+	const cached = personalServerProviders.get(connectionId);
+	if (cached) return cached;
+
+	const connection = useAppStore.getState().connections[connectionId];
+	if (
+		!connection ||
+		connection.kind !== "paperite-server" ||
+		!connection.endpoint ||
+		!connection.serverId
+	) {
+		throw new Error("The personal-server connection is not configured.");
+	}
+	const credential = await readPersonalServerCredential(connectionId);
+	if (!credential) {
+		throw new Error("This personal-server connection needs pairing.");
+	}
+	const provider = new PersonalServerHttpProvider({
+		endpoint: connection.endpoint,
+		serverId: connection.serverId,
+		deviceId: connection.deviceId ?? "",
+		deviceCredential: credential,
+	});
+	let deviceId = connection.deviceId ?? "";
+	if (!deviceId) {
+		const session = await provider.getSession();
+		if (!session)
+			throw new Error("This personal-server connection needs pairing.");
+		if (!session.user.userId.startsWith("device:")) {
+			throw new Error(
+				"The personal-server returned an invalid device identity.",
+			);
+		}
+		deviceId = session.user.userId.slice("device:".length);
+		useAppStore.getState().setConnection({
+			...connection,
+			deviceId,
+			status: "connected",
+			updatedAt: Date.now(),
+		});
+	}
+	const binding = { provider, deviceId };
+	personalServerProviders.set(connectionId, binding);
+	return binding;
+}
+
+export async function getRemoteDeviceId(
+	spacePath: string,
+	spaceId: string,
+): Promise<string | null> {
+	if (getTargetForSpace(spacePath).kind !== "paperite-server") return null;
+	return (
+		(await getPersonalServerForSpace(spacePath, spaceId))?.deviceId ?? null
+	);
+}
+
+/** Create the remote identity for a newly bound personal-server space. */
+export async function ensurePersonalServerSpace(
+	spacePath: string,
+	name: string,
+	connectionId: string,
+): Promise<string> {
+	const target = getTargetForSpace(spacePath);
+	if (
+		target.kind !== "paperite-server" ||
+		target.connectionId !== connectionId
+	) {
+		throw new Error("Bind the space to this personal-server connection first.");
+	}
+	if (target.remoteSpaceId) return target.remoteSpaceId;
+	const { provider } = await getPersonalServerProvider(connectionId);
+	const membership = await provider.createSpace(name);
+	useAppStore.getState().setSpaceSyncTarget(spacePath, {
+		kind: "paperite-server",
+		connectionId,
+		remoteSpaceId: membership.space.spaceId,
+	});
+	return membership.space.spaceId;
+}
+
+function getTargetForSpace(spacePath: string) {
+	return getSpaceSyncTarget(useAppStore.getState(), spacePath);
+}
+
+async function getPersonalServerForSpace(
+	spacePath: string,
+	spaceId: string,
+): Promise<PersonalServerBinding | null> {
+	const target = getTargetForSpace(spacePath);
+	if (target.kind !== "paperite-server") return null;
+	if (!target.connectionId) {
+		throw new Error("A personal-server connection is required for this space.");
+	}
+	if (target.remoteSpaceId && target.remoteSpaceId !== spaceId) {
+		throw new Error(
+			"This space is bound to a different personal-server space.",
+		);
+	}
+	return getPersonalServerProvider(target.connectionId);
+}
+
+function sharedNoteFromPersonalServer(row: NoteMetadata): SharedNoteRow {
+	return {
+		_id: `${row.spaceId}:${row.noteId}`,
+		spaceId: row.spaceId,
+		noteId: row.noteId,
+		path: row.path,
+		title: row.title,
+	};
+}
+
+function sharedUpdatesFromPersonalServer(
+	rows: readonly YjsUpdateBatch[],
+): Array<Omit<SharedUpdateRow, "data"> & { data: Uint8Array }> {
+	return rows.flatMap((batch) =>
+		batch.updates.map((data, index) => ({
+			_id: `${batch.spaceId}:${batch.noteId}:${batch.updateBatchId}:${index}`,
+			spaceId: batch.spaceId,
+			noteId: batch.noteId,
+			updateId:
+				batch.updates.length === 1
+					? batch.updateBatchId
+					: `${batch.updateBatchId}:${index}`,
+			deviceId: batch.deviceId,
+			data: data instanceof Uint8Array ? data : new Uint8Array(data),
+			createdAt: Date.parse(batch.createdAt),
+		})),
+	);
+}
+
 export async function listSharedNotes(
 	spaceId: string,
+	spacePath?: string,
 ): Promise<SharedNoteRow[]> {
+	if (spacePath) {
+		const personal = await getPersonalServerForSpace(spacePath, spaceId);
+		if (personal) {
+			const rows = await personal.provider.listNotes(spaceId);
+			return rows.map(sharedNoteFromPersonalServer);
+		}
+	}
 	const client = requireConvexClient();
 	return client.query(api.sharedSpaces.listNotes, {
 		spaceId: spaceId as never,
@@ -609,7 +851,20 @@ export async function listSharedNotes(
 export async function removeSharedNote(args: {
 	spaceId: string;
 	noteId: string;
+	spacePath?: string;
 }) {
+	if (args.spacePath) {
+		const personal = await getPersonalServerForSpace(
+			args.spacePath,
+			args.spaceId,
+		);
+		if (personal) {
+			return personal.provider.deleteNote({
+				spaceId: args.spaceId,
+				noteId: args.noteId,
+			});
+		}
+	}
 	const client = requireConvexClient();
 	return client.mutation(api.sharedSpaces.removeNote, {
 		spaceId: args.spaceId as never,
@@ -628,7 +883,20 @@ export async function removeSharedNote(args: {
 export function watchSharedNotes(
 	spaceId: string,
 	callback: (rows: SharedNoteRow[]) => void,
+	spacePath?: string,
 ): () => void {
+	if (spacePath && getTargetForSpace(spacePath).kind === "paperite-server") {
+		let active = true;
+		void getPersonalServerForSpace(spacePath, spaceId)
+			.then((personal) => personal?.provider.listNotes(spaceId))
+			.then((rows) => {
+				if (active && rows) callback(rows.map(sharedNoteFromPersonalServer));
+			})
+			.catch(() => undefined);
+		return () => {
+			active = false;
+		};
+	}
 	const client = requireConvexClient();
 	const watch = client.watchQuery(api.sharedSpaces.listNotes, {
 		spaceId: spaceId as never,
@@ -652,7 +920,29 @@ export function watchSharedUpdates(
 	callback: (
 		rows: Array<Omit<SharedUpdateRow, "data"> & { data: Uint8Array }>,
 	) => void,
+	spacePath?: string,
 ): () => void {
+	if (spacePath && getTargetForSpace(spacePath).kind === "paperite-server") {
+		let active = true;
+		let subscription: { unsubscribe: () => void } | null = null;
+		void getPersonalServerForSpace(spacePath, spaceId)
+			.then((personal) => {
+				if (!personal || !active) return;
+				subscription = personal.provider.subscribeToNoteUpdates({
+					spaceId,
+					noteId,
+					onUpdate: (event) => {
+						if (active)
+							callback(sharedUpdatesFromPersonalServer([event.batch]));
+					},
+				});
+			})
+			.catch(() => undefined);
+		return () => {
+			active = false;
+			subscription?.unsubscribe();
+		};
+	}
 	const client = requireConvexClient();
 	const watch = client.watchQuery(api.sharedSpaces.listUpdates, {
 		spaceId: spaceId as never,
@@ -676,7 +966,16 @@ export function watchSharedUpdates(
 export async function listSharedUpdates(
 	spaceId: string,
 	noteId: string,
+	spacePath?: string,
 ): Promise<Array<Omit<SharedUpdateRow, "data"> & { data: Uint8Array }>> {
+	if (spacePath && getTargetForSpace(spacePath).kind === "paperite-server") {
+		const personal = await getPersonalServerForSpace(spacePath, spaceId);
+		if (personal) {
+			return sharedUpdatesFromPersonalServer(
+				await personal.provider.listUpdateBatches({ spaceId, noteId }),
+			);
+		}
+	}
 	const client = requireConvexClient();
 	const rows = (await client.query(api.sharedSpaces.listUpdates, {
 		spaceId: spaceId as never,

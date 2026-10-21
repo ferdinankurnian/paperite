@@ -74,12 +74,19 @@ export type SidebarSortOrder = "newest" | "oldest" | "a-z" | "z-a" | "custom";
 
 export type SpacePreviewMode = "global" | "show" | "hide";
 
+import type {
+	ConnectionMetadata,
+	SpaceSyncTarget,
+} from "@/lib/space-sync-targets";
+
 export type PageFormat = {
 	indentation: "none" | "first-line" | "hanging";
 	/** Legacy persisted flag; normalized into indentation on load. */
 	firstLineIndent?: boolean;
 	lineHeight: "normal" | "1.5";
 	paragraphSpacing: "none" | "spacious";
+	/** Show a Notion-style block grip for reordering content. */
+	dragHandle: boolean;
 };
 
 export type PaperiteAppState = {
@@ -100,12 +107,17 @@ export type PaperiteAppState = {
 	closeButtonOnly: boolean;
 	syncSidebarWithActiveTab: boolean;
 	defaultPageFormat: PageFormat;
+	/** Non-secret account/device connection metadata. */
+	connections: Record<string, ConnectionMetadata>;
+	/** Exactly one active sync target per local space path. */
+	spaceSyncTargets: Record<string, SpaceSyncTarget>;
 	/**
 	 * Plan 019: local space path → Convex sharedSpace Id.
 	 * No entry = local-only (Convex is never touched for that space).
 	 * Unshare drops the entry only; cloud rows are kept.
 	 */
-	cloudSpaceLinks: Record<string, string>;
+	/** @deprecated Read-only compatibility input; new writes omit this field. */
+	cloudSpaceLinks?: Record<string, string>;
 	/**
 	 * Plan 020 Step 3: cloud updateIds already applied locally, per note.
 	 * Key `${spaceId}::${noteId}` → last-seen updateIds (capped, see
@@ -135,6 +147,7 @@ export interface NotesEngine {
 		path: string,
 		format: PageFormat,
 	): Promise<{ ok: true; pageFormat: PageFormat }>;
+	setPinned?(path: string, pinned: boolean): Promise<{ pinned: boolean }>;
 	pruneAssets?(
 		path: string,
 	): Promise<{ ok: true; deleted: number; skipped?: string }>;
@@ -164,27 +177,9 @@ export interface TrashEngine {
 
 export interface SyncEngine {
 	getStatus(): Promise<SyncStatus>;
-	setGoogleDriveEnabled(
-		enabled: boolean,
-	): Promise<{ ok: true; googleDriveEnabled: boolean }>;
-	connectGoogleDrive(): Promise<{ ok: true } | { ok: false; error: string }>;
-	runGoogleDrive(): Promise<
-		| { ok: true; uploaded: number; downloaded: number }
-		| { ok: false; error: string }
-	>;
-	disconnectGoogleDrive(): Promise<{ ok: true }>;
 }
 
 export type SyncStatus = {
-	googleDrive: {
-		configured: boolean;
-		connected: boolean;
-		enabled: boolean;
-		expiresAt: number | null;
-		syncing: boolean;
-		lastSyncedAt: number | null;
-		lastError: string | null;
-	};
 	convex: {
 		configured: boolean;
 	};

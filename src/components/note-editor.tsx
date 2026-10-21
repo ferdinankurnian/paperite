@@ -6,9 +6,11 @@ import {
 import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import Collaboration from "@tiptap/extension-collaboration";
 import Color from "@tiptap/extension-color";
+import { DragHandle } from "@tiptap/extension-drag-handle-react";
 import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
 import Link from "@tiptap/extension-link";
+import { NodeRange } from "@tiptap/extension-node-range";
 import TaskItem from "@tiptap/extension-task-item";
 import TaskList from "@tiptap/extension-task-list";
 import TextAlign from "@tiptap/extension-text-align";
@@ -40,6 +42,7 @@ import {
 	HighlighterIcon,
 	ClipboardPasteIcon,
 	ExternalLinkIcon,
+	GripVerticalIcon,
 	ImagePlusIcon,
 	ItalicIcon,
 	UploadIcon,
@@ -340,6 +343,7 @@ const defaultPageFormat: PageFormat = {
 	indentation: "none",
 	lineHeight: "normal",
 	paragraphSpacing: "none",
+	dragHandle: false,
 };
 
 const collaborationField = "prosemirror";
@@ -399,6 +403,7 @@ function createBaseExtensions() {
 		TextAlign.configure({
 			types: ["heading", "paragraph"],
 		}),
+		NodeRange,
 		TaskList,
 		TaskItem.configure({
 			nested: true,
@@ -592,14 +597,18 @@ export function NoteEditor({
 		if (fragmentMatches) return;
 
 		const importedDoc = prosemirrorJSONToYDoc(schema, resolvedContent);
+		// One transaction: delete + re-insert join into a single update event,
+		// so live surfaces (and the persist listener) never observe the
+		// transient empty fragment in between — and a crash cannot leave an
+		// empty body projected to disk.
 		yDoc.transact(() => {
 			if (fragment.length > 0) fragment.delete(0, fragment.length);
+			Y.applyUpdate(
+				yDoc,
+				Y.encodeStateAsUpdate(importedDoc),
+				yNoteReconcileOrigin,
+			);
 		}, yNoteReconcileOrigin);
-		Y.applyUpdate(
-			yDoc,
-			Y.encodeStateAsUpdate(importedDoc),
-			yNoteReconcileOrigin,
-		);
 	}, [baseExtensions, resolvedContent, yDoc]);
 
 	const extensions = useMemo(
@@ -925,6 +934,22 @@ export function NoteEditor({
 								}
 							>
 								<EditorContent editor={editor} className="min-h-full flex-1" />
+								{editor && pageFormat.dragHandle && !readOnly ? (
+									<DragHandle
+										editor={editor}
+										nested
+										className="paperite-drag-handle"
+									>
+										<button
+											type="button"
+											tabIndex={-1}
+											aria-label="Drag block"
+											className="paperite-drag-handle-button"
+										>
+											<GripVerticalIcon aria-hidden="true" />
+										</button>
+									</DragHandle>
+								) : null}
 							</div>
 						</ContextMenuTrigger>
 						<ContextMenuContent className="w-52">

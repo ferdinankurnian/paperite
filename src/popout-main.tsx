@@ -21,12 +21,14 @@ type PageFormat = {
 	indentation: "none" | "first-line" | "hanging";
 	lineHeight: "normal" | "1.5";
 	paragraphSpacing: "none" | "spacious";
+	dragHandle: boolean;
 };
 
 const defaultPageFormat: PageFormat = {
 	indentation: "none",
 	lineHeight: "normal",
 	paragraphSpacing: "none",
+	dragHandle: false,
 };
 
 function fileName(notePath: string) {

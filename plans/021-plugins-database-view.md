@@ -1,6 +1,6 @@
 # Plan 021: Plugins + database views (compete with Notion)
 
-Status: TODO (core vision, locked 2026-10-15)
+Status: LOCKED (core vision, product decisions locked 2026-10-15)
 Priority: P0
 Depends on: 016 (revised), 018 (SyncProvider), 013 (perf budget)
 Category: editor + platform

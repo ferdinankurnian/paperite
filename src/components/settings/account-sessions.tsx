@@ -1,17 +1,55 @@
 import {
+	CheckIcon,
 	MonitorIcon,
 	MonitorSmartphoneIcon,
+	PencilIcon,
 	RefreshCwIcon,
 	SmartphoneIcon,
+	XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+	Empty,
+	EmptyDescription,
+	EmptyHeader,
+	EmptyMedia,
+	EmptyTitle,
+} from "@/components/ui/empty";
+import {
+	InputGroup,
+	InputGroupAddon,
+	InputGroupButton,
+	InputGroupInput,
+} from "@/components/ui/input-group";
+import {
+	Item,
+	ItemActions,
+	ItemContent,
+	ItemDescription,
+	ItemGroup,
+	ItemMedia,
+	ItemTitle,
+} from "@/components/ui/item";
 import { Skeleton } from "@/components/ui/skeleton";
-import { clerk, isClerkConfigured, loadClerk } from "@/lib/clerk";
+import {
+	getBridgeSessions,
+	isBrowserRenderer,
+	revokeBridgeSession,
+	revokeOtherBridgeSessions,
+} from "@/lib/auth-bridge";
+import type { PaperiteSessionSummary } from "@/lib/auth-sessions";
+import { isClerkConfigured } from "@/lib/clerk";
+import {
+	deviceAliasesChangedEvent,
+	getDeviceAliases,
+	getInstallationAlias,
+	renameDeviceAlias,
+	renameInstallationAlias,
+} from "@/lib/device-aliases";
 
-type ActiveSession = Awaited<
-	ReturnType<NonNullable<typeof clerk.user>["getSessions"]>
->[number];
+type ActiveSession = PaperiteSessionSummary;
 
 function timeAgo(date: Date): string {
 	const diffMs = Date.now() - date.getTime();
@@ -62,6 +100,11 @@ export function AccountSessions() {
 	const [error, setError] = useState<string | null>(null);
 	const [revokingId, setRevokingId] = useState<string | null>(null);
 	const [revokingOthers, setRevokingOthers] = useState(false);
+	const [aliases, setAliases] = useState<Record<string, string>>({});
+	const [editingId, setEditingId] = useState<string | null>(null);
+	const [draft, setDraft] = useState("");
+	const [savingId, setSavingId] = useState<string | null>(null);
+	const [aliasNotice, setAliasNotice] = useState<string | null>(null);
 
 	const fetchSessions = useCallback(async () => {
 		if (!isClerkConfigured()) {
@@ -72,24 +115,31 @@ export function AccountSessions() {
 		setLoading(true);
 		setError(null);
 		try {
-			await loadClerk();
-			const user = clerk.user;
-			if (!user) {
-				setError("You're not signed in.");
-				setSessions(null);
+			if (isBrowserRenderer()) {
+				// The browser holds no Clerk session — the desktop lists the
+				// account's sessions and ships them over the bridge.
+				const list = await getBridgeSessions();
+				if (!list) {
+					throw new Error(
+						"Could not reach the Paperite desktop app. Open it to manage devices.",
+					);
+				}
+				if (!list.sessions.length && !list.currentSessionId) {
+					setError("You're not signed in.");
+					setSessions(null);
+					return;
+				}
+				setCurrentSessionId(list.currentSessionId);
+				setSessions(list.sessions);
+				setAliases(getDeviceAliases());
 				return;
 			}
-			setCurrentSessionId(clerk.session?.id ?? null);
-			const list = await user.getSessions();
-			const sorted = [...list].sort((a, b) => {
-				if (a.id === clerk.session?.id) return -1;
-				if (b.id === clerk.session?.id) return 1;
-				return (
-					new Date(b.lastActiveAt).getTime() -
-					new Date(a.lastActiveAt).getTime()
-				);
-			});
-			setSessions(sorted);
+
+			const { listAccountSessions } = await import("@/lib/account-sessions");
+			const list = await listAccountSessions();
+			setCurrentSessionId(list.currentSessionId);
+			setSessions(list.sessions);
+			setAliases(getDeviceAliases());
 		} catch (err) {
 			setError(
 				err instanceof Error ? err.message : "Couldn't load your sessions.",
@@ -104,11 +154,55 @@ export function AccountSessions() {
 		void fetchSessions();
 	}, [fetchSessions]);
 
+	useEffect(() => {
+		const syncAliases = () => setAliases(getDeviceAliases());
+		syncAliases();
+		window.addEventListener(deviceAliasesChangedEvent, syncAliases);
+		return () =>
+			window.removeEventListener(deviceAliasesChangedEvent, syncAliases);
+	}, []);
+
+	const startEditing = (session: ActiveSession) => {
+		setEditingId(session.id);
+		setDraft(
+			session.id === currentSessionId
+				? (getInstallationAlias() ?? "")
+				: (aliases[session.id] ?? ""),
+		);
+		setAliasNotice(null);
+	};
+
+	const saveAlias = async (session: ActiveSession) => {
+		setSavingId(session.id);
+		setAliasNotice(null);
+		try {
+			await renameDeviceAlias(session.id, draft);
+			if (session.id === currentSessionId) await renameInstallationAlias(draft);
+			setAliases(getDeviceAliases());
+			setEditingId(null);
+		} catch {
+			setAliases(getDeviceAliases());
+			setEditingId(null);
+			setAliasNotice(
+				"Couldn't sync the name — it's saved on this device only.",
+			);
+		} finally {
+			setSavingId(null);
+		}
+	};
+
 	const handleRevoke = async (session: ActiveSession) => {
 		setRevokingId(session.id);
 		setError(null);
 		try {
-			await session.revoke();
+			if (isBrowserRenderer()) {
+				if (!(await revokeBridgeSession(session.id))) {
+					throw new Error("Could not reach the Paperite desktop app.");
+				}
+			} else {
+				const { revokeAccountSession } = await import("@/lib/account-sessions");
+				await revokeAccountSession(session.id);
+			}
 			await fetchSessions();
 		} catch (err) {
 			setError(
@@ -126,7 +220,16 @@ export function AccountSessions() {
 		setRevokingOthers(true);
 		setError(null);
 		try {
-			await Promise.all(others.map((s) => s.revoke()));
+			if (isBrowserRenderer()) {
+				if (!(await revokeOtherBridgeSessions())) {
+					throw new Error("Could not reach the Paperite desktop app.");
+				}
+			} else {
+				const { revokeOtherAccountSessions } = await import(
+					"@/lib/account-sessions"
+				);
+				await revokeOtherAccountSessions();
+			}
 			await fetchSessions();
 		} catch (err) {
 			setError(
@@ -172,15 +275,13 @@ export function AccountSessions() {
 						disabled={loading || revokingOthers}
 						aria-label="Refresh devices"
 					>
-						<RefreshCwIcon
-							className={loading ? "size-4 animate-spin" : "size-4"}
-						/>
+						<RefreshCwIcon className={loading ? "animate-spin" : undefined} />
 					</Button>
 				</div>
 			</div>
 
 			{loading && sessions === null ? (
-				<div className="space-y-2">
+				<div className="flex flex-col gap-2">
 					<Skeleton className="h-14 w-full rounded-lg" />
 					<Skeleton className="h-14 w-full rounded-lg" />
 				</div>
@@ -197,56 +298,123 @@ export function AccountSessions() {
 					</Button>
 				</div>
 			) : sessions?.length === 0 ? (
-				<p className="rounded-lg border border-dashed px-3 py-4 text-center text-xs text-muted-foreground">
-					No active sessions found.
-				</p>
+				<Empty>
+					<EmptyHeader>
+						<EmptyMedia variant="icon">
+							<MonitorSmartphoneIcon />
+						</EmptyMedia>
+						<EmptyTitle>No active sessions</EmptyTitle>
+						<EmptyDescription>
+							Your signed-in devices will show up here.
+						</EmptyDescription>
+					</EmptyHeader>
+				</Empty>
 			) : (
-				<ul className="space-y-2">
+				<ItemGroup>
 					{sessions?.map((session) => {
 						const isCurrent = session.id === currentSessionId;
+						const isEditing = editingId === session.id;
+						const isSaving = savingId === session.id;
 						const Icon = session.latestActivity?.isMobile
 							? SmartphoneIcon
 							: MonitorIcon;
+						const fallbackTitle = sessionTitle(session);
+						const alias = aliases[session.id];
+						const title = alias || fallbackTitle;
+						const baseSubtitle = sessionSubtitle(session);
+						const subtitle = alias
+							? `${fallbackTitle} • ${baseSubtitle}`
+							: baseSubtitle;
 						return (
-							<li
-								key={session.id}
-								className="flex items-center justify-between gap-3 rounded-lg border bg-background/60 px-3 py-2.5"
-							>
-								<div className="flex min-w-0 items-center gap-2.5">
-									<Icon className="size-4 shrink-0 text-muted-foreground" />
-									<div className="min-w-0">
-										<div className="flex items-center gap-2">
-											<p className="truncate text-sm font-medium">
-												{sessionTitle(session)}
-											</p>
+							<Item key={session.id} variant="outline" size="sm">
+								<ItemMedia variant="icon">
+									<Icon />
+								</ItemMedia>
+								{isEditing ? (
+									<ItemContent>
+										<InputGroup>
+											<InputGroupInput
+												value={draft}
+												onChange={(event) =>
+													setDraft(event.target.value.slice(0, 40))
+												}
+												onKeyDown={(event) => {
+													if (event.key === "Enter") void saveAlias(session);
+													if (event.key === "Escape") setEditingId(null);
+												}}
+												placeholder={fallbackTitle}
+												disabled={isSaving}
+												autoFocus
+												aria-label="Device name"
+											/>
+											<InputGroupAddon align="inline-end">
+												<InputGroupButton
+													size="icon-xs"
+													disabled={isSaving}
+													onClick={() => void saveAlias(session)}
+													aria-label="Save device name"
+												>
+													<CheckIcon />
+												</InputGroupButton>
+												<InputGroupButton
+													size="icon-xs"
+													disabled={isSaving}
+													onClick={() => setEditingId(null)}
+													aria-label="Cancel renaming"
+												>
+													<XIcon />
+												</InputGroupButton>
+											</InputGroupAddon>
+										</InputGroup>
+									</ItemContent>
+								) : (
+									<ItemContent>
+										<ItemTitle className="min-w-0">
+											<span className="truncate">{title}</span>
 											{isCurrent ? (
-												<span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-													This device
-												</span>
+												<Badge variant="secondary">This device</Badge>
 											) : null}
-										</div>
-										<p className="truncate text-xs text-muted-foreground">
-											{sessionSubtitle(session)}
-										</p>
-									</div>
-								</div>
-								{isCurrent ? null : (
-									<Button
-										type="button"
-										variant="outline"
-										size="sm"
-										disabled={revokingId === session.id || revokingOthers}
-										onClick={() => void handleRevoke(session)}
-									>
-										{revokingId === session.id ? "Revoking…" : "Revoke"}
-									</Button>
+										</ItemTitle>
+										<ItemDescription>{subtitle}</ItemDescription>
+									</ItemContent>
 								)}
-							</li>
+								{isEditing ? null : (
+									<ItemActions>
+										<Button
+											type="button"
+											variant="ghost"
+											size="icon-sm"
+											disabled={
+												isSaving || revokingId !== null || revokingOthers
+											}
+											onClick={() => startEditing(session)}
+											aria-label={`Rename ${title}`}
+											title="Rename device"
+										>
+											<PencilIcon />
+										</Button>
+										{isCurrent ? null : (
+											<Button
+												type="button"
+												variant="outline"
+												size="sm"
+												disabled={revokingId === session.id || revokingOthers}
+												onClick={() => void handleRevoke(session)}
+											>
+												{revokingId === session.id ? "Revoking…" : "Revoke"}
+											</Button>
+										)}
+									</ItemActions>
+								)}
+							</Item>
 						);
 					})}
-				</ul>
+				</ItemGroup>
 			)}
 
+			{aliasNotice ? (
+				<p className="mt-2 text-xs text-muted-foreground">{aliasNotice}</p>
+			) : null}
 			{error && sessions !== null ? (
 				<p className="mt-2 text-xs text-destructive">{error}</p>
 			) : null}

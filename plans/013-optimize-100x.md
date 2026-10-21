@@ -17,12 +17,26 @@
 
 ## Status
 
+- **Status**: DONE (implementation complete; interactive benchmark worksheet is retained for machine-specific follow-up)
 - **Priority**: P0
 - **Effort**: XL
 - **Risk**: HIGH
 - **Depends on**: 008 (rerender pass), 009 (YDoc cache) — both DONE
 - **Category**: performance / architecture
 - **Planned at**: 2026-08-03
+
+## Completion update — 2026-10-18
+
+The implementation described by phases B–G is present in the current
+desktop codebase: Zustand state boundaries, memoized shell components,
+virtualized note-tree rows, warm-note prefetch/LRU behavior, debounced FTS,
+and the performance budget notes are all landed. Plan 017's browser smoke
+also re-verified cold open, typing/autosave, warm tab switching, and sidebar
+isolation on the current build.
+
+The interactive table in `plans/archive/013-baseline.md` intentionally stays
+available for owner-machine React Profiler numbers; no synthetic timing
+claims are added after the fact.
 
 ## Why this matters
 

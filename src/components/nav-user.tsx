@@ -3,12 +3,13 @@ import {
 	CloudIcon,
 	LaptopIcon,
 	MenuIcon,
+	MonitorSmartphoneIcon,
 	MoonIcon,
 	SettingsIcon,
 	SunIcon,
 	UserRoundIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import {
 	SettingsDialog,
 	type SettingsTab,
@@ -40,6 +41,7 @@ import {
 	useSidebar,
 } from "@/components/ui/sidebar";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { isBrowserRenderer } from "@/lib/auth-bridge";
 import { isClerkConfigured } from "@/lib/clerk";
 import { cn } from "@/lib/utils";
 
@@ -49,11 +51,12 @@ const themes = [
 	{ icon: MoonIcon, label: "Dark", value: "dark" },
 ] as const;
 
-export function NavUser({
+export const NavUser = memo(function NavUser({
 	onLogOut,
 	user,
 	isSignedIn,
 	isAuthLoading,
+	awaitingDesktop = false,
 	showNotePreview,
 	closeButtonOnly,
 	syncSidebarWithActiveTab,
@@ -69,6 +72,11 @@ export function NavUser({
 	};
 	isSignedIn: boolean;
 	isAuthLoading: boolean;
+	/**
+	 * True when this is a browser surface with no desktop app attached yet.
+	 * It is waiting for the desktop to sign in, not signed out.
+	 */
+	awaitingDesktop?: boolean;
 	showNotePreview: boolean;
 	closeButtonOnly: boolean;
 	syncSidebarWithActiveTab: boolean;
@@ -80,6 +88,9 @@ export function NavUser({
 	const { theme, setTheme } = useTheme();
 	const authEnabled = isClerkConfigured();
 	const showAccount = isSignedIn;
+	// A browser mirrors the desktop's session, so signing out from a tab
+	// would kill the desktop's session — the desktop app owns that decision.
+	const canLogOut = !isBrowserRenderer();
 	const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
 	const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 	const [activeTab, setActiveTab] = useState<SettingsTab>("general");
@@ -137,7 +148,21 @@ export function NavUser({
 							sideOffset={4}
 						>
 							{authEnabled && !showAccount && !isAuthLoading ? (
-								<>
+								awaitingDesktop ? (
+									<DropdownMenuLabel className="p-0 font-normal">
+										<div className="flex items-start gap-2 px-1 py-1.5 text-left text-sm">
+											<MonitorSmartphoneIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+											<div className="grid min-w-0 flex-1 gap-0.5 text-left leading-tight">
+												<span className="truncate font-medium">
+													Waiting for desktop
+												</span>
+												<span className="text-xs text-muted-foreground">
+													Open the Paperite desktop app to sign in.
+												</span>
+											</div>
+										</div>
+									</DropdownMenuLabel>
+								) : (
 									<DropdownMenuItem
 										onSelect={() =>
 											window.dispatchEvent(new Event("paperite:open-auth"))
@@ -146,7 +171,7 @@ export function NavUser({
 										<UserRoundIcon />
 										Sign in
 									</DropdownMenuItem>
-								</>
+								)
 							) : showAccount ? (
 								<DropdownMenuLabel className="p-0 font-normal">
 									<div className="flex items-center gap-2 px-1 py-1.5 text-left text-sm">
@@ -223,29 +248,31 @@ export function NavUser({
 				onRequestLogOut={() => setIsLogoutDialogOpen(true)}
 				betaEnabled={showAccount}
 			/>
-			<AlertDialog
-				open={isLogoutDialogOpen}
-				onOpenChange={setIsLogoutDialogOpen}
-			>
-				<AlertDialogContent>
-					<AlertDialogHeader>
-						<AlertDialogTitle>Log out of Paperite?</AlertDialogTitle>
-						<AlertDialogDescription>
-							You’ll need to sign in again before opening your notes on this
-							device.
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter>
-						<AlertDialogCancel>Cancel</AlertDialogCancel>
-						<AlertDialogAction variant="destructive" onClick={onLogOut}>
-							Log out
-						</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
+			{canLogOut ? (
+				<AlertDialog
+					open={isLogoutDialogOpen}
+					onOpenChange={setIsLogoutDialogOpen}
+				>
+					<AlertDialogContent>
+						<AlertDialogHeader>
+							<AlertDialogTitle>Log out of Paperite?</AlertDialogTitle>
+							<AlertDialogDescription>
+								You’ll need to sign in again before opening your notes on this
+								device.
+							</AlertDialogDescription>
+						</AlertDialogHeader>
+						<AlertDialogFooter>
+							<AlertDialogCancel>Cancel</AlertDialogCancel>
+							<AlertDialogAction variant="destructive" onClick={onLogOut}>
+								Log out
+							</AlertDialogAction>
+						</AlertDialogFooter>
+					</AlertDialogContent>
+				</AlertDialog>
+			) : null}
 		</>
 	);
-}
+});
 
 function UserAvatar({
 	user,

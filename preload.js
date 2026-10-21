@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electron", {
+	workspaceMode: process.argv.includes("--paperite-attached-workspace")
+		? "attached"
+		: "local",
 	platform: {
 		isMacOS:
 			process.platform === "darwin" ||
@@ -44,19 +47,54 @@ contextBridge.exposeInMainWorld("electron", {
 	auth: {
 		getPendingCallback: () => ipcRenderer.invoke("auth:get-pending-callback"),
 		startCallbackServer: () => ipcRenderer.invoke("auth:start-callback-server"),
+		onBridgeSessionRequest: (cb) => {
+			const listener = (_, request) => cb(request);
+			ipcRenderer.on("auth:bridge-session-request", listener);
+			return () =>
+				ipcRenderer.removeListener("auth:bridge-session-request", listener);
+		},
+		respondBridgeSession: (requestId, result) =>
+			ipcRenderer.send("auth:bridge-session-response", requestId, result),
+		onBridgeSessionsRequest: (cb) => {
+			const listener = (_, request) => cb(request);
+			ipcRenderer.on("auth:bridge-sessions-request", listener);
+			return () =>
+				ipcRenderer.removeListener("auth:bridge-sessions-request", listener);
+		},
+		respondBridgeSessions: (requestId, result) =>
+			ipcRenderer.send("auth:bridge-sessions-response", requestId, result),
+		onBridgeSignOutRequest: (cb) => {
+			const listener = (_, request) => cb(request?.requestId ?? request);
+			ipcRenderer.on("auth:bridge-sign-out-request", listener);
+			return () =>
+				ipcRenderer.removeListener("auth:bridge-sign-out-request", listener);
+		},
+		respondBridgeSignOut: (requestId, result) =>
+			ipcRenderer.send("auth:bridge-sign-out-response", requestId, result),
+		getDeviceStatus: () => ipcRenderer.invoke("device-auth:status"),
+		claimDevice: (userId) => ipcRenderer.invoke("device-auth:claim", userId),
+		clearDevice: () => ipcRenderer.invoke("device-auth:clear"),
+		enableFileStorage: () => ipcRenderer.invoke("device-auth:enable-file"),
 	},
 	sync: {
 		getStatus: () => ipcRenderer.invoke("sync:get-status"),
-		setGoogleDriveEnabled: (enabled) =>
-			ipcRenderer.invoke("sync:set-google-drive-enabled", enabled),
-		connectGoogleDrive: () => ipcRenderer.invoke("sync:connect-google-drive"),
-		runGoogleDrive: () => ipcRenderer.invoke("sync:run-google-drive"),
-		disconnectGoogleDrive: () =>
-			ipcRenderer.invoke("sync:disconnect-google-drive"),
+	},
+	personalServer: {
+		getCredential: (connectionId) =>
+			ipcRenderer.invoke("personal-server:get-credential", connectionId),
+		saveCredential: (connectionId, credential) =>
+			ipcRenderer.invoke(
+				"personal-server:save-credential",
+				connectionId,
+				credential,
+			),
+		deleteCredential: (connectionId) =>
+			ipcRenderer.invoke("personal-server:delete-credential", connectionId),
 	},
 	openExternal: (url) => ipcRenderer.invoke("open-external", url),
 	app: {
 		setTitle: (title) => ipcRenderer.invoke("app:set-title", title),
+		getDeviceInfo: () => ipcRenderer.invoke("app:get-device-info"),
 	},
 	window: {
 		getState: () => ipcRenderer.invoke("window:get-state"),

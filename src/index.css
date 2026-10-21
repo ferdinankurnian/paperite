@@ -299,6 +299,38 @@
 		outline: none;
 	}
 
+	/* Tiptap's drag-handle plugin positions this portal beside the active block. */
+	.paperite-drag-handle {
+		z-index: 30;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: 2.5rem;
+		height: 2.5rem;
+		margin-left: -0.5rem;
+		top: 0;
+		touch-action: none;
+		opacity: 0.62;
+		transition: opacity 120ms ease, transform 120ms ease;
+	}
+
+	.paperite-drag-handle:hover {
+		opacity: 1;
+		transform: translateX(2px);
+	}
+
+	.paperite-drag-handle-button {
+		@apply flex size-10 cursor-grab items-center justify-center rounded-md text-muted-foreground outline-none;
+	}
+
+	.paperite-drag-handle-button:hover {
+		@apply bg-muted text-foreground;
+	}
+
+	.paperite-drag-handle-button:active {
+		@apply cursor-grabbing;
+	}
+
 	.paperite-tiptap .paperite-prosemirror ::selection {
 		background-color: rgb(249 115 22 / 30%);
 	}

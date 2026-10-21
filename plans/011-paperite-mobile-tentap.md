@@ -11,6 +11,7 @@
 
 ## Status
 
+- **Status**: DONE (implemented in the sibling `paperite-mobile` project; the original draft's route names are superseded)
 - **Priority**: P1
 - **Effort**: L
 - **Risk**: MED
@@ -18,6 +19,19 @@
 - **Category**: direction
 - **Planned at**: commit `288ea6b`, 2026-07-30
 - **Issue**: — (not published via `--issues`)
+
+## Completion update — 2026-10-18
+
+The mobile app is implemented at `../paperite-mobile/` with Expo Router,
+Ashoff UI, local SQLite/filesystem storage, TipTap-in-WebView editing,
+search, image insertion, dark mode, and note/space navigation. The current
+route tree is more advanced than this initial draft (`app/(drawer)/(tabs)`),
+so the old example paths are not used verbatim.
+
+`bun run build:editor` succeeds and regenerates the bundled editor source;
+`bunx tsc --noEmit` passes after aligning the current Expo/FlashList types.
+The full lint command reaches Prettier but still reports baseline formatting
+debt in six files, including the generated editor bundle and `tsconfig.json`.
 
 ## Why this matters
 
@@ -75,7 +89,7 @@ A standalone React Native app (Expo) with:
 **Out of scope** (follow-up plans):
 - Offline SQLite storage (use `expo-sqlite` later)
 - Yjs collaborative editing (TenTap supports it but deferred)
-- Google Drive sync (deferred)
+- Cloud sync (deferred)
 - Push notifications
 - App store submission / EAS Build
 - Sharing extension (iOS share sheet)

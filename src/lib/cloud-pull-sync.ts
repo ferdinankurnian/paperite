@@ -5,6 +5,7 @@ import { getNotesEngine } from "@/lib/notes-engine";
 import type { WorkspaceItem } from "@/lib/storage/types";
 import { useAppStore } from "@/lib/stores/app-store";
 import {
+	getRemoteDeviceId,
 	humanizeShareError,
 	listSharedNotes,
 	listSharedUpdates,
@@ -116,18 +117,24 @@ function subscribeNoteUpdates(
 		return;
 	}
 	try {
-		const unsub = watchSharedUpdates(spaceId, noteId, (rows) => {
-			void handleRemoteUpdates(
-				spaceId,
-				noteId,
-				localPath,
-				rows.map((r) => ({
-					updateId: r.updateId,
-					deviceId: r.deviceId,
-					data: r.data,
-				})),
-			);
-		});
+		const unsub = watchSharedUpdates(
+			spaceId,
+			noteId,
+			(rows) => {
+				void handleRemoteUpdates(
+					spaceId,
+					noteId,
+					localPath,
+					rows.map((r) => ({
+						updateId: r.updateId,
+						deviceId: r.deviceId,
+						data: r.data,
+					})),
+					spacePath,
+				);
+			},
+			spacePath,
+		);
 		updateUnsubs.set(key, unsub);
 	} catch (error) {
 		setCloudTransient(spacePath, {
@@ -144,8 +151,10 @@ async function handleRemoteUpdates(
 	noteId: string,
 	localPath: string,
 	rows: RemoteUpdate[],
+	spacePath: string,
 ): Promise<void> {
-	const ownDevice = getDeviceId();
+	const ownDevice =
+		(await getRemoteDeviceId(spacePath, spaceId)) ?? getDeviceId();
 	const seen = getSeenIds(spaceId, noteId);
 	const fresh = rows.filter(
 		(row) => row.deviceId !== ownDevice && !seen.has(row.updateId),
@@ -275,12 +284,17 @@ async function createLocalCopyFromCloud(
 		const localNoteId = state ? state.noteId || colliding.path : null;
 		if (resolveCloudNoteMerge(localNoteId, row.noteId) === "copy") {
 			const copy = await engine.createNote(spacePath, `${row.title} (cloud)`);
-			await applyCloudUpdatesToLocal(spaceId, row.noteId, copy.path);
+			await applyCloudUpdatesToLocal(spacePath, spaceId, row.noteId, copy.path);
 			return copy.path;
 		}
 		// Merge: same noteId at the same path (echo), or unreadable local
 		// state — apply cloud updates onto the existing local note.
-		await applyCloudUpdatesToLocal(spaceId, row.noteId, colliding.path);
+		await applyCloudUpdatesToLocal(
+			spacePath,
+			spaceId,
+			row.noteId,
+			colliding.path,
+		);
 		return colliding.path;
 	}
 	const tryParents = [parentPath(row.path), spacePath].filter(Boolean);
@@ -293,18 +307,22 @@ async function createLocalCopyFromCloud(
 		} catch {}
 	}
 	if (!createdPath) return null;
-	await applyCloudUpdatesToLocal(spaceId, row.noteId, createdPath);
+	await applyCloudUpdatesToLocal(spacePath, spaceId, row.noteId, createdPath);
 	return createdPath;
 }
 
 async function applyCloudUpdatesToLocal(
+	spacePath: string,
 	spaceId: string,
 	noteId: string,
 	localPath: string,
 ): Promise<void> {
 	const seen = getSeenIds(spaceId, noteId);
-	const ownDevice = getDeviceId();
-	const updates = await listSharedUpdates(spaceId, noteId).catch(() => []);
+	const ownDevice =
+		(await getRemoteDeviceId(spacePath, spaceId)) ?? getDeviceId();
+	const updates = await listSharedUpdates(spaceId, noteId, spacePath).catch(
+		() => [],
+	);
 	const fresh = updates.filter(
 		(u) => u.deviceId !== ownDevice && !seen.has(u.updateId),
 	);
@@ -366,7 +384,7 @@ export async function startPullForSpace(
 	// Seed the tombstone baseline BEFORE subscribing so the first snapshot
 	// diff doesn't trash everything.
 	try {
-		const rows = await listSharedNotes(spaceId);
+		const rows = await listSharedNotes(spaceId, spacePath);
 		const seed = new Map<string, KnownNote>();
 		for (const row of rows) {
 			seed.set(row.noteId, { path: row.path, title: row.title });
@@ -387,14 +405,20 @@ export async function startPullForSpace(
 		return;
 	}
 	try {
-		const unsub = watchSharedNotes(spaceId, (rows) => {
-			void handleNoteList(spacePath, spaceId, rows).catch((error: unknown) => {
-				setCloudTransient(spacePath, {
-					phase: "error",
-					message: humanizeShareError(error),
-				});
-			});
-		});
+		const unsub = watchSharedNotes(
+			spaceId,
+			(rows) => {
+				void handleNoteList(spacePath, spaceId, rows).catch(
+					(error: unknown) => {
+						setCloudTransient(spacePath, {
+							phase: "error",
+							message: humanizeShareError(error),
+						});
+					},
+				);
+			},
+			spacePath,
+		);
 		listUnsubs.set(spacePath, unsub);
 	} catch (error) {
 		setCloudTransient(spacePath, {

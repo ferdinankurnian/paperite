@@ -61,7 +61,6 @@ type SortableTabProps = {
 	spaceColor?: string;
 	openDelay: number;
 	isTabDragging: boolean;
-	onHoverOpen: () => void;
 	onSelect: (path: string) => void;
 	onDoubleClick: (path: string) => void;
 	onClose: (path: string) => void;
@@ -78,7 +77,6 @@ const SortableTab = memo(function SortableTab({
 	spaceColor,
 	openDelay,
 	isTabDragging,
-	onHoverOpen,
 	onSelect,
 	onDoubleClick,
 	onClose,
@@ -107,6 +105,7 @@ const SortableTab = memo(function SortableTab({
 	};
 
 	const [hoverOpen, setHoverOpen] = useState(false);
+	const hoverOpenTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const suppressHover = isTabDragging || isSortableDragging;
 
 	const titleDraft = useEditorUiStore((s) => s.titleDrafts[note.path]);
@@ -116,6 +115,12 @@ const SortableTab = memo(function SortableTab({
 	const customIcon = spaceIcon?.startsWith("custom:")
 		? spaceIcon.slice("custom:".length)
 		: null;
+
+	useEffect(() => {
+		return () => {
+			if (hoverOpenTimerRef.current) clearTimeout(hoverOpenTimerRef.current);
+		};
+	}, []);
 
 	return (
 		<HoverCard
@@ -128,7 +133,6 @@ const SortableTab = memo(function SortableTab({
 					return;
 				}
 				setHoverOpen(open);
-				if (open) onHoverOpen();
 			}}
 		>
 			<ContextMenu>
@@ -142,11 +146,29 @@ const SortableTab = memo(function SortableTab({
 							data-pinned={note.pinned}
 							data-dragging={isSortableDragging}
 							className={cn(
-								"group relative z-10 my-2 w-28 shrink-0 rounded-md border border-transparent text-[13px] text-muted-foreground transition-[color,background-color,border-color,transform] duration-150 hover:border-border/40 hover:bg-muted/60 hover:text-foreground active:scale-[0.96] data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:border-border/40 data-[dragging=true]:bg-muted/50 sm:w-36 lg:w-44",
+								"group relative z-10 my-2 w-28 shrink-0 rounded-md border border-transparent text-[13px] text-muted-foreground transition-[color,background-color,border-color,transform] duration-150 hover:border-border/40 hover:bg-muted/60 hover:text-foreground active:scale-[0.99] data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[preview=true]:italic data-[preview=true]:opacity-70 data-[dragging=true]:border-border/40 data-[dragging=true]:bg-muted/50 sm:w-36 lg:w-44",
 								"touch-none cursor-default",
 							)}
 							{...attributes}
 							{...listeners}
+							onPointerEnter={(event) => {
+								if (event.pointerType !== "mouse") return;
+								if (suppressHover) return;
+								if (hoverOpenTimerRef.current)
+									clearTimeout(hoverOpenTimerRef.current);
+								hoverOpenTimerRef.current = setTimeout(() => {
+									setHoverOpen(true);
+									hoverOpenTimerRef.current = null;
+								}, openDelay);
+							}}
+							onPointerLeave={(event) => {
+								if (event.pointerType !== "mouse") return;
+								if (hoverOpenTimerRef.current) {
+									clearTimeout(hoverOpenTimerRef.current);
+									hoverOpenTimerRef.current = null;
+								}
+								setHoverOpen(false);
+							}}
 						>
 							<button
 								type="button"
@@ -158,7 +180,13 @@ const SortableTab = memo(function SortableTab({
 								onDoubleClick={() => onDoubleClick(note.path)}
 								onMouseDown={(event) => {
 									// Dismiss hover card on press (click or start of drag).
-									if (event.button === 0) setHoverOpen(false);
+									if (event.button === 0) {
+										setHoverOpen(false);
+										if (hoverOpenTimerRef.current) {
+											clearTimeout(hoverOpenTimerRef.current);
+											hoverOpenTimerRef.current = null;
+										}
+									}
 									if (event.button === 1) {
 										event.preventDefault();
 										if (!note.pinned) onClose(note.path);
@@ -266,36 +294,8 @@ export const TabBar = memo(function TabBar({
 	const spaceColors = useAppStore((s) => s.spaceColors);
 
 	const tabListRef = useRef<HTMLDivElement>(null);
-	const [tabHoverWarm, setTabHoverWarm] = useState(false);
 	const [isTabDragging, setIsTabDragging] = useState(false);
 	const [activeDragPath, setActiveDragPath] = useState<string | null>(null);
-	const tabHoverCoolTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
-		null,
-	);
-
-	const markTabHoverWarm = useCallback(() => {
-		if (tabHoverCoolTimerRef.current) {
-			clearTimeout(tabHoverCoolTimerRef.current);
-			tabHoverCoolTimerRef.current = null;
-		}
-		setTabHoverWarm(true);
-	}, []);
-
-	const scheduleTabHoverCool = useCallback(() => {
-		if (tabHoverCoolTimerRef.current)
-			clearTimeout(tabHoverCoolTimerRef.current);
-		tabHoverCoolTimerRef.current = setTimeout(() => {
-			setTabHoverWarm(false);
-			tabHoverCoolTimerRef.current = null;
-		}, 200);
-	}, []);
-
-	useEffect(() => {
-		return () => {
-			if (tabHoverCoolTimerRef.current)
-				clearTimeout(tabHoverCoolTimerRef.current);
-		};
-	}, []);
 
 	const restrictToHorizontalAxis: Modifier = useCallback(
 		({ transform, activeNodeRect }) => {
@@ -322,6 +322,14 @@ export const TabBar = memo(function TabBar({
 
 	const openTabPaths = useMemo(() => openTabs.map((t) => t.path), [openTabs]);
 
+	useEffect(() => {
+		if (!activeNotePath) return;
+		const activeTab = tabListRef.current?.querySelector<HTMLElement>(
+			'[data-active="true"]',
+		);
+		activeTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+	}, [activeNotePath]);
+
 	const handleDragEnd = useCallback((event: DragEndEvent) => {
 		const { active, over } = event;
 		if (!over || active.id === over.id) return;
@@ -346,14 +354,7 @@ export const TabBar = memo(function TabBar({
 				ref={tabListRef}
 				role="tablist"
 				aria-label="Open notes"
-				className="no-scrollbar flex h-full min-w-0 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-4"
-				onMouseEnter={() => {
-					if (tabHoverCoolTimerRef.current) {
-						clearTimeout(tabHoverCoolTimerRef.current);
-						tabHoverCoolTimerRef.current = null;
-					}
-				}}
-				onMouseLeave={scheduleTabHoverCool}
+				className="no-scrollbar flex h-full min-w-0 items-stretch gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain pl-2 pr-4"
 				onWheel={(e) => {
 					if (e.deltaY !== 0) {
 						e.preventDefault();
@@ -399,9 +400,8 @@ export const TabBar = memo(function TabBar({
 									spaceTitle={spaceTitleFor(spacePath)}
 									spaceIcon={spaceIcons[spacePath]}
 									spaceColor={spaceColors[spacePath]}
-									openDelay={tabHoverWarm ? 0 : 1000}
+									openDelay={1000}
 									isTabDragging={isTabDragging}
-									onHoverOpen={markTabHoverWarm}
 									onSelect={onSelect}
 									onDoubleClick={onDoubleClick}
 									onClose={onClose}
@@ -426,7 +426,7 @@ export const TabBar = memo(function TabBar({
 										<div
 											data-active={isActive}
 											data-preview={dragNote.preview}
-											className="flex h-8 w-28 scale-[0.96] cursor-default items-center rounded-md border px-2.5 text-[13px] shadow-md transition-transform duration-150 sm:w-36 lg:w-44 data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-border/40 data-[active=false]:bg-muted/60 data-[active=false]:text-muted-foreground data-[preview=true]:italic data-[preview=true]:opacity-70"
+											className="flex h-8 w-28 cursor-default items-center rounded-md border px-2.5 text-[13px] shadow-md transition-transform duration-150 sm:w-36 lg:w-44 data-[active=true]:border-border/60 data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-border/40 data-[active=false]:bg-muted/60 data-[active=false]:text-muted-foreground data-[preview=true]:italic data-[preview=true]:opacity-70"
 										>
 											<span className="min-w-0 flex-1 truncate">
 												{dragTitle}
@@ -440,11 +440,11 @@ export const TabBar = memo(function TabBar({
 			</div>
 			<div
 				aria-hidden="true"
-				className="pointer-events-none absolute inset-y-0 left-0 z-20 w-4 bg-linear-to-r from-background via-background/85 to-transparent"
+				className="pointer-events-none absolute inset-y-0 left-0 z-20 w-1 bg-linear-to-r from-background/70 via-background/35 to-transparent"
 			/>
 			<div
 				aria-hidden="true"
-				className="pointer-events-none absolute inset-y-0 right-0 z-20 w-4 bg-linear-to-l from-background via-background/85 to-transparent"
+				className="pointer-events-none absolute inset-y-0 right-0 z-20 w-1 bg-linear-to-l from-background/70 via-background/35 to-transparent"
 			/>
 		</div>
 	);

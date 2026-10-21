@@ -19,6 +19,7 @@
 - **Depends on**: none (desktop only; not RN/TenTap)
 - **Category**: feature
 - **Planned at**: commit `288ea6b`, 2026-08-03
+- **Status**: DONE
 
 ## Why this matters
 
@@ -200,13 +201,38 @@ dark theme contrast. Avoid large scroll jumps when toggling on an open note.
 
 ## Done criteria
 
-- [ ] Packages installed; editor builds.
-- [ ] `PageFormat.dragHandle` exists; normalized default `false`.
-- [ ] Settings global toggle works and applies to new notes.
-- [ ] Note setup per-note toggle works and overrides global.
-- [ ] Grip visible only when enabled and not read-only; drag reorders blocks.
-- [ ] No paid TipTap template dependency.
-- [ ] `plans/README.md` status row updated to DONE when complete.
+- [x] Packages installed; editor builds.
+- [x] `PageFormat.dragHandle` exists; normalized default `false`.
+- [x] Settings global toggle works and applies to new notes.
+- [x] Note setup per-note toggle works and overrides global.
+- [x] Grip visible only when enabled and not read-only; drag reorders blocks.
+- [x] No paid TipTap template dependency.
+- [x] `plans/README.md` status row updated to DONE when complete.
+
+## Completion update — 2026-10-18
+
+Implemented with the free TipTap packages `@tiptap/extension-drag-handle-react`,
+`@tiptap/extension-drag-handle`, and `@tiptap/extension-node-range` at 3.26.0.
+`PageFormat.dragHandle` defaults to `false`, is normalized for old state, and
+is persisted through both Electron IPC and `paperite serve` page-format routes.
+
+The feature is available from both Note setup (per-note override) and Settings
+→ Note (global default). The grip is mounted only for editable notes with the
+flag enabled, supports nested content, and uses a 40px hit area with a subtle
+hover treatment.
+
+Browser smoke test against an isolated `paperite serve` workspace verified:
+
+- enabling the per-note switch writes `dragHandle: true` to the API;
+- the grip appears on block hover and disappears in reading/read-only mode;
+- dragging three paragraphs changes their order and reaches `Saved`;
+- the reordered content and enabled handle survive a reload;
+- enabling the global default makes a newly created note mount the handle.
+
+Verification: `bun run build:web`, `tsc -b`, `bun test` (30 pass / 0 fail),
+`git diff --check`, and React Doctor changed scan completed. Repository-wide
+Biome lint remains affected by the existing config/version drift and unrelated
+dirty files documented in the earlier plan closeout.
 
 ## Notes for the executor
 

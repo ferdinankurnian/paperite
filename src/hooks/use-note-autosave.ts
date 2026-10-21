@@ -2,7 +2,6 @@ import { startTransition, useCallback, useEffect, useRef } from "react";
 import type { NotesEngine } from "@/lib/notes-engine";
 import type { NoteContent, WorkspaceSnapshot } from "@/lib/storage/types";
 import { noteContentPreview, serializeNoteContentBody } from "@/lib/note-content";
-import { getSyncEngine } from "@/lib/sync-engine";
 import type { LoadedYNote } from "@/lib/y-note-store";
 import { destroyLiveYDoc, rekeyLiveYDoc } from "@/lib/y-note-store";
 import { rekeyLocalLiveNote } from "@/lib/local-live-sync";
@@ -280,10 +279,6 @@ export function useNoteAutosave(options: Options) {
   			useEditorUiStore.getState().markSaved();
   		}
 
-  		const syncEngine = getSyncEngine();
-  		if (syncEngine) {
-  			syncEngine.runGoogleDrive().catch(() => undefined);
-  		}
   	}, [
   		clearAutosavesForPath,
   		clearNoteAutosaveTimer,

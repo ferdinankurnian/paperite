@@ -133,6 +133,13 @@ export class WebNotesEngine implements NotesEngine {
 		});
 	}
 
+	async setPinned(path: string, pinned: boolean): Promise<{ pinned: boolean }> {
+		return api(`/api/notes/${encodeURIComponent(path)}/pinned`, {
+			method: "PUT",
+			body: JSON.stringify({ pinned }),
+		});
+	}
+
 	async createNote(
 		parentPath: string,
 		title: string,
